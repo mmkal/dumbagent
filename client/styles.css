@@ -12,6 +12,7 @@ body,
 #app {
   height: 100%;
   overflow: hidden;
+  touch-action: manipulation;
 }
 
 * {
@@ -29,6 +30,7 @@ input,
 select,
 textarea {
   font: inherit;
+  touch-action: manipulation;
 }
 
 button {
@@ -57,6 +59,7 @@ button:disabled {
   height: 100dvh;
   overflow: hidden;
   padding: 14px;
+  touch-action: manipulation;
 }
 
 .topbar {
@@ -390,6 +393,7 @@ textarea:focus {
   background: #181d24;
   color: #c8d2df;
   font-size: 12px;
+  touch-action: manipulation;
 }
 
 .screen {
@@ -399,6 +403,7 @@ textarea:focus {
   border: 1px solid #2c333d;
   border-radius: 8px;
   background: #0b0d10;
+  touch-action: manipulation;
 }
 
 .session-layout .screen {
@@ -479,6 +484,7 @@ pre {
   padding: 10px;
   background: #0a0a0a;
   font: 14px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
+  touch-action: manipulation;
 }
 
 .terminal-host {
@@ -486,6 +492,7 @@ pre {
   height: 100%;
   overflow: hidden;
   background: #0a0a0a;
+  touch-action: manipulation;
 }
 
 .terminal-host .xterm {

@@ -172,7 +172,10 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       screenBorderTop: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderTopWidth,
       screenBorderBottom: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderBottomWidth,
       composerBorder: getComputedStyle(document.querySelector<HTMLElement>(".composer")!).borderTopWidth,
+      screenTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).touchAction,
+      scrollButtonTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).touchAction,
       textareaFontSize: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).fontSize,
+      textareaTouchAction: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).touchAction,
     };
   });
   expect(chrome).toMatchObject({
@@ -180,7 +183,10 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     screenBorderTop: "0px",
     screenBorderBottom: "0px",
     composerBorder: "0px",
+    screenTouchAction: "manipulation",
+    scrollButtonTouchAction: "manipulation",
     textareaFontSize: "16px",
+    textareaTouchAction: "manipulation",
   });
 
   const keyMetrics = await page.locator(".keys").evaluate((keys) => {
