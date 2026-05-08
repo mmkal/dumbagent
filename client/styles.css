@@ -350,11 +350,16 @@ pre {
   width: max-content;
   min-width: 100%;
   padding: 10px;
-  font: 14px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 14px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .terminal-html pre {
   white-space: pre;
+  line-height: 1.18;
+}
+
+.terminal-html pre > div {
+  line-height: 1.18;
 }
 
 .blocks-screen {
