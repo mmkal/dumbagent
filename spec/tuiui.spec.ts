@@ -145,6 +145,19 @@ test("keeps split utf-8 output intact", async ({ page, ctx }) => {
   await expect(page.getByTestId("semantic-screen")).not.toContainText("\uFFFD");
 });
 
+test("does not inherit NO_COLOR into launched TUIs", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("color-env-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("colored");
+  const payload = await fetchSessionPayload(page);
+  expect(payload.stdoutEvents[0]).toMatchObject({
+    chunk: expect.stringContaining("\u001b[31mcolored"),
+  });
+});
+
 test("can drive OpenCode through fakeagent when OpenCode is installed", async ({ page, ctx }) => {
   test.skip(!commandExists("opencode"), "opencode is not installed");
 
@@ -193,12 +206,21 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await expect(page.locator("#sdk-yaml-editor .cm-editor.cm-lineWrapping")).toHaveCount(0);
 });
 
-test("resolves a Codex TUI into SDK summary YAML", async ({ page, ctx }) => {
+test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
-  await page.getByRole("combobox", { name: "Preset" }).selectOption("codex");
+  const commands = await page.evaluate(async () => await fetch("/api/commands").then((response) => response.json()));
+  expect(commands).toContainEqual(expect.objectContaining({
+    id: "fake-codex",
+    command: "codex",
+    fakeAgent: "codex",
+  }));
+  await page.getByRole("combobox", { name: "Preset" }).selectOption("fake-codex");
   await page.getByRole("button", { name: "Launch" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");
+  await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const launchedPayload = await fetchSessionPayload(page);
   writeCodexFixtureState(ctx, launchedPayload.createdAt);
 
@@ -278,6 +300,7 @@ async function createContext() {
   fs.mkdirSync(fakeBinDir, { recursive: true });
   fs.writeFileSync(path.join(fakeBinDir, "semantic-agent"), semanticAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "codex"), codexTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -285,6 +308,7 @@ async function createContext() {
     ...process.env,
     PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
     HOME: path.join(tempRoot, "home"),
+    NO_COLOR: "1",
   };
   const server = spawn("bun", ["run", path.join(rootDir, "cli.ts"), "--host", "127.0.0.1", "--port", String(port)], {
     cwd: workspaceDir,
@@ -429,6 +453,15 @@ tick();
 setTimeout(() => {}, 100000);
 `;
 
+const colorEnvAgentSource = `#!/usr/bin/env node
+if (process.env.NO_COLOR) {
+  process.stdout.write("plain\\n");
+} else {
+  process.stdout.write("\\x1b[31mcolored\\x1b[0m\\n");
+}
+setTimeout(() => {}, 100000);
+`;
+
 function writeCodexFixtureState(ctx: FixtureContext, launchedAt: string) {
   const codexDir = path.join(ctx.env.HOME || "", ".codex");
   const sessionsDir = path.join(codexDir, "sessions", "2026", "05", "08");
@@ -543,16 +576,40 @@ process.stdin.setRawMode(true);
 process.stdin.resume();
 process.stdin.setEncoding("utf8");
 
+let input = "";
+let sawLineFeed = false;
+let answer = "";
+
 function draw() {
   process.stdout.write("\\x1b[2J\\x1b[H");
-  process.stdout.write("╭─ Codex test TUI ─────────────╮\\r\\n");
-  process.stdout.write("│ status idle                  │\\r\\n");
+  process.stdout.write("\\x1b[36m╭─ Codex test TUI ─────────────╮\\x1b[0m\\r\\n");
+  process.stdout.write("\\x1b[36m│\\x1b[0m status idle                  \\x1b[36m│\\x1b[0m\\r\\n");
   process.stdout.write("╰──────────────────────────────╯\\r\\n");
+  process.stdout.write("\\r\\n");
+  process.stdout.write(("› " + input + "                              ").slice(0, 32) + "\\r\\n");
+  if (answer) {
+    process.stdout.write("\\x1b[32m" + answer + "\\x1b[0m\\r\\n");
+  }
 }
 
 draw();
 process.stdin.on("data", (chunk) => {
-  if (chunk.includes("\\u0003")) process.exit(0);
+  for (const char of chunk) {
+    if (char === "\\u0003") process.exit(0);
+    if (char === "\\n") {
+      sawLineFeed = true;
+      continue;
+    }
+    if (char === "\\r") {
+      if (sawLineFeed && input.trim()) {
+        answer = /one plus two/i.test(input) ? "three" : "heard " + input;
+        input = "";
+      }
+      sawLineFeed = false;
+      continue;
+    }
+    input += char;
+  }
   draw();
 });
 `;

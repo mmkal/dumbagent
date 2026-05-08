@@ -206,7 +206,7 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json([
       { id: "custom", label: "Custom", command: "", args: [], fakeAgent: "" },
       { id: "fake-opencode", label: "Fake OpenCode", command: "opencode", args: [], fakeAgent: "opencode" },
-      { id: "codex", label: "Codex", command: "codex", args: [], fakeAgent: "" },
+      { id: "fake-codex", label: "Fake Codex", command: "codex", args: [], fakeAgent: "codex" },
       { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
     ]);
   }
@@ -313,16 +313,20 @@ async function createSession(input: CreateSessionInput) {
 
   let command = input.command;
   let args = input.args;
+  const inheritedEnv = terminalBaseEnv(process.env, input.env);
   let env: Record<string, string> = {
-    ...minimalEnv(process.env),
+    ...inheritedEnv,
     ...input.env,
     TERM: input.env.TERM || "xterm-256color",
     COLORTERM: input.env.COLORTERM || "truecolor",
+    FORCE_COLOR: input.env.FORCE_COLOR || inheritedEnv.FORCE_COLOR || "1",
+    CLICOLOR_FORCE: input.env.CLICOLOR_FORCE || inheritedEnv.CLICOLOR_FORCE || "1",
   };
   let fakeAgent: FakeAgent | null = null;
 
   if (input.fakeAgent) {
     fakeAgent = await createTestingFakeAgent();
+    prepareFakeAgentWorkspace(cwd);
     const fakeSpawn = fakeAgent.getSpawnArgs(input.fakeAgent);
     command = fakeSpawn.command;
     args = [...fakeSpawn.args, ...input.args];
@@ -337,7 +341,6 @@ async function createSession(input: CreateSessionInput) {
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
       OPENCODE_DISABLE_MODELS_FETCH: "1",
     };
-    prepareFakeAgentWorkspace(cwd);
   }
 
   const sdk = await prepareSessionSdk(command, args, env);
@@ -475,7 +478,7 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
     session.title = session.title === path.basename(session.command) ? text.trim().slice(0, 100) : session.title;
   }
 
-  if (submit && path.basename(session.command).toLowerCase() === "opencode" && text) {
+  if (submit && usesLfCrSubmit(session.command) && text) {
     session.process.terminal.write(text);
     await delay(80);
     session.process.terminal.write("\n");
@@ -739,6 +742,11 @@ function isOpenCodeCommand(command: string) {
 
 function isCodexCommand(command: string) {
   return path.basename(command).toLowerCase() === "codex";
+}
+
+function usesLfCrSubmit(command: string) {
+  const name = path.basename(command).toLowerCase();
+  return name === "opencode" || name === "codex";
 }
 
 async function refreshSessionSdk(session: RuntimeSession) {
@@ -1258,6 +1266,14 @@ function resolveKeySequence(key: string) {
 function minimalEnv(env: NodeJS.ProcessEnv) {
   const entries = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string");
   return Object.fromEntries(entries);
+}
+
+function terminalBaseEnv(processEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) {
+  const env = minimalEnv(processEnv);
+  if (!("NO_COLOR" in explicitEnv)) {
+    delete env.NO_COLOR;
+  }
+  return env;
 }
 
 function isAgentName(value: unknown): value is AgentName {
