@@ -63,6 +63,24 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect(page.getByTestId("semantic-section").filter({ hasText: "key escape" })).toBeVisible();
 });
 
+test("can pause and resume live session events", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await page.getByRole("button", { name: "Pause events" }).click();
+
+  await expect(page.getByRole("button", { name: "Resume events" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("rendered-terminal")).not.toContainText("three");
+
+  await page.getByRole("button", { name: "Resume events" }).click();
+
+  await expect(page.getByRole("button", { name: "Pause events" })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+});
+
 test("keeps split utf-8 output intact", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 

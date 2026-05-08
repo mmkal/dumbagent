@@ -132,6 +132,7 @@ let renderer = readRendererPreference();
 let dataEditorView: EditorView | null = null;
 let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
 let dataEditorDoc = "";
+let eventsPaused = false;
 
 void renderRoute();
 
@@ -142,6 +143,7 @@ window.addEventListener("popstate", () => {
 async function renderRoute() {
   events?.close();
   events = null;
+  eventsPaused = false;
   activeSession = null;
   destroyDataEditor();
 
@@ -281,6 +283,7 @@ async function renderSession(sessionId: string) {
           <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
           <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Summary</button>
           <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
+          <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
           <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
           <button type="button" class="icon-button danger" data-action="kill">Stop</button>
         </div>
@@ -369,6 +372,10 @@ function bindSessionControls(sessionId: string) {
     (event.currentTarget as HTMLButtonElement).setAttribute("aria-expanded", String(!logs.hidden));
   });
 
+  document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
+    setEventsPaused(sessionId, !eventsPaused);
+  });
+
   document.querySelector<HTMLButtonElement>("[data-action='kill']")?.addEventListener("click", () => {
     void api(`/api/sessions/${sessionId}/kill`, { method: "POST" });
   });
@@ -393,11 +400,36 @@ async function sendKey(sessionId: string, key: string) {
 
 function subscribe(sessionId: string) {
   events?.close();
+  if (eventsPaused) {
+    updatePauseEventsButton();
+    return;
+  }
   events = new EventSource(`/api/sessions/${sessionId}/events`);
   events.addEventListener("session", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as SessionPayload;
     renderSessionPayload(payload);
   });
+  updatePauseEventsButton();
+}
+
+function setEventsPaused(sessionId: string, paused: boolean) {
+  eventsPaused = paused;
+  if (paused) {
+    events?.close();
+    events = null;
+    updatePauseEventsButton();
+    return;
+  }
+  subscribe(sessionId);
+}
+
+function updatePauseEventsButton() {
+  const button = document.querySelector<HTMLButtonElement>("[data-action='pause-events']");
+  if (!button) {
+    return;
+  }
+  button.setAttribute("aria-pressed", String(eventsPaused));
+  button.textContent = eventsPaused ? "Resume events" : "Pause events";
 }
 
 function renderSessionPayload(payload: SessionPayload | null) {
