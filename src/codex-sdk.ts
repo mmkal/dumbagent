@@ -34,11 +34,31 @@ export function codexStateDatabasePath(homeDir: string) {
 }
 
 export function resolveCodexStateDatabasePath(homeDir: string) {
+  return resolveCodexStateDatabasePathForUserHome(homeDir);
+}
+
+export function resolveCodexStateDatabasePathForEnv(env: NodeJS.ProcessEnv) {
+  const codexHome = String(env.CODEX_HOME || "");
+  if (codexHome) {
+    return resolveCodexStateDatabasePathForCodexHome(codexHome);
+  }
+  return resolveCodexStateDatabasePathForUserHome(String(env.HOME || os.homedir()));
+}
+
+function resolveCodexStateDatabasePathForUserHome(homeDir: string) {
   const candidates = [
     path.join(homeDir, "state_5.sqlite"),
     codexStateDatabasePath(homeDir),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[1]!;
+}
+
+function resolveCodexStateDatabasePathForCodexHome(codexHome: string) {
+  const candidates = [
+    path.join(codexHome, "state_5.sqlite"),
+    path.join(codexHome, ".codex", "state_5.sqlite"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0]!;
 }
 
 export function codexHomeDirFromStateDatabasePath(databasePath: string) {
@@ -51,10 +71,11 @@ export function readCodexThreads(homeDir: string): CodexThreadRow[] {
 }
 
 export function readCodexThreadsFromDatabasePath(databasePath: string): CodexThreadRow[] {
-  if (!fs.existsSync(databasePath)) {
-    throw new Error(`Codex state database not found at ${databasePath}`);
+  const resolvedPath = resolveStoredCodexStateDatabasePath(databasePath);
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Codex state database not found at ${resolvedPath}`);
   }
-  const database = new Database(databasePath, { readonly: true, strict: true });
+  const database = new Database(resolvedPath, { readonly: true, strict: true });
   try {
     return database.query(`
       select
@@ -80,6 +101,15 @@ export function readCodexThreadsFromDatabasePath(databasePath: string): CodexThr
   } finally {
     database.close();
   }
+}
+
+function resolveStoredCodexStateDatabasePath(databasePath: string) {
+  const direct = path.resolve(databasePath);
+  const parent = path.dirname(direct);
+  const candidates = path.basename(parent) === ".codex"
+    ? [direct, path.join(path.dirname(parent), "state_5.sqlite")]
+    : [direct, path.join(parent, ".codex", "state_5.sqlite")];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || direct;
 }
 
 export function resolveCodexThread(input: ResolveCodexThreadInput) {

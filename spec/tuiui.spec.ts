@@ -311,6 +311,9 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
 });
 
 test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ page, ctx }) => {
+  const fakeCodexHome = "/tmp/fakeagent-codex-home";
+  fs.rmSync(fakeCodexHome, { recursive: true, force: true });
+
   await page.goto(ctx.baseUrl);
   const commands = await page.evaluate(async () => await fetch("/api/commands").then((response) => response.json()));
   expect(commands).toContainEqual(expect.objectContaining({
@@ -326,9 +329,6 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const launchedPayload = await fetchSessionPayload(page);
-  const fakeCodexHome = "/tmp/fakeagent-codex-home";
-  fs.rmSync(path.join(fakeCodexHome, "state_5.sqlite"), { force: true });
-  fs.rmSync(path.join(fakeCodexHome, "sessions"), { recursive: true, force: true });
   writeCodexFixtureState(ctx, launchedPayload.createdAt, {
     codexHomeDir: path.join(ctx.env.HOME || "", ".codex"),
     threadId: "this-tuiui-development-session",

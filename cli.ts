@@ -18,9 +18,8 @@ import {
   buildCodexSummary,
   codexHomeDirFromStateDatabasePath,
   createCodexSummaryPrompt,
-  getCodexHomeDir,
   readCodexThreadsFromDatabasePath,
-  resolveCodexStateDatabasePath,
+  resolveCodexStateDatabasePathForEnv,
   resolveCodexThread,
 } from "./src/codex-sdk.ts";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
@@ -635,14 +634,13 @@ function prepareFakeAgentWorkspace(cwd: string) {
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {
   if (isCodexCommand(command)) {
     const now = new Date().toISOString();
-    const codexHome = getCodexHomeDir(env);
     return {
       command,
       args,
       payload: {
         provider: "codex" as const,
         state: "ready" as const,
-        baseUrl: resolveCodexStateDatabasePath(codexHome),
+        baseUrl: resolveCodexStateDatabasePathForEnv(env),
         externalSessionId: "",
         status: "",
         updatedAt: now,
