@@ -174,6 +174,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       composerBorder: getComputedStyle(document.querySelector<HTMLElement>(".composer")!).borderTopWidth,
       screenTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).touchAction,
       scrollButtonTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).touchAction,
+      terminalFontSize: getComputedStyle(document.querySelector<HTMLElement>(".terminal-xterm-wrap")!).fontSize,
       textareaFontSize: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).fontSize,
       textareaTouchAction: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).touchAction,
     };
@@ -185,6 +186,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     composerBorder: "0px",
     screenTouchAction: "manipulation",
     scrollButtonTouchAction: "manipulation",
+    terminalFontSize: "12px",
     textareaFontSize: "16px",
     textareaTouchAction: "manipulation",
   });
@@ -334,6 +336,9 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("providerSessionId: codex-test-thread");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: summarize this codex tui");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestAssistantText: codex can now be summarized");
+  await expect.poll(async () => {
+    return await page.locator("#sdk-yaml-editor .cm-editor").evaluate((editor) => getComputedStyle(editor).fontSize);
+  }).toBe("10px");
 
   const payload = await fetchSessionPayload(page);
   expect(payload.sdk.summary).toMatchObject({

@@ -621,7 +621,7 @@ async function ensureXterm(payload: SessionPayload) {
       rows: payload.rows,
       convertEol: false,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 14,
+      fontSize: 12,
       lineHeight: 1.18,
       theme: {
         background: "#0a0a0a",
@@ -1073,8 +1073,8 @@ function editorTheme() {
       height: "100%",
       backgroundColor: "#0d1014",
       color: "#eef2f7",
-      fontSize: "12px",
-      lineHeight: "1.45",
+      fontSize: "10px",
+      lineHeight: "1.35",
     },
     ".cm-scroller": {
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -1083,17 +1083,17 @@ function editorTheme() {
       padding: "6px 0",
     },
     ".cm-line": {
-      lineHeight: "1.45",
-      padding: "0 10px",
+      lineHeight: "1.35",
+      padding: "0 8px",
     },
     ".cm-gutters": {
       backgroundColor: "#11161d",
       color: "#748293",
       borderRightColor: "#2c333d",
-      lineHeight: "1.45",
+      lineHeight: "1.35",
     },
     ".cm-gutterElement": {
-      lineHeight: "1.45",
+      lineHeight: "1.35",
       paddingTop: "0 !important",
       paddingBottom: "0 !important",
     },
@@ -1114,7 +1114,7 @@ function editorTheme() {
     ".cm-foldGutter span": {
       display: "inline-flex",
       alignItems: "center",
-      height: "1.45em",
+      height: "1.35em",
       lineHeight: "1",
     },
     ".cm-activeLineGutter": {

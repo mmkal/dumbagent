@@ -23,6 +23,7 @@ body {
   margin: 0;
   min-height: 0;
   background: #111418;
+  font-size: 13px;
 }
 
 button,
@@ -39,8 +40,8 @@ button {
   background: #d8f36a;
   color: #111418;
   font-weight: 700;
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 34px;
+  padding: 0 11px;
   cursor: pointer;
 }
 
@@ -90,7 +91,7 @@ button:disabled {
 
 .muted {
   color: #9ca8b6;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .cwd {
@@ -105,7 +106,7 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #f6f8fb;
-  font: 600 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 12px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .app-title {
@@ -218,7 +219,7 @@ textarea:focus {
 .session-link time,
 .empty {
   color: #9ca8b6;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .empty {
@@ -343,7 +344,7 @@ textarea:focus {
   text-align: center;
   color: #101418;
   background: #f3c969;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -392,7 +393,7 @@ textarea:focus {
   border-radius: 6px;
   background: #181d24;
   color: #c8d2df;
-  font-size: 12px;
+  font-size: 11px;
   touch-action: manipulation;
 }
 
@@ -467,7 +468,7 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 12px/1.38 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .terminal-screen {
@@ -483,7 +484,7 @@ pre {
   overflow: hidden;
   padding: 10px;
   background: #0a0a0a;
-  font: 14px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 12px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
   touch-action: manipulation;
 }
 
@@ -519,14 +520,14 @@ pre {
   width: max-content;
   min-width: 100%;
   padding: 10px;
-  font: 14px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 12px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .terminal-html pre,
 .terminal-html pre > div,
 .terminal-html pre > div > div {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
-  font-size: 14px !important;
+  font-size: 12px !important;
   line-height: 1.18 !important;
   white-space: pre;
 }
@@ -644,11 +645,11 @@ pre {
 .sdk-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 8px;
   height: 100%;
   min-height: 100%;
   min-width: 0;
-  padding: 12px;
+  padding: 8px;
 }
 
 .sdk-panel > header {
@@ -672,13 +673,13 @@ pre {
 .sdk-facts dt,
 .sdk-transcript time {
   color: #9ca8b6;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .sdk-state {
   border: 1px solid #3a4350;
   border-radius: 999px;
-  padding: 5px 9px;
+  padding: 4px 7px;
   text-transform: uppercase;
 }
 
@@ -699,8 +700,8 @@ pre {
   border-radius: 7px;
   background: #2b1719;
   color: #ffd3d3;
-  padding: 9px;
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .sdk-yaml-panel {
@@ -713,6 +714,11 @@ pre {
 
 #sdk-yaml-editor {
   height: 100%;
+}
+
+#sdk-yaml-editor .cm-editor {
+  font-size: 10px !important;
+  line-height: 1.35 !important;
 }
 
 .sdk-facts {
@@ -737,7 +743,7 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .sdk-overview,
@@ -748,7 +754,7 @@ pre {
 
 .sdk-overview h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: 14px;
 }
 
 .sdk-metrics {
@@ -763,7 +769,7 @@ pre {
   background: #151a20;
   color: #c8d2df;
   padding: 5px 9px;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .sdk-overview article,
@@ -820,7 +826,7 @@ textarea {
   min-height: 48px;
   height: 48px;
   resize: none;
-  font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 12px/1.32 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .composer-actions {
@@ -842,7 +848,7 @@ textarea {
   min-height: 30px;
   height: 30px;
   padding: 0 9px;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .key-overflow {
@@ -920,11 +926,11 @@ textarea {
   }
 
   .brand {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .app-title {
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .status-pill {
