@@ -2,6 +2,7 @@
 // uses Bun's PTY support directly instead of tmux. xyz remains the reference
 // for the session browser and command/chord interaction ideas.
 import * as fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as net from "node:net";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -123,7 +124,8 @@ type ServerState = {
   nextStdinEventId: number;
 };
 
-const host = "127.0.0.1";
+const loopbackHost = "127.0.0.1";
+const defaultBindHost = "0.0.0.0";
 const defaultPort = 7373;
 const defaultCols = 120;
 const defaultRows = 42;
@@ -135,8 +137,10 @@ const state: ServerState = {
   nextStdoutEventId: 1,
   nextStdinEventId: 1,
 };
-const server: ReturnType<typeof Bun.serve> = startServer({ port: cli.port, state });
-const baseUrl = `http://${host}:${server.port}`;
+const server: ReturnType<typeof Bun.serve> = startServer({ host: cli.host, port: cli.port, state });
+const serverPort = Number(server.port || cli.port);
+const baseUrl = `http://${formatHostForUrl(localAccessHost(cli.host))}:${serverPort}`;
+const accessBaseUrls = getAccessBaseUrls(serverPort, cli.host, baseUrl);
 
 if (cli.rest.length > 0) {
   const [command, ...args] = cli.rest;
@@ -149,13 +153,13 @@ if (cli.rest.length > 0) {
     rows: defaultRows,
     fakeAgent: cli.fakeAgent,
   });
-  const sessionUrl = `${baseUrl}/sessions/${session.id}`;
-  process.stdout.write(`${sessionUrl}\n`);
+  const sessionUrls = accessBaseUrls.map((url) => `${url}/sessions/${session.id}`);
+  process.stdout.write(`${sessionUrls.join("\n")}\n`);
   if (cli.open) {
-    openUrl(sessionUrl);
+    openUrl(sessionUrls[0] || `${baseUrl}/sessions/${session.id}`);
   }
 } else {
-  process.stdout.write(`${baseUrl}\n`);
+  process.stdout.write(`${accessBaseUrls.join("\n")}\n`);
   if (cli.open) {
     openUrl(baseUrl);
   }
@@ -166,10 +170,10 @@ process.on("SIGINT", () => void shutdown(server, state));
 
 await new Promise(() => {});
 
-function startServer(options: { port: number; state: ServerState }): ReturnType<typeof Bun.serve> {
+function startServer(options: { host: string; port: number; state: ServerState }): ReturnType<typeof Bun.serve> {
   return Bun.serve({
     port: options.port,
-    hostname: host,
+    hostname: options.host,
     development: true,
     routes: {
       "/": homepage,
@@ -659,7 +663,7 @@ async function prepareSessionSdk(command: string, args: string[], env: Record<st
     const parsed = Number(current || 0);
     return parsed > 0 ? String(parsed) : String(await getFreePort());
   });
-  await ensureCliOption(prepared, "--hostname", async (current) => current || host);
+  await ensureCliOption(prepared, "--hostname", async (current) => current || loopbackHost);
   const now = new Date().toISOString();
 
   return {
@@ -668,7 +672,7 @@ async function prepareSessionSdk(command: string, args: string[], env: Record<st
     payload: {
       provider: "opencode" as const,
       state: "ready" as const,
-      baseUrl: `http://${host}:${port}`,
+      baseUrl: `http://${loopbackHost}:${port}`,
       externalSessionId: "",
       status: "",
       updatedAt: now,
@@ -1191,7 +1195,7 @@ async function getFreePort() {
   return await new Promise<number>((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
-    server.listen(0, host, () => {
+    server.listen(0, loopbackHost, () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
       server.close(() => resolve(port));
@@ -1260,8 +1264,45 @@ function isAgentName(value: unknown): value is AgentName {
   return value === "opencode" || value === "claude" || value === "codex";
 }
 
+function getAccessBaseUrls(port: number, bindHost: string, fallbackBaseUrl: string) {
+  const urls = [fallbackBaseUrl];
+  if (isWildcardHost(bindHost)) {
+    for (const ip of getTailscaleIpAddresses()) {
+      urls.push(`http://${formatHostForUrl(ip)}:${port}`);
+    }
+  }
+  return [...new Set(urls)];
+}
+
+function getTailscaleIpAddresses() {
+  try {
+    return execFileSync("tailscale", ["ip", "-4"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function localAccessHost(bindHost: string) {
+  return isWildcardHost(bindHost) ? loopbackHost : bindHost;
+}
+
+function isWildcardHost(bindHost: string) {
+  return bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "";
+}
+
+function formatHostForUrl(host: string) {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
 function parseCliArgs(argv: string[]) {
   let port = Number(process.env.TUIUI_PORT || defaultPort);
+  let host = String(process.env.TUIUI_HOST || defaultBindHost);
   let open = false;
   let fakeAgent: AgentName | "" = "";
   const rest: string[] = [];
@@ -1280,6 +1321,11 @@ function parseCliArgs(argv: string[]) {
       index += 1;
       continue;
     }
+    if (arg === "--host" || arg === "--hostname") {
+      host = String(argv[index + 1] || host);
+      index += 1;
+      continue;
+    }
     if (arg === "--fakeagent") {
       const candidate = argv[index + 1] || "";
       fakeAgent = isAgentName(candidate) ? candidate : "";
@@ -1289,7 +1335,7 @@ function parseCliArgs(argv: string[]) {
     rest.push(arg);
   }
 
-  return { port, open, fakeAgent, rest };
+  return { port, host, open, fakeAgent, rest };
 }
 
 function openUrl(url: string) {

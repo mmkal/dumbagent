@@ -286,7 +286,7 @@ async function createContext() {
     PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
     HOME: path.join(tempRoot, "home"),
   };
-  const server = spawn("bun", ["run", path.join(rootDir, "cli.ts"), "--port", String(port)], {
+  const server = spawn("bun", ["run", path.join(rootDir, "cli.ts"), "--host", "127.0.0.1", "--port", String(port)], {
     cwd: workspaceDir,
     env,
     stdio: ["ignore", "pipe", "pipe"],
