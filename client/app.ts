@@ -130,6 +130,8 @@ let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
 let renderer = readRendererPreference();
 let dataEditorView: EditorView | null = null;
+let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
+let dataEditorDoc = "";
 
 void renderRoute();
 
@@ -438,11 +440,11 @@ function renderSessionPayload(payload: SessionPayload | null) {
 }
 
 function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
-  destroyDataEditor();
   screen.className = "screen sdk-screen";
 
   const sdk = payload.sdk;
   if (!sdk.provider) {
+    destroyDataEditor();
     screen.innerHTML = `
       <section class="sdk-panel unavailable" data-testid="sdk-summary">
         <header>
@@ -454,31 +456,65 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
     return;
   }
 
-  screen.innerHTML = `
-    <section class="sdk-panel" data-testid="sdk-summary">
-      <header>
-        <div>
-          <strong>${escapeHtml(sdk.provider)} SDK</strong>
-          <span>${escapeHtml(sdk.baseUrl || "")}</span>
-        </div>
-        <span class="sdk-state" data-state="${escapeAttr(sdk.state)}">${escapeHtml(sdk.state)}</span>
-        <button type="button" class="secondary-button" data-action="sdk-refresh">Refresh SDK</button>
-        <button type="button" class="secondary-button" data-action="sdk-summarize" ${sdk.sidecarSummary.status === "running" ? "disabled" : ""}>Summarize via SDK</button>
-      </header>
-      ${sdk.error ? `<p class="sdk-error">${escapeHtml(sdk.error)}</p>` : ""}
-      <section class="sdk-yaml-panel" aria-label="SDK data YAML panel">
-        <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
+  const yamlDoc = stringifyYaml(buildSdkYamlData(payload), null, { lineWidth: 0 });
+  const existingEditorHost = screen.querySelector("#sdk-yaml-editor");
+  if (!existingEditorHost || dataEditorKind !== "sdk-yaml") {
+    destroyDataEditor();
+    screen.innerHTML = `
+      <section class="sdk-panel" data-testid="sdk-summary">
+        <header>
+          <div>
+            <strong><span data-sdk-provider></span> SDK</strong>
+            <span data-sdk-base-url></span>
+          </div>
+          <span class="sdk-state" data-sdk-state></span>
+          <button type="button" class="secondary-button" data-action="sdk-refresh">Refresh SDK</button>
+          <button type="button" class="secondary-button" data-action="sdk-summarize">Summarize via SDK</button>
+        </header>
+        <p class="sdk-error" data-sdk-error hidden></p>
+        <section class="sdk-yaml-panel" aria-label="SDK data YAML panel">
+          <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
+        </section>
       </section>
-    </section>
-  `;
+    `;
 
-  screen.querySelector<HTMLButtonElement>("[data-action='sdk-refresh']")?.addEventListener("click", () => {
-    void refreshSdk(payload.id);
-  });
-  screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']")?.addEventListener("click", () => {
-    void summarizeSdk(payload.id);
-  });
-  mountYamlEditor("sdk-yaml-editor", stringifyYaml(buildSdkYamlData(payload), null, { lineWidth: 0 }));
+    screen.querySelector<HTMLButtonElement>("[data-action='sdk-refresh']")?.addEventListener("click", () => {
+      void refreshSdk(payload.id);
+    });
+    screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']")?.addEventListener("click", () => {
+      void summarizeSdk(payload.id);
+    });
+    mountYamlEditor("sdk-yaml-editor", yamlDoc);
+  } else {
+    updateDataEditorDoc(yamlDoc);
+  }
+  updateSdkChrome(screen, payload);
+}
+
+function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
+  const sdk = payload.sdk;
+  const provider = screen.querySelector<HTMLElement>("[data-sdk-provider]");
+  if (provider) {
+    provider.textContent = sdk.provider;
+  }
+  const baseUrl = screen.querySelector<HTMLElement>("[data-sdk-base-url]");
+  if (baseUrl) {
+    baseUrl.textContent = sdk.baseUrl || "";
+  }
+  const state = screen.querySelector<HTMLElement>("[data-sdk-state]");
+  if (state) {
+    state.textContent = sdk.state;
+    state.dataset.state = sdk.state;
+  }
+  const summarize = screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']");
+  if (summarize) {
+    summarize.disabled = sdk.sidecarSummary.status === "running";
+  }
+  const error = screen.querySelector<HTMLElement>("[data-sdk-error]");
+  if (error) {
+    error.hidden = !sdk.error;
+    error.textContent = sdk.error;
+  }
 }
 
 function buildSdkYamlData(payload: SessionPayload) {
@@ -537,6 +573,26 @@ function mountYamlEditor(hostId: string, doc: string) {
       ],
     }),
   });
+  dataEditorKind = "sdk-yaml";
+  dataEditorDoc = doc;
+}
+
+function updateDataEditorDoc(doc: string) {
+  if (!dataEditorView || dataEditorDoc === doc) {
+    return;
+  }
+  const scrollTop = dataEditorView.scrollDOM.scrollTop;
+  const scrollLeft = dataEditorView.scrollDOM.scrollLeft;
+  dataEditorView.dispatch({
+    changes: {
+      from: 0,
+      to: dataEditorView.state.doc.length,
+      insert: doc,
+    },
+  });
+  dataEditorView.scrollDOM.scrollTop = scrollTop;
+  dataEditorView.scrollDOM.scrollLeft = scrollLeft;
+  dataEditorDoc = doc;
 }
 
 async function refreshSdk(sessionId: string) {
@@ -580,10 +636,11 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
   if (!host) {
     return;
   }
+  const jsonDoc = JSON.stringify(model, null, 2);
   dataEditorView = new EditorView({
     parent: host,
     state: EditorState.create({
-      doc: JSON.stringify(model, null, 2),
+      doc: jsonDoc,
       extensions: [
         basicSetup,
         vsCodeDark,
@@ -595,6 +652,8 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
       ],
     }),
   });
+  dataEditorKind = "blocks-json";
+  dataEditorDoc = jsonDoc;
 }
 
 function editorTheme() {
@@ -659,6 +718,8 @@ function editorTheme() {
 function destroyDataEditor() {
   dataEditorView?.destroy();
   dataEditorView = null;
+  dataEditorKind = "";
+  dataEditorDoc = "";
 }
 
 function renderSemanticScreen(screen: SemanticScreen) {

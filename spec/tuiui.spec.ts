@@ -109,6 +109,14 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   });
   expect(payload.sdk.forks[0].forkSessionId).not.toBe(payload.sdk.externalSessionId);
   expect(payload.sdk.summary).toMatchObject({ messageCount: 2 });
+  const yamlBeforeRefresh = await page.locator("#sdk-yaml-editor .cm-content").textContent();
+  const scrollBeforeRefresh = await scrollYamlEditorToBottom(page);
+  expect(scrollBeforeRefresh).toBeGreaterThan(0);
+  await markYamlEditorContent(page);
+  await page.getByRole("button", { name: "Refresh SDK" }).click();
+  await expect.poll(async () => await page.locator("#sdk-yaml-editor .cm-content").textContent()).not.toBe(yamlBeforeRefresh);
+  expect(await isYamlEditorContentMarked(page)).toBe(true);
+  expect(await getYamlEditorScrollTop(page)).toBeGreaterThanOrEqual(scrollBeforeRefresh - 1);
   await expect(page.locator("#sdk-yaml-editor .cm-foldGutter span[title='Fold line']").first()).toBeVisible();
   await expect(page.locator("#sdk-yaml-editor .cm-editor.cm-lineWrapping")).toHaveCount(0);
 });
@@ -133,6 +141,29 @@ async function measureFirstLineGutterOffset(page: Page) {
     const lineCenter = lineBox.top + lineBox.height / 2;
     const gutterCenter = gutterBox.top + gutterBox.height / 2;
     return Math.abs(lineCenter - gutterCenter);
+  });
+}
+
+async function scrollYamlEditorToBottom(page: Page) {
+  return await page.locator("#sdk-yaml-editor .cm-scroller").evaluate((scroller) => {
+    scroller.scrollTop = scroller.scrollHeight;
+    return scroller.scrollTop;
+  });
+}
+
+async function getYamlEditorScrollTop(page: Page) {
+  return await page.locator("#sdk-yaml-editor .cm-scroller").evaluate((scroller) => scroller.scrollTop);
+}
+
+async function markYamlEditorContent(page: Page) {
+  await page.locator("#sdk-yaml-editor").evaluate((editor) => {
+    (editor.querySelector(".cm-content") as any).__tuiuiStillMounted = true;
+  });
+}
+
+async function isYamlEditorContentMarked(page: Page) {
+  return await page.locator("#sdk-yaml-editor").evaluate((editor) => {
+    return Boolean((editor.querySelector(".cm-content") as any).__tuiuiStillMounted);
   });
 }
 
