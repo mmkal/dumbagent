@@ -81,6 +81,36 @@ test("can type directly into the terminal renderer", async ({ page, ctx }) => {
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 });
 
+test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Ask anything");
+
+  await expect.poll(async () => {
+    return await page.locator("#screen").evaluate((screen) => {
+      const style = getComputedStyle(screen);
+      return {
+        overflowY: style.overflowY,
+        outerVerticalScroll: screen.scrollHeight > screen.clientHeight + 1,
+        outerHorizontalScroll: screen.scrollWidth > screen.clientWidth + 1,
+      };
+    });
+  }).toMatchObject({
+    overflowY: "hidden",
+    outerVerticalScroll: false,
+    outerHorizontalScroll: false,
+  });
+
+  const scrollTop = await page.locator("#screen").evaluate((screen) => {
+    screen.scrollTop = 100;
+    return screen.scrollTop;
+  });
+  expect(scrollTop).toBe(0);
+});
+
 test("can pause and resume live session events", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 

@@ -3,6 +3,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import { stringify as stringifyYaml } from "yaml";
@@ -138,6 +139,7 @@ let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
 let lastTerminalResizeKey = "";
 let xterm: XtermTerminal | null = null;
+let xtermFit: FitAddon | null = null;
 let xtermReady: Promise<XtermTerminal> | null = null;
 let xtermSessionId = "";
 let xtermLastStdoutEventId = 0;
@@ -531,7 +533,10 @@ async function ensureXterm(payload: SessionPayload) {
       allowTransparency: false,
       scrollback: 5000,
     });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
     term.open(host);
+    xtermFit = fit;
     term.onData((text) => {
       if (!xtermSessionId) {
         return;
@@ -562,9 +567,7 @@ async function syncXterm(payload: SessionPayload) {
   const newestId = newestEvent ? newestEvent.id : 0;
   if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
     term.reset();
-    const stdout = payload.stdoutEvents.length
-      ? { events: payload.stdoutEvents }
-      : await fetchStdoutEvents(payload.id, 0);
+    const stdout = await fetchStdoutEvents(payload.id, 0).catch(() => ({ events: payload.stdoutEvents }));
     if (xtermSessionId !== payload.id) {
       return;
     }
@@ -605,6 +608,7 @@ async function fetchStdoutEvents(sessionId: string, after: number) {
 function destroyXterm() {
   xterm?.dispose();
   xterm = null;
+  xtermFit = null;
   xtermReady = null;
   xtermSessionId = "";
   xtermLastStdoutEventId = 0;
@@ -681,6 +685,14 @@ async function resizeTerminalToScreen(sessionId: string) {
 }
 
 function measureTerminalGrid(screen: HTMLElement, terminal: HTMLElement) {
+  const dimensions = xtermFit?.proposeDimensions();
+  if (dimensions) {
+    return {
+      cols: dimensions.cols,
+      rows: dimensions.rows,
+    };
+  }
+
   const screenStyles = getComputedStyle(screen);
   const terminalStyles = getComputedStyle(terminal);
   const horizontalPadding = parsePixel(screenStyles.paddingLeft) + parsePixel(screenStyles.paddingRight)
