@@ -232,6 +232,13 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return streamSessionEvents(session);
   }
 
+  if (request.method === "GET" && action === "stdout") {
+    const after = Number(url.searchParams.get("after") || 0);
+    return Response.json({
+      events: session.stdoutEvents.filter((event) => event.id > after),
+    });
+  }
+
   if (request.method === "POST" && action === "send") {
     const body = await request.json() as { text?: string; submit?: boolean };
     await sendToSession(state, session, String(body.text || ""), body.submit !== false);

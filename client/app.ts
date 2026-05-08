@@ -3,6 +3,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import { stringify as stringifyYaml } from "yaml";
 
@@ -23,7 +24,7 @@ type SessionPayload = {
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
   stdinEvents: Array<{ id: number; text: string; createdAt: string }>;
-  stdoutEvents: Array<{ id: number; displayText: string; createdAt: string }>;
+  stdoutEvents: Array<{ id: number; chunk: string; displayText: string; createdAt: string }>;
 };
 
 type SessionSdkPayload = {
@@ -136,6 +137,11 @@ let eventsPaused = false;
 let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
 let lastTerminalResizeKey = "";
+let xterm: XtermTerminal | null = null;
+let xtermReady: Promise<XtermTerminal> | null = null;
+let xtermSessionId = "";
+let xtermLastStdoutEventId = 0;
+let xtermInputQueue = Promise.resolve();
 
 void renderRoute();
 
@@ -148,6 +154,7 @@ async function renderRoute() {
   events = null;
   eventsPaused = false;
   stopTerminalAutoResize();
+  destroyXterm();
   activeSession = null;
   destroyDataEditor();
 
@@ -455,14 +462,14 @@ function renderSessionPayload(payload: SessionPayload | null) {
   const screen = document.getElementById("screen")!;
   if (renderer === "terminal") {
     destroyDataEditor();
-    screen.className = "screen terminal-screen";
-    screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${payload.renderedHtml || `<pre>${escapeHtml(payload.renderedText)}</pre>`}</div>`;
-    startTerminalAutoResize(payload.id);
+    renderTerminalScreen(screen, payload);
   } else if (renderer === "sdk") {
     stopTerminalAutoResize();
+    destroyXterm();
     renderSdkScreen(screen, payload);
   } else {
     stopTerminalAutoResize();
+    destroyXterm();
     destroyDataEditor();
     screen.className = "screen semantic-screen";
     screen.innerHTML = renderSemanticScreen(payload.semantic);
@@ -476,6 +483,129 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (stdoutLog) {
     stdoutLog.textContent = payload.stdoutEvents.map((event) => event.displayText ? `[${formatTime(event.createdAt)}] ${event.displayText}` : "").filter(Boolean).join("\n\n");
   }
+}
+
+function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
+  screen.className = "screen terminal-screen";
+  if (!screen.querySelector("#xterm-terminal")) {
+    destroyXterm();
+    screen.innerHTML = `
+      <div class="terminal-xterm-wrap" data-testid="rendered-terminal">
+        <div id="xterm-terminal" class="terminal-host"></div>
+        <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
+      </div>
+    `;
+  }
+
+  const snapshot = screen.querySelector<HTMLElement>(".terminal-text-snapshot");
+  if (snapshot) {
+    snapshot.textContent = payload.renderedText;
+  }
+  void syncXterm(payload);
+  startTerminalAutoResize(payload.id);
+}
+
+async function ensureXterm(payload: SessionPayload) {
+  const host = document.getElementById("xterm-terminal");
+  if (!host) {
+    return null;
+  }
+  if (xterm && xtermSessionId === payload.id) {
+    return xterm;
+  }
+  destroyXterm();
+  xtermSessionId = payload.id;
+  xtermReady = import("@xterm/xterm").then(({ Terminal }) => {
+    const term = new Terminal({
+      cols: payload.cols,
+      rows: payload.rows,
+      convertEol: false,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 14,
+      lineHeight: 1.18,
+      theme: {
+        background: "#0a0a0a",
+        foreground: "#d6deeb",
+      },
+      allowTransparency: false,
+      scrollback: 5000,
+    });
+    term.open(host);
+    term.onData((text) => {
+      if (!xtermSessionId) {
+        return;
+      }
+      const sessionId = xtermSessionId;
+      xtermInputQueue = xtermInputQueue
+        .then(() => api(`/api/sessions/${sessionId}/send`, {
+          method: "POST",
+          body: JSON.stringify({ text, submit: false }),
+        }))
+        .then(() => undefined)
+        .catch(() => undefined);
+    });
+    xterm = term;
+    return term;
+  });
+  return await xtermReady;
+}
+
+async function syncXterm(payload: SessionPayload) {
+  const term = await ensureXterm(payload);
+  if (!term || xtermSessionId !== payload.id) {
+    return;
+  }
+
+  term.resize(payload.cols, payload.rows);
+  const newestEvent = payload.stdoutEvents[payload.stdoutEvents.length - 1];
+  const newestId = newestEvent ? newestEvent.id : 0;
+  if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
+    term.reset();
+    const stdout = await fetchStdoutEvents(payload.id, 0);
+    if (xtermSessionId !== payload.id) {
+      return;
+    }
+    for (const event of stdout.events) {
+      await writeXterm(term, event.chunk);
+      xtermLastStdoutEventId = event.id;
+    }
+    return;
+  }
+
+  if (newestId === xtermLastStdoutEventId) {
+    return;
+  }
+
+  const visibleEvents = payload.stdoutEvents.filter((event) => event.id > xtermLastStdoutEventId);
+  const events = visibleEvents.length
+    ? visibleEvents
+    : (await fetchStdoutEvents(payload.id, xtermLastStdoutEventId)).events;
+  if (xtermSessionId !== payload.id) {
+    return;
+  }
+  for (const event of events) {
+    await writeXterm(term, event.chunk);
+    xtermLastStdoutEventId = event.id;
+  }
+}
+
+async function writeXterm(term: XtermTerminal, text: string) {
+  await new Promise<void>((resolve) => {
+    term.write(text, () => resolve());
+  });
+}
+
+async function fetchStdoutEvents(sessionId: string, after: number) {
+  return await api<{ events: SessionPayload["stdoutEvents"] }>(`/api/sessions/${sessionId}/stdout?after=${after}`);
+}
+
+function destroyXterm() {
+  xterm?.dispose();
+  xterm = null;
+  xtermReady = null;
+  xtermSessionId = "";
+  xtermLastStdoutEventId = 0;
+  xtermInputQueue = Promise.resolve();
 }
 
 function startTerminalAutoResize(sessionId: string) {
@@ -527,7 +657,7 @@ function scheduleTerminalResize(sessionId: string) {
 
 async function resizeTerminalToScreen(sessionId: string) {
   const screen = document.getElementById("screen");
-  const terminal = screen?.querySelector<HTMLElement>(".terminal-html");
+  const terminal = screen?.querySelector<HTMLElement>(".terminal-xterm-wrap");
   if (!screen || !terminal) {
     return;
   }

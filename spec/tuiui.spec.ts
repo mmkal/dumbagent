@@ -67,6 +67,20 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect(page.getByTestId("semantic-section").filter({ hasText: "key escape" })).toBeVisible();
 });
 
+test("can type directly into the terminal renderer", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Ask anything");
+
+  await page.locator(".terminal-host").click();
+  await page.keyboard.type("what is one plus two");
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+});
+
 test("can pause and resume live session events", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
