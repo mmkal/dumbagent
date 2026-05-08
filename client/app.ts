@@ -133,6 +133,9 @@ let dataEditorView: EditorView | null = null;
 let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
 let dataEditorDoc = "";
 let eventsPaused = false;
+let terminalResizeObserver: ResizeObserver | null = null;
+let terminalResizeTimer: number | null = null;
+let lastTerminalResizeKey = "";
 
 void renderRoute();
 
@@ -144,6 +147,7 @@ async function renderRoute() {
   events?.close();
   events = null;
   eventsPaused = false;
+  stopTerminalAutoResize();
   activeSession = null;
   destroyDataEditor();
 
@@ -453,9 +457,12 @@ function renderSessionPayload(payload: SessionPayload | null) {
     destroyDataEditor();
     screen.className = "screen terminal-screen";
     screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${payload.renderedHtml || `<pre>${escapeHtml(payload.renderedText)}</pre>`}</div>`;
+    startTerminalAutoResize(payload.id);
   } else if (renderer === "sdk") {
+    stopTerminalAutoResize();
     renderSdkScreen(screen, payload);
   } else {
+    stopTerminalAutoResize();
     destroyDataEditor();
     screen.className = "screen semantic-screen";
     screen.innerHTML = renderSemanticScreen(payload.semantic);
@@ -469,6 +476,109 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (stdoutLog) {
     stdoutLog.textContent = payload.stdoutEvents.map((event) => event.displayText ? `[${formatTime(event.createdAt)}] ${event.displayText}` : "").filter(Boolean).join("\n\n");
   }
+}
+
+function startTerminalAutoResize(sessionId: string) {
+  const screen = document.getElementById("screen");
+  if (!screen || terminalResizeObserver) {
+    scheduleTerminalResize(sessionId);
+    return;
+  }
+  if (typeof ResizeObserver !== "undefined") {
+    terminalResizeObserver = new ResizeObserver(() => {
+      scheduleTerminalResize(sessionId);
+    });
+    terminalResizeObserver.observe(screen);
+  } else {
+    window.addEventListener("resize", handleWindowTerminalResize);
+  }
+  scheduleTerminalResize(sessionId);
+}
+
+function stopTerminalAutoResize() {
+  terminalResizeObserver?.disconnect();
+  terminalResizeObserver = null;
+  lastTerminalResizeKey = "";
+  window.removeEventListener("resize", handleWindowTerminalResize);
+  if (terminalResizeTimer !== null) {
+    window.clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = null;
+  }
+}
+
+function handleWindowTerminalResize() {
+  if (activeSession && renderer === "terminal") {
+    scheduleTerminalResize(activeSession.id);
+  }
+}
+
+function scheduleTerminalResize(sessionId: string) {
+  if (renderer !== "terminal") {
+    return;
+  }
+  if (terminalResizeTimer !== null) {
+    window.clearTimeout(terminalResizeTimer);
+  }
+  terminalResizeTimer = window.setTimeout(() => {
+    terminalResizeTimer = null;
+    void resizeTerminalToScreen(sessionId);
+  }, 120);
+}
+
+async function resizeTerminalToScreen(sessionId: string) {
+  const screen = document.getElementById("screen");
+  const terminal = screen?.querySelector<HTMLElement>(".terminal-html");
+  if (!screen || !terminal) {
+    return;
+  }
+  const grid = measureTerminalGrid(screen, terminal);
+  if (!grid) {
+    return;
+  }
+  const resizeKey = `${grid.cols}x${grid.rows}`;
+  if (resizeKey === lastTerminalResizeKey) {
+    return;
+  }
+  lastTerminalResizeKey = resizeKey;
+  await api(`/api/sessions/${sessionId}/resize`, {
+    method: "POST",
+    body: JSON.stringify(grid),
+  });
+}
+
+function measureTerminalGrid(screen: HTMLElement, terminal: HTMLElement) {
+  const screenStyles = getComputedStyle(screen);
+  const terminalStyles = getComputedStyle(terminal);
+  const horizontalPadding = parsePixel(screenStyles.paddingLeft) + parsePixel(screenStyles.paddingRight)
+    + parsePixel(terminalStyles.paddingLeft) + parsePixel(terminalStyles.paddingRight);
+  const verticalPadding = parsePixel(screenStyles.paddingTop) + parsePixel(screenStyles.paddingBottom)
+    + parsePixel(terminalStyles.paddingTop) + parsePixel(terminalStyles.paddingBottom);
+
+  const measure = document.createElement("span");
+  measure.textContent = "MMMMMMMMMM";
+  measure.style.position = "absolute";
+  measure.style.visibility = "hidden";
+  measure.style.whiteSpace = "pre";
+  measure.style.font = terminalStyles.font;
+  measure.style.lineHeight = terminalStyles.lineHeight;
+  terminal.append(measure);
+  const box = measure.getBoundingClientRect();
+  measure.remove();
+
+  const cellWidth = box.width / 10;
+  const cellHeight = box.height;
+  if (!cellWidth || !cellHeight) {
+    return null;
+  }
+
+  return {
+    cols: Math.floor((screen.clientWidth - horizontalPadding) / cellWidth),
+    rows: Math.floor((screen.clientHeight - verticalPadding) / cellHeight),
+  };
+}
+
+function parsePixel(value: string) {
+  return Number.parseFloat(value) || 0;
 }
 
 function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {

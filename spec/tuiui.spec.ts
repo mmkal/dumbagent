@@ -32,6 +32,10 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await page.getByRole("button", { name: "Launch" }).click();
 
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).not.toBe(120);
+  const resizedPayload = await fetchSessionPayload(page);
+  expect(resizedPayload.cols).toBeGreaterThanOrEqual(40);
+  expect(resizedPayload.rows).toBeGreaterThanOrEqual(12);
   await page.getByRole("button", { name: "HTML" }).click();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "Ask anything" })).toBeVisible();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "semantic-agent" })).toBeVisible();
