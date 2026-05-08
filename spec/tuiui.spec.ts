@@ -154,9 +154,13 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await expect(page.getByRole("button", { name: "Scroll terminal down" })).toBeVisible();
   const terminalRowsBefore = await page.locator(".xterm-rows").textContent();
   await page.getByRole("button", { name: "Scroll terminal up" }).click();
+  let terminalRowsAfterUp = "";
   await expect.poll(async () => {
-    return await page.locator(".xterm-rows").textContent();
+    terminalRowsAfterUp = await page.locator(".xterm-rows").textContent() || "";
+    return terminalRowsAfterUp;
   }).not.toBe(terminalRowsBefore);
+  expect(terminalRowsAfterUp).toContain("scrollback line 70");
+  expect(terminalRowsAfterUp).not.toContain("scrollback line 07");
   await page.getByRole("button", { name: "Scroll terminal down" }).click();
   await expect.poll(async () => {
     return await page.locator(".xterm-rows").textContent();
@@ -168,6 +172,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       screenBorderTop: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderTopWidth,
       screenBorderBottom: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderBottomWidth,
       composerBorder: getComputedStyle(document.querySelector<HTMLElement>(".composer")!).borderTopWidth,
+      textareaFontSize: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).fontSize,
     };
   });
   expect(chrome).toMatchObject({
@@ -175,6 +180,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     screenBorderTop: "0px",
     screenBorderBottom: "0px",
     composerBorder: "0px",
+    textareaFontSize: "16px",
   });
 
   const keyMetrics = await page.locator(".keys").evaluate((keys) => {

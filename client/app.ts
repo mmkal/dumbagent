@@ -146,6 +146,7 @@ let xtermSessionId = "";
 let xtermLastStdoutEventId = 0;
 let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
+let terminalScrollAnimationFrame: number | null = null;
 
 void renderRoute();
 
@@ -421,7 +422,7 @@ function bindSessionControls(sessionId: string) {
 
   document.querySelectorAll<HTMLButtonElement>("[data-terminal-scroll]").forEach((button) => {
     button.addEventListener("click", () => {
-      scrollTerminalByPage(Number(button.dataset.terminalScroll || 0));
+      scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
     });
   });
 }
@@ -532,12 +533,12 @@ function renderSessionPayload(payload: SessionPayload | null) {
   }
 }
 
-function scrollTerminalByPage(direction: number) {
+function scrollTerminalByStep(direction: number) {
   if (!direction) {
     return;
   }
   if (xterm) {
-    xterm.scrollPages(direction);
+    smoothScrollXterm(direction * 8);
     return;
   }
 
@@ -546,9 +547,35 @@ function scrollTerminalByPage(direction: number) {
     return;
   }
   fallback.scrollBy({
-    top: direction * fallback.clientHeight * 0.85,
+    top: direction * fallback.clientHeight * 0.22,
     behavior: "smooth",
   });
+}
+
+function smoothScrollXterm(totalLines: number) {
+  cancelTerminalScrollAnimation();
+  const direction = Math.sign(totalLines);
+  const lineCount = Math.abs(totalLines);
+  const durationMs = 170;
+  const startedAt = performance.now();
+  let appliedLines = 0;
+
+  function tick(now: number) {
+    const progress = Math.min(1, (now - startedAt) / durationMs);
+    const targetLines = Math.round(lineCount * progress);
+    const delta = targetLines - appliedLines;
+    if (delta && xterm) {
+      xterm.scrollLines(direction * delta);
+      appliedLines = targetLines;
+    }
+    if (progress < 1 && appliedLines < lineCount) {
+      terminalScrollAnimationFrame = window.requestAnimationFrame(tick);
+      return;
+    }
+    terminalScrollAnimationFrame = null;
+  }
+
+  terminalScrollAnimationFrame = window.requestAnimationFrame(tick);
 }
 
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
@@ -693,6 +720,7 @@ function trimTerminalHtmlToRows(html: string, rows: number) {
 }
 
 function destroyXterm() {
+  cancelTerminalScrollAnimation();
   xterm?.dispose();
   xterm = null;
   xtermFit = null;
@@ -701,6 +729,14 @@ function destroyXterm() {
   xtermLastStdoutEventId = 0;
   xtermInputQueue = Promise.resolve();
   xtermSyncQueue = Promise.resolve();
+}
+
+function cancelTerminalScrollAnimation() {
+  if (terminalScrollAnimationFrame === null) {
+    return;
+  }
+  window.cancelAnimationFrame(terminalScrollAnimationFrame);
+  terminalScrollAnimationFrame = null;
 }
 
 function startTerminalAutoResize(sessionId: string) {
