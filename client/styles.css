@@ -464,13 +464,16 @@ pre {
 
 .sdk-screen {
   background: #0d1014;
+  overflow: hidden;
 }
 
 .sdk-panel {
   display: grid;
-  align-content: start;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
+  height: 100%;
   min-height: 100%;
+  min-width: 0;
   padding: 12px;
 }
 
@@ -524,6 +527,18 @@ pre {
   color: #ffd3d3;
   padding: 9px;
   font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.sdk-yaml-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #2c333d;
+  border-radius: 7px;
+}
+
+#sdk-yaml-editor {
+  height: 100%;
 }
 
 .sdk-facts {

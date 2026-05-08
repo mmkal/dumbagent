@@ -31,7 +31,7 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await expect(page.getByRole("textbox", { name: "Working directory" })).toHaveValue(fs.realpathSync(ctx.workspaceDir));
   await page.getByRole("button", { name: "Launch" }).click();
 
-  await expect(page).toHaveURL(/\/sessions\/[a-f0-9-]+$/);
+  await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
   await page.getByRole("button", { name: "HTML" }).click();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "Ask anything" })).toBeVisible();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "semantic-agent" })).toBeVisible();
@@ -89,8 +89,13 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await page.getByRole("button", { name: "Summary" }).click();
   await page.getByRole("button", { name: "Refresh SDK" }).click();
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
-  await expect(page.getByTestId("sdk-summary")).toContainText("what is one plus two");
-  await expect(page.getByTestId("sdk-summary")).toContainText("three");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: what is one plus two");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("three");
+  await page.getByRole("button", { name: "Summarize via SDK" }).click();
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("method: opencode.session.summarize", { timeout: 20_000 });
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("status: completed");
+  await expect(page.locator("#sdk-yaml-editor .cm-foldGutter span[title='Fold line']").first()).toBeVisible();
+  await expect(page.locator("#sdk-yaml-editor .cm-editor.cm-lineWrapping")).toHaveCount(0);
 });
 
 async function createContext() {

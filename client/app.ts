@@ -1,7 +1,9 @@
 import { json } from "@codemirror/lang-json";
+import { yaml } from "@codemirror/lang-yaml";
 import { foldGutter } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers } from "@codemirror/view";
+import { stringify as stringifyYaml } from "yaml";
 
 type SessionPayload = {
   id: string;
@@ -31,6 +33,7 @@ type SessionSdkPayload = {
   status: string;
   updatedAt: string;
   error: string;
+  sidecarSummary: SidecarSummaryState;
   summary: null | {
     provider: "opencode";
     title: string;
@@ -43,6 +46,17 @@ type SessionSdkPayload = {
     transcript: Array<{ id: string; role: string; createdAt: string; text: string }>;
     diffs: Array<{ file: string; additions: number; deletions: number }>;
   };
+};
+
+type SidecarSummaryState = {
+  implemented: boolean;
+  status: "idle" | "running" | "completed" | "error";
+  method: "" | "opencode.session.summarize";
+  providerSessionId: string;
+  updatedAt: string;
+  result: boolean | null;
+  error: string;
+  note: string;
 };
 
 type SemanticScreen = {
@@ -99,7 +113,7 @@ const app = document.getElementById("app")!;
 let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
 let renderer = readRendererPreference();
-let blocksEditorView: EditorView | null = null;
+let dataEditorView: EditorView | null = null;
 
 void renderRoute();
 
@@ -111,7 +125,7 @@ async function renderRoute() {
   events?.close();
   events = null;
   activeSession = null;
-  destroyBlocksEditor();
+  destroyDataEditor();
 
   const sessionMatch = location.pathname.match(/^\/sessions\/([^/]+)$/);
   if (sessionMatch) {
@@ -127,7 +141,7 @@ async function renderRoute() {
 }
 
 function renderMissingSession(message: string) {
-  destroyBlocksEditor();
+  destroyDataEditor();
   app.innerHTML = `
     <main class="layout home-layout">
       <header class="topbar">
@@ -386,13 +400,13 @@ function renderSessionPayload(payload: SessionPayload | null) {
 
   const screen = document.getElementById("screen")!;
   if (renderer === "terminal") {
-    destroyBlocksEditor();
+    destroyDataEditor();
     screen.className = "screen terminal-screen";
     screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${payload.renderedHtml || `<pre>${escapeHtml(payload.renderedText)}</pre>`}</div>`;
   } else if (renderer === "sdk") {
     renderSdkScreen(screen, payload);
   } else {
-    destroyBlocksEditor();
+    destroyDataEditor();
     screen.className = "screen semantic-screen";
     screen.innerHTML = renderSemanticScreen(payload.semantic);
   }
@@ -408,7 +422,7 @@ function renderSessionPayload(payload: SessionPayload | null) {
 }
 
 function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
-  destroyBlocksEditor();
+  destroyDataEditor();
   screen.className = "screen sdk-screen";
 
   const sdk = payload.sdk;
@@ -424,7 +438,6 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
     return;
   }
 
-  const summary = sdk.summary;
   screen.innerHTML = `
     <section class="sdk-panel" data-testid="sdk-summary">
       <header>
@@ -434,24 +447,12 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         </div>
         <span class="sdk-state" data-state="${escapeAttr(sdk.state)}">${escapeHtml(sdk.state)}</span>
         <button type="button" class="secondary-button" data-action="sdk-refresh">Refresh SDK</button>
-        <button type="button" class="secondary-button" data-action="sdk-summarize" ${summary ? "" : "disabled"}>Summarize via SDK</button>
+        <button type="button" class="secondary-button" data-action="sdk-summarize" ${sdk.sidecarSummary.status === "running" ? "disabled" : ""}>Summarize via SDK</button>
       </header>
       ${sdk.error ? `<p class="sdk-error">${escapeHtml(sdk.error)}</p>` : ""}
-      <dl class="sdk-facts">
-        <div>
-          <dt>provider session</dt>
-          <dd>${escapeHtml(sdk.externalSessionId || "(not resolved)")}</dd>
-        </div>
-        <div>
-          <dt>provider status</dt>
-          <dd>${escapeHtml(sdk.status || "(unknown)")}</dd>
-        </div>
-        <div>
-          <dt>updated</dt>
-          <dd>${escapeHtml(sdk.updatedAt ? new Date(sdk.updatedAt).toLocaleTimeString() : "(never)")}</dd>
-        </div>
-      </dl>
-      ${summary ? renderSdkSummary(summary) : `<p class="empty">Refresh once OpenCode has created a session.</p>`}
+      <section class="sdk-yaml-panel" aria-label="SDK data YAML panel">
+        <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
+      </section>
     </section>
   `;
 
@@ -461,42 +462,64 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']")?.addEventListener("click", () => {
     void summarizeSdk(payload.id);
   });
+  mountYamlEditor("sdk-yaml-editor", stringifyYaml(buildSdkYamlData(payload), null, { lineWidth: 0 }));
 }
 
-function renderSdkSummary(summary: NonNullable<SessionSdkPayload["summary"]>) {
-  return `
-    <section class="sdk-overview">
-      <h2>${escapeHtml(summary.title || "OpenCode session")}</h2>
-      <div class="sdk-metrics">
-        <span>${summary.messageCount} messages</span>
-        <span>${summary.diffCount} files changed</span>
-        <span>+${summary.additions} / -${summary.deletions}</span>
-      </div>
-      ${summary.latestUserText ? `
-        <article>
-          <strong>Latest user message</strong>
-          <pre>${escapeHtml(summary.latestUserText)}</pre>
-        </article>
-      ` : ""}
-      ${summary.latestAssistantText ? `
-        <article>
-          <strong>Latest assistant message</strong>
-          <pre>${escapeHtml(summary.latestAssistantText)}</pre>
-        </article>
-      ` : ""}
-      <section class="sdk-transcript" aria-label="SDK transcript">
-        ${summary.transcript.map((message) => `
-          <article>
-            <header>
-              <strong>${escapeHtml(message.role || "message")}</strong>
-              <time>${escapeHtml(message.createdAt ? new Date(message.createdAt).toLocaleTimeString() : "")}</time>
-            </header>
-            <pre>${escapeHtml(message.text || "(no text parts)")}</pre>
-          </article>
-        `).join("")}
-      </section>
-    </section>
-  `;
+function buildSdkYamlData(payload: SessionPayload) {
+  return {
+    tuiui: {
+      sessionId: payload.id,
+      title: payload.title,
+      command: [payload.command, ...payload.args].join(" "),
+      cwd: payload.cwd,
+      lifecycle: payload.lifecycle,
+      status: payload.status,
+      exitCode: payload.exitCode,
+    },
+    sdk: {
+      provider: payload.sdk.provider || null,
+      state: payload.sdk.state,
+      baseUrl: payload.sdk.baseUrl || null,
+      providerSessionId: payload.sdk.externalSessionId || null,
+      providerStatus: payload.sdk.status || null,
+      updatedAt: payload.sdk.updatedAt || null,
+      error: payload.sdk.error || null,
+    },
+    sidecarSummary: payload.sdk.sidecarSummary,
+    providerData: payload.sdk.summary ? {
+      title: payload.sdk.summary.title,
+      messageCount: payload.sdk.summary.messageCount,
+      diffCount: payload.sdk.summary.diffCount,
+      additions: payload.sdk.summary.additions,
+      deletions: payload.sdk.summary.deletions,
+      latestUserText: payload.sdk.summary.latestUserText,
+      latestAssistantText: payload.sdk.summary.latestAssistantText,
+      transcript: payload.sdk.summary.transcript,
+      diffs: payload.sdk.summary.diffs,
+    } : null,
+  };
+}
+
+function mountYamlEditor(hostId: string, doc: string) {
+  const host = document.getElementById(hostId);
+  if (!host) {
+    return;
+  }
+  dataEditorView = new EditorView({
+    parent: host,
+    state: EditorState.create({
+      doc,
+      extensions: [
+        yaml(),
+        lineNumbers(),
+        foldGutter(),
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+        EditorView.contentAttributes.of({ "aria-label": "SDK data YAML" }),
+        editorTheme(),
+      ],
+    }),
+  });
 }
 
 async function refreshSdk(sessionId: string) {
@@ -510,7 +533,7 @@ async function summarizeSdk(sessionId: string) {
 }
 
 function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
-  destroyBlocksEditor();
+  destroyDataEditor();
   screen.className = "screen blocks-screen";
   screen.innerHTML = `
     <div class="blocks-layout">
@@ -540,7 +563,7 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
   if (!host) {
     return;
   }
-  blocksEditorView = new EditorView({
+  dataEditorView = new EditorView({
     parent: host,
     state: EditorState.create({
       doc: JSON.stringify(model, null, 2),
@@ -551,36 +574,40 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         EditorView.contentAttributes.of({ "aria-label": "Parsed blocks JSON" }),
-        EditorView.theme({
-          "&": {
-            height: "100%",
-            backgroundColor: "#0d1014",
-            color: "#eef2f7",
-            fontSize: "12px",
-          },
-          ".cm-scroller": {
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          },
-          ".cm-gutters": {
-            backgroundColor: "#11161d",
-            color: "#748293",
-            borderRightColor: "#2c333d",
-          },
-          ".cm-activeLineGutter": {
-            backgroundColor: "#18202a",
-          },
-          ".cm-activeLine": {
-            backgroundColor: "#151d26",
-          },
-        }),
+        editorTheme(),
       ],
     }),
   });
 }
 
-function destroyBlocksEditor() {
-  blocksEditorView?.destroy();
-  blocksEditorView = null;
+function editorTheme() {
+  return EditorView.theme({
+    "&": {
+      height: "100%",
+      backgroundColor: "#0d1014",
+      color: "#eef2f7",
+      fontSize: "12px",
+    },
+    ".cm-scroller": {
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    },
+    ".cm-gutters": {
+      backgroundColor: "#11161d",
+      color: "#748293",
+      borderRightColor: "#2c333d",
+    },
+    ".cm-activeLineGutter": {
+      backgroundColor: "#18202a",
+    },
+    ".cm-activeLine": {
+      backgroundColor: "#151d26",
+    },
+  });
+}
+
+function destroyDataEditor() {
+  dataEditorView?.destroy();
+  dataEditorView = null;
 }
 
 function renderSemanticScreen(screen: SemanticScreen) {

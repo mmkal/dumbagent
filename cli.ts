@@ -4,7 +4,6 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { stripVTControlCharacters } from "node:util";
 import { createOpencodeClient } from "@opencode-ai/sdk/client";
@@ -13,6 +12,14 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { createFakeAgent, parseRequest, type AgentName, type FakeAgent } from "fakeagent";
 import homepage from "./public/index.html";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
+import {
+  buildOpenCodeSummary,
+  pickOpenCodeModel,
+  resolveOpenCodeSession,
+  type AgentSessionSummary,
+  type SessionSdkPayload,
+} from "./src/opencode-sdk.ts";
+import { createSessionId } from "./src/session-id.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
 
@@ -57,39 +64,6 @@ type SessionPayload = {
   sdk: SessionSdkPayload;
   stdinEvents: StdinEvent[];
   stdoutEvents: StdoutEvent[];
-};
-
-type SessionSdkPayload = {
-  provider: "" | "opencode";
-  state: "unavailable" | "ready" | "connected" | "not-found" | "error";
-  baseUrl: string;
-  externalSessionId: string;
-  status: string;
-  updatedAt: string;
-  error: string;
-  summary: AgentSessionSummary | null;
-};
-
-type AgentSessionSummary = {
-  provider: "opencode";
-  title: string;
-  messageCount: number;
-  diffCount: number;
-  additions: number;
-  deletions: number;
-  latestUserText: string;
-  latestAssistantText: string;
-  transcript: Array<{
-    id: string;
-    role: string;
-    createdAt: string;
-    text: string;
-  }>;
-  diffs: Array<{
-    file: string;
-    additions: number;
-    deletions: number;
-  }>;
 };
 
 type RuntimeSession = {
@@ -305,7 +279,7 @@ async function createSession(input: CreateSessionInput) {
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
 
-  const id = randomUUID();
+  const id = createSessionId();
   const now = new Date().toISOString();
   const cols = Math.max(40, Math.min(240, Math.round(input.cols)));
   const rows = Math.max(12, Math.min(80, Math.round(input.rows)));
@@ -327,9 +301,12 @@ async function createSession(input: CreateSessionInput) {
     const fakeSpawn = fakeAgent.getSpawnArgs(input.fakeAgent);
     command = fakeSpawn.command;
     args = [...fakeSpawn.args, ...input.args];
+    const fakeAgentRoot = path.join("/tmp", "tuiui-fakeagent", id);
     env = {
       ...env,
       ...fakeSpawn.env,
+      XDG_CONFIG_HOME: path.join(fakeAgentRoot, "config"),
+      XDG_DATA_HOME: path.join(fakeAgentRoot, "data"),
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
@@ -465,11 +442,6 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
   session.updatedAt = now;
   if (text.trim()) {
     session.title = session.title === path.basename(session.command) ? text.trim().slice(0, 100) : session.title;
-  }
-
-  if (submit && session.sdk.provider === "opencode" && text && await sendOpenCodePromptThroughSdk(session, text)) {
-    publishSession(session);
-    return;
   }
 
   if (submit && path.basename(session.command).toLowerCase() === "opencode" && text) {
@@ -638,6 +610,7 @@ async function prepareSessionSdk(command: string, args: string[]) {
     return parsed > 0 ? String(parsed) : String(await getFreePort());
   });
   await ensureCliOption(prepared, "--hostname", async (current) => current || host);
+  const now = new Date().toISOString();
 
   return {
     command,
@@ -648,8 +621,9 @@ async function prepareSessionSdk(command: string, args: string[]) {
       baseUrl: `http://${host}:${port}`,
       externalSessionId: "",
       status: "",
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       error: "",
+      sidecarSummary: createIdleSidecarSummary(now),
       summary: null,
     },
   };
@@ -664,7 +638,21 @@ function createUnavailableSdkPayload(): SessionSdkPayload {
     status: "",
     updatedAt: "",
     error: "",
+    sidecarSummary: createIdleSidecarSummary(""),
     summary: null,
+  };
+}
+
+function createIdleSidecarSummary(updatedAt: string): SessionSdkPayload["sidecarSummary"] {
+  return {
+    implemented: false,
+    status: "idle",
+    method: "",
+    providerSessionId: "",
+    updatedAt,
+    result: null,
+    error: "",
+    note: "No sidecar summary has been requested for this session.",
   };
 }
 
@@ -701,7 +689,13 @@ async function refreshSessionSdk(session: RuntimeSession) {
   try {
     const client = createOpenCodeClient(session);
     const sessions = responseData<any[]>(await client.session.list({ responseStyle: "data", throwOnError: true }));
-    const target = resolveOpenCodeSession(session, sessions);
+    const target = resolveOpenCodeSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
     if (!target) {
       session.sdk = {
         ...session.sdk,
@@ -755,55 +749,88 @@ async function refreshSessionSdk(session: RuntimeSession) {
 
 async function summarizeSessionWithSdk(session: RuntimeSession) {
   if (session.sdk.provider !== "opencode") {
-    throw new Error("No SDK provider is available for this session.");
+    session.sdk = createUnavailableSdkPayload();
+    publishSession(session);
+    return;
   }
 
-  const client = createOpenCodeClient(session);
-  const sessions = responseData<any[]>(await client.session.list({ responseStyle: "data", throwOnError: true }));
-  const target = resolveOpenCodeSession(session, sessions);
-  if (!target) {
-    throw new Error("OpenCode session not found.");
-  }
-  session.sdk.externalSessionId = String(target.id || "");
+  session.sdk = {
+    ...session.sdk,
+    sidecarSummary: {
+      implemented: true,
+      status: "running",
+      method: "opencode.session.summarize",
+      providerSessionId: session.sdk.externalSessionId,
+      updatedAt: new Date().toISOString(),
+      result: null,
+      error: "",
+      note: "Calling OpenCode session.summarize for the matched provider session.",
+    },
+  };
+  publishSession(session);
 
-  const messages = responseData<any[]>(await client.session.messages({
-    path: { id: session.sdk.externalSessionId },
-    responseStyle: "data",
-    throwOnError: true,
-  }));
-  const model = pickOpenCodeModel(messages);
-  if (!model) {
-    throw new Error("OpenCode has not recorded a model for this session yet.");
-  }
-
-  await client.session.summarize({
-    path: { id: session.sdk.externalSessionId },
-    body: model,
-    responseStyle: "data",
-    throwOnError: true,
-  });
-  await refreshSessionSdk(session);
-}
-
-async function sendOpenCodePromptThroughSdk(session: RuntimeSession, text: string) {
   try {
     const client = createOpenCodeClient(session);
-    await client.tui.appendPrompt({
-      body: { text },
+    const sessions = responseData<any[]>(await client.session.list({ responseStyle: "data", throwOnError: true }));
+    const target = resolveOpenCodeSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      throw new Error("OpenCode server is reachable, but no matching session is visible yet.");
+    }
+
+    const providerSessionId = String(target.id || "");
+    session.sdk.externalSessionId = providerSessionId;
+    const messages = responseData<any[]>(await client.session.messages({
+      path: { id: providerSessionId },
       responseStyle: "data",
       throwOnError: true,
-    });
-    await client.tui.submitPrompt({ responseStyle: "data", throwOnError: true });
+    }));
+    const model = pickOpenCodeModel(messages);
+    if (!model) {
+      throw new Error("OpenCode session has no model metadata yet; send a prompt before summarizing.");
+    }
+
+    const result = responseData<boolean>(await client.session.summarize({
+      path: { id: providerSessionId },
+      body: model,
+      responseStyle: "data",
+      throwOnError: true,
+    }));
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: providerSessionId,
+      sidecarSummary: {
+        implemented: true,
+        status: "completed",
+        method: "opencode.session.summarize",
+        providerSessionId,
+        updatedAt: new Date().toISOString(),
+        result,
+        error: "",
+        note: "OpenCode session.summarize compacts the provider session; providerData is refreshed after completion.",
+      },
+    };
     await refreshSessionSdk(session);
-    return true;
   } catch (error) {
     session.sdk = {
       ...session.sdk,
-      state: "error",
-      updatedAt: new Date().toISOString(),
-      error: String(error instanceof Error ? error.message : error),
+      sidecarSummary: {
+        implemented: true,
+        status: "error",
+        method: "opencode.session.summarize",
+        providerSessionId: session.sdk.externalSessionId,
+        updatedAt: new Date().toISOString(),
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        note: "OpenCode session.summarize failed before producing a sidecar summary result.",
+      },
     };
-    return false;
+    publishSession(session);
   }
 }
 
@@ -816,89 +843,6 @@ function createOpenCodeClient(session: RuntimeSession) {
 
 function responseData<T>(value: any): T {
   return value && typeof value === "object" && "data" in value ? value.data as T : value as T;
-}
-
-function resolveOpenCodeSession(session: RuntimeSession, sessions: any[]) {
-  if (session.sdk.externalSessionId) {
-    const existing = sessions.find((candidate) => candidate.id === session.sdk.externalSessionId);
-    if (existing) {
-      return existing;
-    }
-  }
-  const matchingDirectory = sessions.filter((candidate) => path.resolve(String(candidate.directory || "")) === session.cwd);
-  const candidates = matchingDirectory.length ? matchingDirectory : sessions;
-  return candidates.sort((left, right) => Number(right.time?.updated || right.time?.created || 0) - Number(left.time?.updated || left.time?.created || 0))[0] || null;
-}
-
-function buildOpenCodeSummary(session: any, messages: any[], diffs: any[]): AgentSessionSummary {
-  const transcript = messages.map((message) => {
-    const info = message.info || {};
-    const parts = Array.isArray(message.parts) ? message.parts : [];
-    return {
-      id: String(info.id || ""),
-      role: String(info.role || ""),
-      createdAt: info.time?.created ? new Date(Number(info.time.created)).toISOString() : "",
-      text: parts.map(extractOpenCodePartText).filter(Boolean).join("\n").slice(0, 20_000),
-    };
-  });
-  const latestUserText = [...transcript].reverse().find((message) => message.role === "user" && message.text)?.text || "";
-  const latestAssistantText = [...transcript].reverse().find((message) => message.role === "assistant" && message.text)?.text || "";
-  const normalizedDiffs = diffs.map((diff) => ({
-    file: String(diff.file || ""),
-    additions: Number(diff.additions || 0),
-    deletions: Number(diff.deletions || 0),
-  }));
-
-  return {
-    provider: "opencode",
-    title: String(session.title || "OpenCode session"),
-    messageCount: messages.length,
-    diffCount: normalizedDiffs.length,
-    additions: normalizedDiffs.reduce((total, diff) => total + diff.additions, 0),
-    deletions: normalizedDiffs.reduce((total, diff) => total + diff.deletions, 0),
-    latestUserText,
-    latestAssistantText,
-    transcript,
-    diffs: normalizedDiffs,
-  };
-}
-
-function extractOpenCodePartText(part: any) {
-  if (!part || typeof part !== "object") {
-    return "";
-  }
-  if (part.type === "text") {
-    return String(part.text || "");
-  }
-  if (part.type === "tool") {
-    return `[tool ${String(part.tool || part.callID || "")}]`;
-  }
-  if (part.type === "file") {
-    return `[file ${String(part.url || part.filename || "")}]`;
-  }
-  if (part.type) {
-    return `[${String(part.type)}]`;
-  }
-  return "";
-}
-
-function pickOpenCodeModel(messages: any[]) {
-  for (const message of [...messages].reverse()) {
-    const info = message.info || {};
-    if (info.model?.providerID && info.model?.modelID) {
-      return {
-        providerID: String(info.model.providerID),
-        modelID: String(info.model.modelID),
-      };
-    }
-    if (info.providerID && info.modelID) {
-      return {
-        providerID: String(info.providerID),
-        modelID: String(info.modelID),
-      };
-    }
-  }
-  return null;
 }
 
 async function getFreePort() {
