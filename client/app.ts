@@ -1,8 +1,9 @@
 import { json } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
-import { foldGutter } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
+import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import { basicSetup } from "codemirror";
 import { stringify as stringifyYaml } from "yaml";
 
 type SessionPayload = {
@@ -526,9 +527,9 @@ function mountYamlEditor(hostId: string, doc: string) {
     state: EditorState.create({
       doc,
       extensions: [
+        basicSetup,
+        vsCodeDark,
         yaml(),
-        lineNumbers(),
-        foldGutter(),
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         EditorView.contentAttributes.of({ "aria-label": "SDK data YAML" }),
@@ -584,9 +585,9 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
     state: EditorState.create({
       doc: JSON.stringify(model, null, 2),
       extensions: [
+        basicSetup,
+        vsCodeDark,
         json(),
-        lineNumbers(),
-        foldGutter(),
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         EditorView.contentAttributes.of({ "aria-label": "Parsed blocks JSON" }),
@@ -603,14 +604,48 @@ function editorTheme() {
       backgroundColor: "#0d1014",
       color: "#eef2f7",
       fontSize: "12px",
+      lineHeight: "1.45",
     },
     ".cm-scroller": {
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    },
+    ".cm-content": {
+      padding: "6px 0",
+    },
+    ".cm-line": {
+      lineHeight: "1.45",
+      padding: "0 10px",
     },
     ".cm-gutters": {
       backgroundColor: "#11161d",
       color: "#748293",
       borderRightColor: "#2c333d",
+      lineHeight: "1.45",
+    },
+    ".cm-gutterElement": {
+      lineHeight: "1.45",
+      paddingTop: "0 !important",
+      paddingBottom: "0 !important",
+    },
+    ".cm-lineNumbers .cm-gutterElement": {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      minWidth: "32px",
+      paddingLeft: "7px !important",
+      paddingRight: "7px !important",
+    },
+    ".cm-foldGutter .cm-gutterElement": {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      minWidth: "18px",
+    },
+    ".cm-foldGutter span": {
+      display: "inline-flex",
+      alignItems: "center",
+      height: "1.45em",
+      lineHeight: "1",
     },
     ".cm-activeLineGutter": {
       backgroundColor: "#18202a",

@@ -90,6 +90,8 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await page.getByRole("button", { name: "Refresh SDK" }).click();
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: what is one plus two");
+  await expect(page.locator("#sdk-yaml-editor .cm-line span[class]").first()).toBeVisible();
+  expect(await measureFirstLineGutterOffset(page)).toBeLessThanOrEqual(1);
   const refreshedPayload = await fetchSessionPayload(page);
   expect(refreshedPayload.sdk.summary.latestAssistantText).toContain("three");
   await page.getByRole("button", { name: "Summarize via SDK" }).click();
@@ -115,6 +117,22 @@ async function fetchSessionPayload(page: Page) {
   return await page.evaluate(async () => {
     const id = location.pathname.split("/").at(-1);
     return await fetch(`/api/sessions/${id}`).then((response) => response.json());
+  });
+}
+
+async function measureFirstLineGutterOffset(page: Page) {
+  return await page.locator("#sdk-yaml-editor").evaluate((editor) => {
+    const line = editor.querySelector(".cm-line");
+    const lineNumber = [...editor.querySelectorAll(".cm-lineNumbers .cm-gutterElement")]
+      .find((element) => element.textContent?.trim() === "1");
+    if (!line || !lineNumber) {
+      return 999;
+    }
+    const lineBox = line.getBoundingClientRect();
+    const gutterBox = lineNumber.getBoundingClientRect();
+    const lineCenter = lineBox.top + lineBox.height / 2;
+    const gutterCenter = gutterBox.top + gutterBox.height / 2;
+    return Math.abs(lineCenter - gutterCenter);
   });
 }
 
