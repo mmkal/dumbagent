@@ -9,18 +9,33 @@ export type SessionSdkPayload = {
   updatedAt: string;
   error: string;
   sidecarSummary: SidecarSummaryState;
+  forks: SidecarSummaryFork[];
   summary: AgentSessionSummary | null;
 };
 
 export type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.summarize";
-  providerSessionId: string;
+  method: "" | "opencode.session.fork+summarize";
+  sourceSessionId: string;
+  forkSessionId: string;
   updatedAt: string;
   result: boolean | null;
   error: string;
   note: string;
+};
+
+export type SidecarSummaryFork = {
+  provider: "opencode";
+  purpose: "sidecarSummary";
+  sourceSessionId: string;
+  forkSessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "created" | "summarized" | "error";
+  result: boolean | null;
+  error: string;
+  summary: AgentSessionSummary | null;
 };
 
 export type AgentSessionSummary = {

@@ -34,6 +34,7 @@ type SessionSdkPayload = {
   updatedAt: string;
   error: string;
   sidecarSummary: SidecarSummaryState;
+  forks: SidecarSummaryFork[];
   summary: null | {
     provider: "opencode";
     title: string;
@@ -51,12 +52,26 @@ type SessionSdkPayload = {
 type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.summarize";
-  providerSessionId: string;
+  method: "" | "opencode.session.fork+summarize";
+  sourceSessionId: string;
+  forkSessionId: string;
   updatedAt: string;
   result: boolean | null;
   error: string;
   note: string;
+};
+
+type SidecarSummaryFork = {
+  provider: "opencode";
+  purpose: "sidecarSummary";
+  sourceSessionId: string;
+  forkSessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "created" | "summarized" | "error";
+  result: boolean | null;
+  error: string;
+  summary: SessionSdkPayload["summary"];
 };
 
 type SemanticScreen = {
@@ -486,6 +501,7 @@ function buildSdkYamlData(payload: SessionPayload) {
       error: payload.sdk.error || null,
     },
     sidecarSummary: payload.sdk.sidecarSummary,
+    forks: payload.sdk.forks,
     providerData: payload.sdk.summary ? {
       title: payload.sdk.summary.title,
       messageCount: payload.sdk.summary.messageCount,

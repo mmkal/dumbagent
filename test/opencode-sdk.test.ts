@@ -31,6 +31,21 @@ test("honors an explicit OpenCode --session argument", () => {
   expect(session).toMatchObject({ id: "chosen-session" });
 });
 
+test("keeps the resolved OpenCode source session when a newer fork exists", () => {
+  const session = resolveOpenCodeSession({
+    cwd: "/repo",
+    tuiCreatedAt: "2026-05-08T14:28:00.000Z",
+    currentExternalSessionId: "source-session",
+    args: [],
+    sessions: [
+      providerSession("source-session", "/repo", "2026-05-08T14:28:05.000Z", "2026-05-08T14:28:10.000Z"),
+      providerSession("summary-fork", "/repo", "2026-05-08T14:29:00.000Z", "2026-05-08T14:29:30.000Z"),
+    ],
+  });
+
+  expect(session).toMatchObject({ id: "source-session" });
+});
+
 test("does not treat compaction as the latest user message", () => {
   const summary = buildOpenCodeSummary(
     { title: "TUI UI test" },

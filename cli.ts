@@ -624,6 +624,7 @@ async function prepareSessionSdk(command: string, args: string[]) {
       updatedAt: now,
       error: "",
       sidecarSummary: createIdleSidecarSummary(now),
+      forks: [],
       summary: null,
     },
   };
@@ -639,6 +640,7 @@ function createUnavailableSdkPayload(): SessionSdkPayload {
     updatedAt: "",
     error: "",
     sidecarSummary: createIdleSidecarSummary(""),
+    forks: [],
     summary: null,
   };
 }
@@ -648,7 +650,8 @@ function createIdleSidecarSummary(updatedAt: string): SessionSdkPayload["sidecar
     implemented: false,
     status: "idle",
     method: "",
-    providerSessionId: "",
+    sourceSessionId: "",
+    forkSessionId: "",
     updatedAt,
     result: null,
     error: "",
@@ -759,16 +762,19 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
     sidecarSummary: {
       implemented: true,
       status: "running",
-      method: "opencode.session.summarize",
-      providerSessionId: session.sdk.externalSessionId,
+      method: "opencode.session.fork+summarize",
+      sourceSessionId: session.sdk.externalSessionId,
+      forkSessionId: "",
       updatedAt: new Date().toISOString(),
       result: null,
       error: "",
-      note: "Calling OpenCode session.summarize for the matched provider session.",
+      note: "Resolving the OpenCode source session before creating a sidecar summary fork.",
     },
   };
   publishSession(session);
 
+  let sourceSessionId = session.sdk.externalSessionId;
+  let forkSessionId = "";
   try {
     const client = createOpenCodeClient(session);
     const sessions = responseData<any[]>(await client.session.list({ responseStyle: "data", throwOnError: true }));
@@ -783,55 +789,147 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
       throw new Error("OpenCode server is reachable, but no matching session is visible yet.");
     }
 
-    const providerSessionId = String(target.id || "");
-    session.sdk.externalSessionId = providerSessionId;
-    const messages = responseData<any[]>(await client.session.messages({
-      path: { id: providerSessionId },
+    sourceSessionId = String(target.id || "");
+    session.sdk.externalSessionId = sourceSessionId;
+    const sourceMessages = responseData<any[]>(await client.session.messages({
+      path: { id: sourceSessionId },
       responseStyle: "data",
       throwOnError: true,
     }));
-    const model = pickOpenCodeModel(messages);
+    const model = pickOpenCodeModel(sourceMessages);
     if (!model) {
       throw new Error("OpenCode session has no model metadata yet; send a prompt before summarizing.");
     }
 
+    const forked = responseData<any>(await client.session.fork({
+      path: { id: sourceSessionId },
+      body: {},
+      responseStyle: "data",
+      throwOnError: true,
+    }));
+    forkSessionId = String(forked.id || "");
+    if (!forkSessionId) {
+      throw new Error("OpenCode created a fork without returning a session id.");
+    }
+
+    const forkCreatedAt = new Date().toISOString();
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceSessionId,
+      forks: upsertSidecarFork(session.sdk.forks, {
+        provider: "opencode",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        createdAt: forkCreatedAt,
+        updatedAt: forkCreatedAt,
+        status: "created",
+        result: null,
+        error: "",
+        summary: null,
+      }),
+      sidecarSummary: {
+        implemented: true,
+        status: "running",
+        method: "opencode.session.fork+summarize",
+        sourceSessionId,
+        forkSessionId,
+        updatedAt: forkCreatedAt,
+        result: null,
+        error: "",
+        note: "Fork created; running OpenCode session.summarize on the fork so the live TUI session is left untouched.",
+      },
+    };
+    publishSession(session);
+
     const result = responseData<boolean>(await client.session.summarize({
-      path: { id: providerSessionId },
+      path: { id: forkSessionId },
       body: model,
       responseStyle: "data",
       throwOnError: true,
     }));
+    const [forkMessages, forkDiffs] = await Promise.all([
+      client.session.messages({
+        path: { id: forkSessionId },
+        responseStyle: "data",
+        throwOnError: true,
+      }).then(responseData<any[]>).catch(() => []),
+      client.session.diff({
+        path: { id: forkSessionId },
+        responseStyle: "data",
+        throwOnError: true,
+      }).then(responseData<any[]>).catch(() => []),
+    ]);
+    const summarizedAt = new Date().toISOString();
     session.sdk = {
       ...session.sdk,
-      externalSessionId: providerSessionId,
+      externalSessionId: sourceSessionId,
+      forks: upsertSidecarFork(session.sdk.forks, {
+        provider: "opencode",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        createdAt: forkCreatedAt,
+        updatedAt: summarizedAt,
+        status: "summarized",
+        result,
+        error: "",
+        summary: buildOpenCodeSummary(forked, forkMessages, forkDiffs),
+      }),
       sidecarSummary: {
         implemented: true,
         status: "completed",
-        method: "opencode.session.summarize",
-        providerSessionId,
-        updatedAt: new Date().toISOString(),
+        method: "opencode.session.fork+summarize",
+        sourceSessionId,
+        forkSessionId,
+        updatedAt: summarizedAt,
         result,
         error: "",
-        note: "OpenCode session.summarize compacts the provider session; providerData is refreshed after completion.",
+        note: "OpenCode session.summarize compacted the fork. The live provider session remains the source session.",
       },
     };
     await refreshSessionSdk(session);
   } catch (error) {
+    const failedAt = new Date().toISOString();
+    const existingFork = session.sdk.forks.find((candidate) => candidate.forkSessionId === forkSessionId);
     session.sdk = {
       ...session.sdk,
+      forks: forkSessionId ? upsertSidecarFork(session.sdk.forks, {
+        provider: "opencode",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        createdAt: existingFork ? existingFork.createdAt : failedAt,
+        updatedAt: failedAt,
+        status: "error",
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        summary: existingFork ? existingFork.summary : null,
+      }) : session.sdk.forks,
       sidecarSummary: {
         implemented: true,
         status: "error",
-        method: "opencode.session.summarize",
-        providerSessionId: session.sdk.externalSessionId,
-        updatedAt: new Date().toISOString(),
+        method: "opencode.session.fork+summarize",
+        sourceSessionId,
+        forkSessionId,
+        updatedAt: failedAt,
         result: null,
         error: String(error instanceof Error ? error.message : error),
-        note: "OpenCode session.summarize failed before producing a sidecar summary result.",
+        note: "OpenCode forked sidecar summary failed before producing a result.",
       },
     };
     publishSession(session);
   }
+}
+
+function upsertSidecarFork(
+  forks: SessionSdkPayload["forks"],
+  fork: SessionSdkPayload["forks"][number],
+): SessionSdkPayload["forks"] {
+  return [
+    ...forks.filter((candidate) => candidate.forkSessionId !== fork.forkSessionId),
+    fork,
+  ];
 }
 
 function createOpenCodeClient(session: RuntimeSession) {

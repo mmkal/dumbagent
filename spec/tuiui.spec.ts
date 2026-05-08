@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 
 type FixtureContext = {
   rootDir: string;
@@ -90,13 +90,33 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await page.getByRole("button", { name: "Refresh SDK" }).click();
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: what is one plus two");
-  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("three");
+  const refreshedPayload = await fetchSessionPayload(page);
+  expect(refreshedPayload.sdk.summary.latestAssistantText).toContain("three");
   await page.getByRole("button", { name: "Summarize via SDK" }).click();
-  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("method: opencode.session.summarize", { timeout: 20_000 });
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("method: opencode.session.fork+summarize", { timeout: 20_000 });
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("status: completed");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("forks:");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("forkSessionId:");
+  const payload = await fetchSessionPayload(page);
+  expect(payload.sdk.forks[0]).toMatchObject({
+    provider: "opencode",
+    purpose: "sidecarSummary",
+    sourceSessionId: payload.sdk.externalSessionId,
+    status: "summarized",
+    result: true,
+  });
+  expect(payload.sdk.forks[0].forkSessionId).not.toBe(payload.sdk.externalSessionId);
+  expect(payload.sdk.summary).toMatchObject({ messageCount: 2 });
   await expect(page.locator("#sdk-yaml-editor .cm-foldGutter span[title='Fold line']").first()).toBeVisible();
   await expect(page.locator("#sdk-yaml-editor .cm-editor.cm-lineWrapping")).toHaveCount(0);
 });
+
+async function fetchSessionPayload(page: Page) {
+  return await page.evaluate(async () => {
+    const id = location.pathname.split("/").at(-1);
+    return await fetch(`/api/sessions/${id}`).then((response) => response.json());
+  });
+}
 
 async function createContext() {
   const rootDir = path.resolve(import.meta.dirname, "..");
