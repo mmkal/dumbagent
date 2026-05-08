@@ -37,7 +37,7 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   expect(resizedPayload.cols).toBeGreaterThanOrEqual(40);
   expect(resizedPayload.rows).toBeGreaterThanOrEqual(12);
   expect(countSerializedHtmlRows(resizedPayload.renderedHtml)).toBeLessThanOrEqual(resizedPayload.rows);
-  await page.getByRole("button", { name: "HTML" }).click();
+  await clickSessionMenuButton(page, "HTML");
   await expect(page.getByTestId("semantic-section").filter({ hasText: "Ask anything" })).toBeVisible();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "semantic-agent" })).toBeVisible();
 
@@ -45,12 +45,12 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByTestId("semantic-section").filter({ hasText: "three" })).toBeVisible();
-  await page.getByRole("button", { name: "Summary" }).click();
+  await clickSessionMenuButton(page, "Summary");
   await expect(page.getByTestId("sdk-summary")).toContainText("No SDK adapter");
-  await page.getByRole("button", { name: "TTY" }).click();
+  await clickSessionMenuButton(page, "TTY");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 
-  await page.getByRole("button", { name: "Logs" }).click();
+  await clickSessionMenuButton(page, "Logs");
   await expect(page.getByTestId("stdin-log")).toContainText("what is one plus two");
   await expect(page.getByTestId("stdout-log")).toContainText("three");
 });
@@ -60,7 +60,7 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
 
   await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
   await page.getByRole("button", { name: "Launch" }).click();
-  await page.getByRole("button", { name: "HTML" }).click();
+  await clickSessionMenuButton(page, "HTML");
   await expect(page.getByTestId("semantic-section").filter({ hasText: "Ask anything" })).toBeVisible();
 
   await page.getByRole("button", { name: "esc" }).click();
@@ -117,20 +117,83 @@ test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page,
   expect(scrollTop).toBe(0);
 });
 
+test("keeps mobile session chrome compact without document scrolling", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Ask anything");
+
+  await expect.poll(async () => {
+    return await page.evaluate(() => {
+      const doc = document.documentElement;
+      const body = document.body;
+      const app = document.getElementById("app")!;
+      const screen = document.getElementById("screen")!;
+      const terminalViewport = document.querySelector<HTMLElement>(".xterm-viewport");
+      return {
+        documentScrolls: doc.scrollHeight > doc.clientHeight + 1,
+        bodyScrolls: body.scrollHeight > body.clientHeight + 1,
+        appScrolls: app.scrollHeight > app.clientHeight + 1,
+        horizontalScrolls: doc.scrollWidth > doc.clientWidth + 1,
+        screenOverflowY: getComputedStyle(screen).overflowY,
+        terminalOwnsScroll: Boolean(terminalViewport && getComputedStyle(terminalViewport).overflowY === "auto"),
+      };
+    });
+  }).toMatchObject({
+    documentScrolls: false,
+    bodyScrolls: false,
+    appScrolls: false,
+    horizontalScrolls: false,
+    screenOverflowY: "hidden",
+    terminalOwnsScroll: true,
+  });
+
+  const keyMetrics = await page.locator(".keys").evaluate((keys) => {
+    const visibleBoxes = [...keys.querySelectorAll<HTMLElement>(".key-button:not(.overflow-key), .key-more")]
+      .filter((button) => getComputedStyle(button).display !== "none")
+      .map((button) => button.getBoundingClientRect())
+      .filter((box) => box.width > 0 && box.height > 0);
+    const tops = visibleBoxes.map((box) => box.top);
+    return {
+      visibleButtonCount: visibleBoxes.length,
+      topSpread: Math.max(...tops) - Math.min(...tops),
+      hasOverflowMenu: getComputedStyle(keys.querySelector<HTMLElement>(".key-overflow")!).display !== "none",
+    };
+  });
+  expect(keyMetrics).toMatchObject({
+    visibleButtonCount: 5,
+    hasOverflowMenu: true,
+  });
+  expect(keyMetrics.topSpread).toBeLessThan(2);
+
+  await openSessionMenu(page);
+  await expect(page.getByRole("button", { name: "TTY" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Summary" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "HTML" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pause events" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Logs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
+});
+
 test("can pause and resume live session events", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
   await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
   await page.getByRole("button", { name: "Launch" }).click();
-  await page.getByRole("button", { name: "Pause events" }).click();
+  await clickSessionMenuButton(page, "Pause events");
 
+  await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "Resume events" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).not.toContainText("three");
 
-  await page.getByRole("button", { name: "Resume events" }).click();
+  await clickSessionMenuButton(page, "Resume events");
 
+  await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "Pause events" })).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 });
@@ -171,7 +234,7 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("three", { timeout: 20_000 });
-  await page.getByRole("button", { name: "Summary" }).click();
+  await clickSessionMenuButton(page, "Summary");
   await page.getByRole("button", { name: "Refresh SDK" }).click();
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: what is one plus two");
@@ -224,7 +287,7 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   const launchedPayload = await fetchSessionPayload(page);
   writeCodexFixtureState(ctx, launchedPayload.createdAt);
 
-  await page.getByRole("button", { name: "Summary" }).click();
+  await clickSessionMenuButton(page, "Summary");
   await page.getByRole("button", { name: "Refresh SDK" }).click();
 
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
@@ -246,6 +309,19 @@ async function fetchSessionPayload(page: Page) {
     const id = location.pathname.split("/").at(-1);
     return await fetch(`/api/sessions/${id}`).then((response) => response.json());
   });
+}
+
+async function clickSessionMenuButton(page: Page, name: string) {
+  await openSessionMenu(page);
+  await page.getByRole("button", { name }).click();
+}
+
+async function openSessionMenu(page: Page) {
+  const menu = page.locator(".session-menu");
+  if ((await menu.getAttribute("open")) !== null) {
+    return;
+  }
+  await page.getByRole("button", { name: "Session menu" }).click();
 }
 
 async function measureFirstLineGutterOffset(page: Page) {

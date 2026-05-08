@@ -180,7 +180,7 @@ function renderMissingSession(message: string) {
   app.innerHTML = `
     <main class="layout home-layout">
       <header class="topbar">
-        <a class="brand" href="/">TUI UI</a>
+        <a class="brand" href="/">tuiui</a>
         <span class="muted">session unavailable</span>
       </header>
       <section class="launcher missing-session" aria-label="Missing session">
@@ -207,7 +207,7 @@ async function renderHome() {
   app.innerHTML = `
     <main class="layout home-layout">
       <header class="topbar">
-        <a class="brand" href="/">TUI UI</a>
+        <a class="brand" href="/">tuiui</a>
         <span class="muted" data-testid="session-count">${sessions.length} sessions</span>
       </header>
       <section class="launcher" aria-label="Launch session">
@@ -289,19 +289,27 @@ async function renderSession(sessionId: string) {
 
   app.innerHTML = `
     <main class="layout session-layout">
-      <header class="topbar">
-        <a class="brand" href="/">TUI UI</a>
+      <header class="topbar session-appbar">
+        <a class="brand" href="/">tuiui</a>
+        <code class="command app-title" title="${escapeAttr([payload.command, ...payload.args].join(" "))}" data-testid="session-command">${escapeHtml(payload.title || payload.command)}</code>
         <span class="status-pill" data-state="${payload.status}" data-testid="session-status">${payload.status}</span>
-        <code class="command" title="${escapeAttr([payload.command, ...payload.args].join(" "))}" data-testid="session-command">${escapeHtml(payload.title || payload.command)}</code>
-        <span class="muted cwd">${escapeHtml(payload.cwd)}</span>
-        <div class="toolbar" role="group" aria-label="Renderer">
-          <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
-          <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Summary</button>
-          <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
-          <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
-          <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
-          <button type="button" class="icon-button danger" data-action="kill">Stop</button>
-        </div>
+        <details class="session-menu">
+          <summary class="menu-button" role="button" aria-label="Session menu">☰</summary>
+          <div class="menu-panel">
+            <div class="menu-fact">
+              <span>CWD</span>
+              <code>${escapeHtml(payload.cwd)}</code>
+            </div>
+            <div class="toolbar" role="group" aria-label="Renderer">
+              <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
+              <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Summary</button>
+              <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
+              <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
+              <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
+              <button type="button" class="icon-button danger" data-action="kill">Stop</button>
+            </div>
+          </div>
+        </details>
       </header>
       <section class="main-surface">
         <section id="screen" class="screen" data-testid="semantic-screen"></section>
@@ -324,9 +332,17 @@ async function renderSession(sessionId: string) {
             ${renderKeyButton("tab", "Tab")}
             ${renderKeyButton("up", "↑")}
             ${renderKeyButton("down", "↓")}
-            ${renderKeyButton("left", "←")}
-            ${renderKeyButton("right", "→")}
-            ${renderKeyButton("ctrl+c", "^C")}
+            ${renderKeyButton("left", "←", "overflow-key")}
+            ${renderKeyButton("right", "→", "overflow-key")}
+            ${renderKeyButton("ctrl+c", "^C", "overflow-key")}
+            <details class="key-overflow">
+              <summary class="icon-button key-more" role="button" aria-label="More keys">...</summary>
+              <div class="key-overflow-panel">
+                ${renderKeyButton("left", "←")}
+                ${renderKeyButton("right", "→")}
+                ${renderKeyButton("ctrl+c", "^C")}
+              </div>
+            </details>
           </div>
           <button type="button" id="send">Send</button>
         </div>
@@ -378,6 +394,7 @@ function bindSessionControls(sessionId: string) {
       renderer = button.dataset.renderer || "semantic";
       localStorage.setItem("tuiui-renderer", renderer);
       renderSessionPayload(activeSession);
+      closeSessionMenu();
     });
   });
 
@@ -385,15 +402,22 @@ function bindSessionControls(sessionId: string) {
     const logs = document.getElementById("logs")!;
     logs.hidden = !logs.hidden;
     (event.currentTarget as HTMLButtonElement).setAttribute("aria-expanded", String(!logs.hidden));
+    closeSessionMenu();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
     setEventsPaused(sessionId, !eventsPaused);
+    closeSessionMenu();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='kill']")?.addEventListener("click", () => {
     void api(`/api/sessions/${sessionId}/kill`, { method: "POST" });
+    closeSessionMenu();
   });
+}
+
+function closeSessionMenu() {
+  document.querySelector<HTMLDetailsElement>(".session-menu")?.removeAttribute("open");
 }
 
 async function sendComposer(sessionId: string) {
@@ -458,6 +482,11 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (status) {
     status.textContent = payload.status;
     status.dataset.state = payload.status;
+  }
+  const command = document.querySelector<HTMLElement>("[data-testid='session-command']");
+  if (command) {
+    command.textContent = payload.title || payload.command;
+    command.title = [payload.command, ...payload.args].join(" ");
   }
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.renderer === renderer));
@@ -1068,8 +1097,9 @@ function renderSessionLink(session: any) {
   `;
 }
 
-function renderKeyButton(key: string, label: string) {
-  return `<button type="button" class="icon-button" data-key="${escapeAttr(key)}" aria-label="${escapeAttr(key)}">${escapeHtml(label)}</button>`;
+function renderKeyButton(key: string, label: string, className = "") {
+  const classes = ["icon-button", "key-button", className].filter(Boolean).join(" ");
+  return `<button type="button" class="${escapeAttr(classes)}" data-key="${escapeAttr(key)}" aria-label="${escapeAttr(key)}">${escapeHtml(label)}</button>`;
 }
 
 function firstLine(text: string) {

@@ -7,13 +7,20 @@
   color: #eef2f7;
 }
 
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
+  min-height: 0;
   background: #111418;
 }
 
@@ -46,7 +53,9 @@ button:disabled {
 }
 
 .layout {
-  min-height: 100vh;
+  min-height: 0;
+  height: 100dvh;
+  overflow: hidden;
   padding: 14px;
 }
 
@@ -58,6 +67,14 @@ button:disabled {
   min-height: 42px;
   border-bottom: 1px solid #2c333d;
   padding-bottom: 10px;
+}
+
+.session-appbar {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  min-height: 38px;
+  padding-bottom: 8px;
+  position: relative;
 }
 
 .brand {
@@ -87,10 +104,16 @@ button:disabled {
   font: 600 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.app-title {
+  justify-self: stretch;
+}
+
 .home-layout {
   display: grid;
   gap: 14px;
   align-content: start;
+  height: 100%;
+  overflow: auto;
   max-width: 1180px;
   margin: 0 auto;
 }
@@ -203,7 +226,8 @@ textarea:focus {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 10px;
-  height: 100vh;
+  height: 100%;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -214,6 +238,75 @@ textarea:focus {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.session-menu {
+  position: relative;
+  justify-self: end;
+}
+
+.session-menu > summary,
+.key-overflow > summary {
+  list-style: none;
+}
+
+.session-menu > summary::-webkit-details-marker,
+.key-overflow > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 32px;
+  border: 1px solid #3a4350;
+  border-radius: 7px;
+  background: #20262e;
+  color: #dce5ef;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 20px));
+  border: 1px solid #303844;
+  border-radius: 8px;
+  background: #151a20;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+  padding: 10px;
+}
+
+.session-menu:not([open]) .menu-panel {
+  display: none;
+}
+
+.menu-fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.menu-fact span {
+  color: #9ca8b6;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.menu-fact code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #dce5ef;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .icon-button {
@@ -240,14 +333,15 @@ textarea:focus {
 }
 
 .status-pill {
-  min-width: 54px;
+  min-width: 44px;
   border-radius: 999px;
-  padding: 4px 9px;
+  padding: 3px 7px;
   text-align: center;
   color: #101418;
   background: #f3c969;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
+  text-transform: uppercase;
 }
 
 .status-pill[data-state="idle"] {
@@ -278,10 +372,13 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
+  position: relative;
 }
 
 .screen {
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   border: 1px solid #2c333d;
   border-radius: 8px;
@@ -375,6 +472,10 @@ pre {
   width: 100%;
   height: 100%;
   padding: 0;
+}
+
+.terminal-host .xterm-viewport {
+  overflow-y: auto !important;
 }
 
 .terminal-text-snapshot {
@@ -683,23 +784,70 @@ pre {
 
 .composer {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   border-top: 1px solid #2c333d;
-  padding-top: 10px;
+  padding-top: 8px;
 }
 
 textarea {
-  min-height: 76px;
-  resize: vertical;
-  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 48px;
+  height: 48px;
+  resize: none;
+  font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .composer-actions {
   justify-content: space-between;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.keys {
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.key-button,
+.key-more {
+  min-width: 34px;
+  min-height: 30px;
+  height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.key-overflow {
+  display: none;
+  position: relative;
+}
+
+.key-more {
+  display: grid;
+  place-items: center;
+  list-style: none;
+}
+
+.key-overflow-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 15;
+  display: flex;
+  gap: 4px;
+  border: 1px solid #303844;
+  border-radius: 7px;
+  background: #151a20;
+  padding: 6px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.key-overflow:not([open]) .key-overflow-panel {
+  display: none;
 }
 
 @media (max-width: 900px) {
-  .topbar,
   .launch-form {
     grid-template-columns: 1fr;
   }
@@ -725,5 +873,112 @@ textarea {
 
   .logs {
     width: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .layout {
+    padding: 6px;
+  }
+
+  .session-layout {
+    gap: 6px;
+  }
+
+  .session-appbar {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    min-height: 34px;
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+
+  .brand {
+    font-size: 13px;
+  }
+
+  .app-title {
+    font-size: 11px;
+  }
+
+  .status-pill {
+    min-width: 34px;
+    padding: 2px 6px;
+    font-size: 9px;
+  }
+
+  .menu-button {
+    width: 32px;
+    height: 30px;
+  }
+
+  .menu-panel {
+    position: fixed;
+    top: 42px;
+    left: 6px;
+    right: 6px;
+    width: auto;
+    max-height: calc(100dvh - 54px);
+    overflow: auto;
+  }
+
+  .menu-panel .toolbar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .menu-panel .icon-button {
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .screen {
+    border-radius: 6px;
+  }
+
+  .logs {
+    position: absolute;
+    inset: 6px;
+    z-index: 10;
+    width: auto;
+    max-width: none;
+    overflow: auto;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  }
+
+  .terminal-xterm-wrap,
+  .terminal-html {
+    padding: 4px;
+  }
+
+  .composer {
+    padding-top: 6px;
+  }
+
+  textarea {
+    min-height: 40px;
+    height: 40px;
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+
+  .composer-actions {
+    gap: 6px;
+  }
+
+  #send {
+    min-height: 30px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .overflow-key {
+    display: none;
+  }
+
+  .key-overflow {
+    display: block;
   }
 }
