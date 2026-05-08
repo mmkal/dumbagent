@@ -62,7 +62,7 @@ export const agents = {
   },
   codex: {
     command: 'codex',
-    args: ['--full-auto'],
+    args: [],
     getEnv(port) {
       const dir = '/tmp/fakeagent-codex-home'
       mkdirSync(dir, {recursive: true})
@@ -73,6 +73,8 @@ export const agents = {
       const trustedPaths = [...new Set([cwd, tmpTest])]
       writeFileSync(`${dir}/config.toml`, [
         `model = "gpt-5.4"`,
+        `approval_policy = "never"`,
+        `sandbox_mode = "danger-full-access"`,
         `openai_base_url = "http://localhost:${port}/v1"`,
         `check_for_update_on_startup = false`,
         ...trustedPaths.flatMap((p) => ['', `[projects.${JSON.stringify(p)}]`, `trust_level = "trusted"`]),
