@@ -301,7 +301,8 @@ async function createSession(input: CreateSessionInput) {
   let env: Record<string, string> = {
     ...minimalEnv(process.env),
     ...input.env,
-    TERM: input.env.TERM || process.env.TERM || "xterm-256color",
+    TERM: input.env.TERM || "xterm-256color",
+    COLORTERM: input.env.COLORTERM || "truecolor",
   };
   let fakeAgent: FakeAgent | null = null;
 

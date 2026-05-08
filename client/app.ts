@@ -21,7 +21,7 @@ type SessionPayload = {
   rows: number;
   renderedText: string;
   renderedHtml: string;
-  renderedAnsi: string;
+  renderedAnsi?: string;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -491,6 +491,13 @@ function renderSessionPayload(payload: SessionPayload | null) {
 
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
+  if (payload.renderedAnsi === undefined && payload.renderedHtml) {
+    destroyXterm();
+    screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${payload.renderedHtml}</div>`;
+    startTerminalAutoResize(payload.id);
+    return;
+  }
+
   if (!screen.querySelector("#xterm-terminal")) {
     destroyXterm();
     screen.innerHTML = `
@@ -665,7 +672,7 @@ function scheduleTerminalResize(sessionId: string) {
 
 async function resizeTerminalToScreen(sessionId: string) {
   const screen = document.getElementById("screen");
-  const terminal = screen?.querySelector<HTMLElement>(".terminal-xterm-wrap");
+  const terminal = screen?.querySelector<HTMLElement>(".terminal-xterm-wrap, .terminal-html");
   if (!screen || !terminal) {
     return;
   }
