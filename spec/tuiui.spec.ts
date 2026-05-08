@@ -3,7 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { once } from "node:events";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { expect, test as base, type Page } from "@playwright/test";
 
 type FixtureContext = {
@@ -193,6 +193,32 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await expect(page.locator("#sdk-yaml-editor .cm-editor.cm-lineWrapping")).toHaveCount(0);
 });
 
+test("resolves a Codex TUI into SDK summary YAML", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("combobox", { name: "Preset" }).selectOption("codex");
+  await page.getByRole("button", { name: "Launch" }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");
+  const launchedPayload = await fetchSessionPayload(page);
+  writeCodexFixtureState(ctx, launchedPayload.createdAt);
+
+  await page.getByRole("button", { name: "Summary" }).click();
+  await page.getByRole("button", { name: "Refresh SDK" }).click();
+
+  await expect(page.getByTestId("sdk-summary")).toContainText("connected");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("provider: codex");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("providerSessionId: codex-test-thread");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: summarize this codex tui");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestAssistantText: codex can now be summarized");
+
+  const payload = await fetchSessionPayload(page);
+  expect(payload.sdk.summary).toMatchObject({
+    provider: "codex",
+    latestUserText: "summarize this codex tui",
+    latestAssistantText: "codex can now be summarized",
+  });
+});
+
 async function fetchSessionPayload(page: Page) {
   return await page.evaluate(async () => {
     const id = location.pathname.split("/").at(-1);
@@ -252,6 +278,7 @@ async function createContext() {
   fs.mkdirSync(fakeBinDir, { recursive: true });
   fs.writeFileSync(path.join(fakeBinDir, "semantic-agent"), semanticAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "codex"), codexTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
   const env = {
@@ -400,4 +427,132 @@ function tick() {
 
 tick();
 setTimeout(() => {}, 100000);
+`;
+
+function writeCodexFixtureState(ctx: FixtureContext, launchedAt: string) {
+  const codexDir = path.join(ctx.env.HOME || "", ".codex");
+  const sessionsDir = path.join(codexDir, "sessions", "2026", "05", "08");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const rolloutPath = path.join(sessionsDir, "rollout-codex-test-thread.jsonl");
+  fs.writeFileSync(rolloutPath, [
+    codexRolloutMessage("2026-05-08T14:28:02.000Z", "user", "summarize this codex tui"),
+    codexRolloutMessage("2026-05-08T14:28:03.000Z", "assistant", "codex can now be summarized"),
+  ].join("\n"));
+
+  const databasePath = path.join(codexDir, "state_5.sqlite");
+  const createdAtMs = new Date(launchedAt).getTime() + 100;
+  const updatedAtMs = createdAtMs + 1000;
+  execFileSync("sqlite3", [databasePath, `
+    create table if not exists threads (
+      id text primary key,
+      rollout_path text not null,
+      created_at integer not null,
+      updated_at integer not null,
+      source text not null,
+      model_provider text not null,
+      cwd text not null,
+      title text not null,
+      sandbox_policy text not null,
+      approval_mode text not null,
+      tokens_used integer not null default 0,
+      has_user_event integer not null default 0,
+      archived integer not null default 0,
+      archived_at integer,
+      git_sha text,
+      git_branch text,
+      git_origin_url text,
+      cli_version text not null default '',
+      first_user_message text not null default '',
+      agent_nickname text,
+      agent_role text,
+      memory_mode text not null default 'enabled',
+      model text,
+      reasoning_effort text,
+      agent_path text,
+      created_at_ms integer,
+      updated_at_ms integer,
+      thread_source text
+    );
+    insert or replace into threads (
+      id,
+      rollout_path,
+      created_at,
+      updated_at,
+      source,
+      model_provider,
+      cwd,
+      title,
+      sandbox_policy,
+      approval_mode,
+      tokens_used,
+      has_user_event,
+      archived,
+      cli_version,
+      first_user_message,
+      memory_mode,
+      model,
+      reasoning_effort,
+      created_at_ms,
+      updated_at_ms
+    ) values (
+      'codex-test-thread',
+      '${sqlString(rolloutPath)}',
+      ${Math.floor(createdAtMs / 1000)},
+      ${Math.floor(updatedAtMs / 1000)},
+      'cli',
+      'openai',
+      '${sqlString(ctx.workspaceDir)}',
+      'Codex fixture thread',
+      'read-only',
+      'never',
+      42,
+      1,
+      0,
+      '0.129.0',
+      'summarize this codex tui',
+      'enabled',
+      'gpt-5.5',
+      'medium',
+      ${createdAtMs},
+      ${updatedAtMs}
+    );
+  `]);
+}
+
+function codexRolloutMessage(timestamp: string, role: string, text: string) {
+  return JSON.stringify({
+    timestamp,
+    type: "response_item",
+    payload: {
+      type: "message",
+      role,
+      content: [{
+        type: role === "assistant" ? "output_text" : "input_text",
+        text,
+      }],
+    },
+  });
+}
+
+function sqlString(value: string) {
+  return value.replaceAll("'", "''");
+}
+
+const codexTuiSource = `#!/usr/bin/env node
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.setEncoding("utf8");
+
+function draw() {
+  process.stdout.write("\\x1b[2J\\x1b[H");
+  process.stdout.write("╭─ Codex test TUI ─────────────╮\\r\\n");
+  process.stdout.write("│ status idle                  │\\r\\n");
+  process.stdout.write("╰──────────────────────────────╯\\r\\n");
+}
+
+draw();
+process.stdin.on("data", (chunk) => {
+  if (chunk.includes("\\u0003")) process.exit(0);
+  draw();
+});
 `;

@@ -30,7 +30,7 @@ type SessionPayload = {
 };
 
 type SessionSdkPayload = {
-  provider: "" | "opencode";
+  provider: "" | "opencode" | "codex";
   state: "unavailable" | "ready" | "connected" | "not-found" | "error";
   baseUrl: string;
   externalSessionId: string;
@@ -40,7 +40,7 @@ type SessionSdkPayload = {
   sidecarSummary: SidecarSummaryState;
   forks: SidecarSummaryFork[];
   summary: null | {
-    provider: "opencode";
+    provider: "opencode" | "codex";
     title: string;
     messageCount: number;
     diffCount: number;
@@ -56,7 +56,7 @@ type SessionSdkPayload = {
 type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+summarize";
+  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary";
   sourceSessionId: string;
   forkSessionId: string;
   updatedAt: string;
@@ -66,7 +66,7 @@ type SidecarSummaryState = {
 };
 
 type SidecarSummaryFork = {
-  provider: "opencode";
+  provider: "opencode" | "codex";
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;

@@ -6,11 +6,21 @@ import * as net from "node:net";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { stripVTControlCharacters } from "node:util";
+import { Codex } from "@openai/codex-sdk";
 import { createOpencodeClient } from "@opencode-ai/sdk/client";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { createFakeAgent, parseRequest, type AgentName, type FakeAgent } from "fakeagent";
 import homepage from "./public/index.html";
+import {
+  buildCodexSidecarSummary,
+  buildCodexSummary,
+  createCodexSummaryPrompt,
+  getCodexHomeDir,
+  readCodexThreads,
+  resolveCodexStateDatabasePath,
+  resolveCodexThread,
+} from "./src/codex-sdk.ts";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
 import {
   buildOpenCodeSummary,
@@ -192,6 +202,7 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json([
       { id: "custom", label: "Custom", command: "", args: [], fakeAgent: "" },
       { id: "fake-opencode", label: "Fake OpenCode", command: "opencode", args: [], fakeAgent: "opencode" },
+      { id: "codex", label: "Codex", command: "codex", args: [], fakeAgent: "" },
       { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
     ]);
   }
@@ -325,7 +336,7 @@ async function createSession(input: CreateSessionInput) {
     prepareFakeAgentWorkspace(cwd);
   }
 
-  const sdk = await prepareSessionSdk(command, args);
+  const sdk = await prepareSessionSdk(command, args, env);
   command = sdk.command;
   args = sdk.args;
 
@@ -613,7 +624,28 @@ function prepareFakeAgentWorkspace(cwd: string) {
   fs.writeFileSync("/tmp/fakeagent-test/hello.txt", "hi\n");
 }
 
-async function prepareSessionSdk(command: string, args: string[]) {
+async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {
+  if (isCodexCommand(command)) {
+    const now = new Date().toISOString();
+    const codexHome = getCodexHomeDir(env);
+    return {
+      command,
+      args,
+      payload: {
+        provider: "codex" as const,
+        state: "ready" as const,
+        baseUrl: resolveCodexStateDatabasePath(codexHome),
+        externalSessionId: "",
+        status: "",
+        updatedAt: now,
+        error: "",
+        sidecarSummary: createIdleSidecarSummary(now),
+        forks: [],
+        summary: null,
+      },
+    };
+  }
+
   if (!isOpenCodeCommand(command)) {
     return {
       command,
@@ -701,7 +733,16 @@ function isOpenCodeCommand(command: string) {
   return path.basename(command).toLowerCase() === "opencode";
 }
 
+function isCodexCommand(command: string) {
+  return path.basename(command).toLowerCase() === "codex";
+}
+
 async function refreshSessionSdk(session: RuntimeSession) {
+  if (session.sdk.provider === "codex") {
+    await refreshCodexSessionSdk(session);
+    return;
+  }
+
   if (session.sdk.provider !== "opencode") {
     session.sdk = createUnavailableSdkPayload();
     return;
@@ -768,7 +809,59 @@ async function refreshSessionSdk(session: RuntimeSession) {
   publishSession(session);
 }
 
+async function refreshCodexSessionSdk(session: RuntimeSession) {
+  try {
+    const threads = readCodexThreads(getCodexHomeDir(process.env));
+    const target = resolveCodexThread({
+      threads,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      session.sdk = {
+        ...session.sdk,
+        state: "not-found",
+        status: "",
+        updatedAt: new Date().toISOString(),
+        error: "Codex state is readable, but no matching thread is visible yet.",
+        summary: null,
+      };
+      publishSession(session);
+      return;
+    }
+
+    const summary = buildCodexSummary(target);
+    session.sdk = {
+      ...session.sdk,
+      state: "connected",
+      status: target.model || target.model_provider || "",
+      externalSessionId: String(target.id || ""),
+      updatedAt: new Date().toISOString(),
+      error: "",
+      summary,
+    };
+    if (!session.title || session.title === path.basename(session.command)) {
+      session.title = summary.title || session.title;
+    }
+  } catch (error) {
+    session.sdk = {
+      ...session.sdk,
+      state: "error",
+      updatedAt: new Date().toISOString(),
+      error: String(error instanceof Error ? error.message : error),
+    };
+  }
+  publishSession(session);
+}
+
 async function summarizeSessionWithSdk(session: RuntimeSession) {
+  if (session.sdk.provider === "codex") {
+    await summarizeCodexSessionWithSdk(session);
+    return;
+  }
+
   if (session.sdk.provider !== "opencode") {
     session.sdk = createUnavailableSdkPayload();
     publishSession(session);
@@ -934,6 +1027,139 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         result: null,
         error: String(error instanceof Error ? error.message : error),
         note: "OpenCode forked sidecar summary failed before producing a result.",
+      },
+    };
+    publishSession(session);
+  }
+}
+
+async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
+  session.sdk = {
+    ...session.sdk,
+    sidecarSummary: {
+      implemented: true,
+      status: "running",
+      method: "codex.startThread+summary",
+      sourceSessionId: session.sdk.externalSessionId,
+      forkSessionId: "",
+      updatedAt: new Date().toISOString(),
+      result: null,
+      error: "",
+      note: "Resolving the Codex source thread before creating a sidecar summary thread.",
+    },
+  };
+  publishSession(session);
+
+  let sourceThreadId = session.sdk.externalSessionId;
+  let sidecarThreadId = "";
+  let sidecarCreatedAt = new Date().toISOString();
+  try {
+    const threads = readCodexThreads(getCodexHomeDir(process.env));
+    const target = resolveCodexThread({
+      threads,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      throw new Error("Codex state is readable, but no matching thread is visible yet.");
+    }
+
+    sourceThreadId = String(target.id || "");
+    const sourceSummary = buildCodexSummary(target);
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceThreadId,
+      state: "connected",
+      status: target.model || target.model_provider || "",
+      summary: sourceSummary,
+      sidecarSummary: {
+        implemented: true,
+        status: "running",
+        method: "codex.startThread+summary",
+        sourceSessionId: sourceThreadId,
+        forkSessionId: "",
+        updatedAt: new Date().toISOString(),
+        result: null,
+        error: "",
+        note: "Creating a separate Codex thread for the summary so the live TUI thread is left untouched.",
+      },
+    };
+    publishSession(session);
+
+    const codex = new Codex({
+      env: minimalEnv(process.env),
+    });
+    const thread = codex.startThread({
+      workingDirectory: session.cwd,
+      skipGitRepoCheck: true,
+      sandboxMode: "read-only",
+      approvalPolicy: "never",
+      networkAccessEnabled: false,
+    });
+    const result = await thread.run(createCodexSummaryPrompt(sourceSummary));
+    sidecarThreadId = thread.id || "";
+    if (!sidecarThreadId) {
+      throw new Error("Codex summary thread completed without exposing a thread id.");
+    }
+
+    const summarizedAt = new Date().toISOString();
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceThreadId,
+      forks: upsertSidecarFork(session.sdk.forks, {
+        provider: "codex",
+        purpose: "sidecarSummary",
+        sourceSessionId: sourceThreadId,
+        forkSessionId: sidecarThreadId,
+        createdAt: sidecarCreatedAt,
+        updatedAt: summarizedAt,
+        status: "summarized",
+        result: true,
+        error: "",
+        summary: buildCodexSidecarSummary(sidecarThreadId, result.finalResponse),
+      }),
+      sidecarSummary: {
+        implemented: true,
+        status: "completed",
+        method: "codex.startThread+summary",
+        sourceSessionId: sourceThreadId,
+        forkSessionId: sidecarThreadId,
+        updatedAt: summarizedAt,
+        result: true,
+        error: "",
+        note: "Codex summarized the source transcript in a separate sidecar thread. The live TUI thread remains untouched.",
+      },
+    };
+    await refreshCodexSessionSdk(session);
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const existingFork = session.sdk.forks.find((candidate) => candidate.forkSessionId === sidecarThreadId);
+    session.sdk = {
+      ...session.sdk,
+      forks: sidecarThreadId ? upsertSidecarFork(session.sdk.forks, {
+        provider: "codex",
+        purpose: "sidecarSummary",
+        sourceSessionId: sourceThreadId,
+        forkSessionId: sidecarThreadId,
+        createdAt: existingFork ? existingFork.createdAt : sidecarCreatedAt,
+        updatedAt: failedAt,
+        status: "error",
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        summary: existingFork ? existingFork.summary : null,
+      }) : session.sdk.forks,
+      sidecarSummary: {
+        implemented: true,
+        status: "error",
+        method: "codex.startThread+summary",
+        sourceSessionId: sourceThreadId,
+        forkSessionId: sidecarThreadId,
+        updatedAt: failedAt,
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        note: "Codex sidecar summary failed before producing a result.",
       },
     };
     publishSession(session);

@@ -1,7 +1,7 @@
 import * as path from "node:path";
 
 export type SessionSdkPayload = {
-  provider: "" | "opencode";
+  provider: "" | "opencode" | "codex";
   state: "unavailable" | "ready" | "connected" | "not-found" | "error";
   baseUrl: string;
   externalSessionId: string;
@@ -16,7 +16,7 @@ export type SessionSdkPayload = {
 export type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+summarize";
+  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary";
   sourceSessionId: string;
   forkSessionId: string;
   updatedAt: string;
@@ -26,7 +26,7 @@ export type SidecarSummaryState = {
 };
 
 export type SidecarSummaryFork = {
-  provider: "opencode";
+  provider: "opencode" | "codex";
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
@@ -39,7 +39,7 @@ export type SidecarSummaryFork = {
 };
 
 export type AgentSessionSummary = {
-  provider: "opencode";
+  provider: "opencode" | "codex";
   title: string;
   messageCount: number;
   diffCount: number;
