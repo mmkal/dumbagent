@@ -121,9 +121,9 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(ctx.baseUrl);
 
-  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
   await page.getByRole("button", { name: "Launch" }).click();
-  await expect(page.getByTestId("rendered-terminal")).toContainText("Ask anything");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("scrollback line 80");
 
   await expect.poll(async () => {
     return await page.evaluate(() => {
@@ -148,6 +148,33 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     horizontalScrolls: false,
     screenOverflowY: "hidden",
     terminalOwnsScroll: true,
+  });
+
+  await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scroll terminal down" })).toBeVisible();
+  const terminalRowsBefore = await page.locator(".xterm-rows").textContent();
+  await page.getByRole("button", { name: "Scroll terminal up" }).click();
+  await expect.poll(async () => {
+    return await page.locator(".xterm-rows").textContent();
+  }).not.toBe(terminalRowsBefore);
+  await page.getByRole("button", { name: "Scroll terminal down" }).click();
+  await expect.poll(async () => {
+    return await page.locator(".xterm-rows").textContent();
+  }).toBe(terminalRowsBefore);
+
+  const chrome = await page.evaluate(() => {
+    return {
+      appbarBorder: getComputedStyle(document.querySelector<HTMLElement>(".session-appbar")!).borderBottomWidth,
+      screenBorderTop: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderTopWidth,
+      screenBorderBottom: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).borderBottomWidth,
+      composerBorder: getComputedStyle(document.querySelector<HTMLElement>(".composer")!).borderTopWidth,
+    };
+  });
+  expect(chrome).toMatchObject({
+    appbarBorder: "0px",
+    screenBorderTop: "0px",
+    screenBorderBottom: "0px",
+    composerBorder: "0px",
   });
 
   const keyMetrics = await page.locator(".keys").evaluate((keys) => {
@@ -377,6 +404,7 @@ async function createContext() {
   fs.writeFileSync(path.join(fakeBinDir, "semantic-agent"), semanticAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "codex"), codexTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -534,6 +562,13 @@ if (process.env.NO_COLOR) {
   process.stdout.write("plain\\n");
 } else {
   process.stdout.write("\\x1b[31mcolored\\x1b[0m\\n");
+}
+setTimeout(() => {}, 100000);
+`;
+
+const scrollbackAgentSource = `#!/usr/bin/env node
+for (let index = 1; index <= 80; index += 1) {
+  process.stdout.write("scrollback line " + String(index).padStart(2, "0") + "\\r\\n");
 }
 setTimeout(() => {}, 100000);
 `;

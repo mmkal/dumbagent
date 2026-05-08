@@ -313,6 +313,10 @@ async function renderSession(sessionId: string) {
       </header>
       <section class="main-surface">
         <section id="screen" class="screen" data-testid="semantic-screen"></section>
+        <div class="terminal-scroll-controls" aria-label="Terminal scroll controls">
+          <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
+          <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
+        </div>
         <aside id="logs" class="logs" hidden>
           <section>
             <h2>stdin</h2>
@@ -414,6 +418,12 @@ function bindSessionControls(sessionId: string) {
     void api(`/api/sessions/${sessionId}/kill`, { method: "POST" });
     closeSessionMenu();
   });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-terminal-scroll]").forEach((button) => {
+    button.addEventListener("click", () => {
+      scrollTerminalByPage(Number(button.dataset.terminalScroll || 0));
+    });
+  });
 }
 
 function closeSessionMenu() {
@@ -491,6 +501,10 @@ function renderSessionPayload(payload: SessionPayload | null) {
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.renderer === renderer));
   });
+  const mainSurface = document.querySelector<HTMLElement>(".main-surface");
+  if (mainSurface) {
+    mainSurface.dataset.renderer = renderer;
+  }
 
   const screen = document.getElementById("screen")!;
   if (renderer === "terminal") {
@@ -516,6 +530,25 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (stdoutLog) {
     stdoutLog.textContent = payload.stdoutEvents.map((event) => event.displayText ? `[${formatTime(event.createdAt)}] ${event.displayText}` : "").filter(Boolean).join("\n\n");
   }
+}
+
+function scrollTerminalByPage(direction: number) {
+  if (!direction) {
+    return;
+  }
+  if (xterm) {
+    xterm.scrollPages(direction);
+    return;
+  }
+
+  const fallback = document.querySelector<HTMLElement>(".xterm-viewport, .terminal-html");
+  if (!fallback) {
+    return;
+  }
+  fallback.scrollBy({
+    top: direction * fallback.clientHeight * 0.85,
+    behavior: "smooth",
+  });
 }
 
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
