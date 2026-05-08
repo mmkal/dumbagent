@@ -142,6 +142,7 @@ let xtermReady: Promise<XtermTerminal> | null = null;
 let xtermSessionId = "";
 let xtermLastStdoutEventId = 0;
 let xtermInputQueue = Promise.resolve();
+let xtermSyncQueue = Promise.resolve();
 
 void renderRoute();
 
@@ -501,7 +502,7 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   if (snapshot) {
     snapshot.textContent = payload.renderedText;
   }
-  void syncXterm(payload);
+  xtermSyncQueue = xtermSyncQueue.then(() => syncXterm(payload)).catch(() => undefined);
   startTerminalAutoResize(payload.id);
 }
 
@@ -561,7 +562,9 @@ async function syncXterm(payload: SessionPayload) {
   const newestId = newestEvent ? newestEvent.id : 0;
   if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
     term.reset();
-    const stdout = await fetchStdoutEvents(payload.id, 0);
+    const stdout = payload.stdoutEvents.length
+      ? { events: payload.stdoutEvents }
+      : await fetchStdoutEvents(payload.id, 0);
     if (xtermSessionId !== payload.id) {
       return;
     }
@@ -579,7 +582,7 @@ async function syncXterm(payload: SessionPayload) {
   const visibleEvents = payload.stdoutEvents.filter((event) => event.id > xtermLastStdoutEventId);
   const events = visibleEvents.length
     ? visibleEvents
-    : (await fetchStdoutEvents(payload.id, xtermLastStdoutEventId)).events;
+    : (await fetchStdoutEvents(payload.id, xtermLastStdoutEventId).catch(() => ({ events: [] }))).events;
   if (xtermSessionId !== payload.id) {
     return;
   }
@@ -606,6 +609,7 @@ function destroyXterm() {
   xtermSessionId = "";
   xtermLastStdoutEventId = 0;
   xtermInputQueue = Promise.resolve();
+  xtermSyncQueue = Promise.resolve();
 }
 
 function startTerminalAutoResize(sessionId: string) {
