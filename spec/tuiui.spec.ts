@@ -36,6 +36,7 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   const resizedPayload = await fetchSessionPayload(page);
   expect(resizedPayload.cols).toBeGreaterThanOrEqual(40);
   expect(resizedPayload.rows).toBeGreaterThanOrEqual(12);
+  expect(countSerializedHtmlRows(resizedPayload.renderedHtml)).toBeLessThanOrEqual(resizedPayload.rows);
   await page.getByRole("button", { name: "HTML" }).click();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "Ask anything" })).toBeVisible();
   await expect(page.getByTestId("semantic-section").filter({ hasText: "semantic-agent" })).toBeVisible();
@@ -236,6 +237,10 @@ async function isYamlEditorContentMarked(page: Page) {
   return await page.locator("#sdk-yaml-editor").evaluate((editor) => {
     return Boolean((editor.querySelector(".cm-content") as any).__tuiuiStillMounted);
   });
+}
+
+function countSerializedHtmlRows(html: string) {
+  return html.match(/<div><span>/g)?.length || 0;
 }
 
 async function createContext() {

@@ -493,7 +493,7 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
   if (payload.renderedAnsi === undefined && payload.renderedHtml) {
     destroyXterm();
-    screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${payload.renderedHtml}</div>`;
+    screen.innerHTML = `<div class="terminal-html" data-testid="rendered-terminal">${trimTerminalHtmlToRows(payload.renderedHtml, payload.rows)}</div>`;
     startTerminalAutoResize(payload.id);
     return;
   }
@@ -610,6 +610,24 @@ async function writeXterm(term: XtermTerminal, text: string) {
 
 async function fetchStdoutEvents(sessionId: string, after: number) {
   return await api<{ events: SessionPayload["stdoutEvents"] }>(`/api/sessions/${sessionId}/stdout?after=${after}`);
+}
+
+function trimTerminalHtmlToRows(html: string, rows: number) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const wrapper = template.content.querySelector("pre > div");
+  if (!wrapper) {
+    return html;
+  }
+
+  const rowElements = [...wrapper.children];
+  const removeCount = Math.max(0, rowElements.length - rows);
+  for (const row of rowElements.slice(0, removeCount)) {
+    row.remove();
+  }
+
+  const pre = template.content.querySelector("pre");
+  return pre ? pre.outerHTML : template.innerHTML;
 }
 
 function destroyXterm() {

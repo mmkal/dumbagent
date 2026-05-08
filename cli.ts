@@ -404,7 +404,7 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
   const now = new Date().toISOString();
   const renderedText = renderTerminalText(session);
   session.renderedText = renderedText;
-  session.renderedHtml = session.serializer.serializeAsHTML({ includeGlobalBackground: true });
+  session.renderedHtml = renderTerminalHtml(session);
   session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(renderedText, { cols: session.cols, rows: session.rows });
@@ -438,6 +438,10 @@ function renderTerminalText(session: RuntimeSession) {
     lines.pop();
   }
   return lines.join("\n");
+}
+
+function renderTerminalHtml(session: RuntimeSession) {
+  return session.serializer.serializeAsHTML({ includeGlobalBackground: true, scrollback: 0 });
 }
 
 async function sendToSession(state: ServerState, session: RuntimeSession, text: string, submit: boolean) {
@@ -481,7 +485,7 @@ async function resizeSession(session: RuntimeSession, cols: number, rows: number
   session.terminal.resize(session.cols, session.rows);
   session.process.terminal.resize(session.cols, session.rows);
   session.renderedText = renderTerminalText(session);
-  session.renderedHtml = session.serializer.serializeAsHTML({ includeGlobalBackground: true });
+  session.renderedHtml = renderTerminalHtml(session);
   session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(session.renderedText, { cols: session.cols, rows: session.rows });

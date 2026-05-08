@@ -394,12 +394,13 @@ pre {
   font: 14px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.terminal-html pre {
+.terminal-html pre,
+.terminal-html pre > div,
+.terminal-html pre > div > div {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  font-size: 14px !important;
+  line-height: 1.18 !important;
   white-space: pre;
-}
-
-.terminal-html pre, .terminal-html pre > div {
-  line-height: 1.18;
 }
 
 .blocks-screen {
