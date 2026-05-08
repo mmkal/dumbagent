@@ -34,6 +34,35 @@ test("keeps the resolved Codex source thread when a newer sidecar exists", () =>
   expect(thread).toMatchObject({ id: "source-thread" });
 });
 
+test("does not resolve a stale supervising Codex thread before the launched TUI thread is visible", () => {
+  const thread = resolveCodexThread({
+    cwd: "/repo",
+    tuiCreatedAt: "2026-05-08T14:28:00.000Z",
+    currentExternalSessionId: "",
+    args: [],
+    threads: [
+      codexThread("this-session", "/repo", "2026-05-08T13:00:00.000Z", "2026-05-08T14:29:30.000Z", ""),
+    ],
+  });
+
+  expect(thread).toBeNull();
+});
+
+test("does not keep a stale pinned Codex thread once the launched TUI thread appears", () => {
+  const thread = resolveCodexThread({
+    cwd: "/repo",
+    tuiCreatedAt: "2026-05-08T14:28:00.000Z",
+    currentExternalSessionId: "this-session",
+    args: [],
+    threads: [
+      codexThread("this-session", "/repo", "2026-05-08T13:00:00.000Z", "2026-05-08T14:29:30.000Z", ""),
+      codexThread("launched-tui", "/repo", "2026-05-08T14:28:05.000Z", "2026-05-08T14:28:10.000Z", ""),
+    ],
+  });
+
+  expect(thread).toMatchObject({ id: "launched-tui" });
+});
+
 test("honors an explicit Codex resume thread id", () => {
   const thread = resolveCodexThread({
     cwd: "/repo",

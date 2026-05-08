@@ -41,8 +41,16 @@ export function resolveCodexStateDatabasePath(homeDir: string) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[1]!;
 }
 
+export function codexHomeDirFromStateDatabasePath(databasePath: string) {
+  return path.dirname(path.resolve(databasePath));
+}
+
 export function readCodexThreads(homeDir: string): CodexThreadRow[] {
   const databasePath = resolveCodexStateDatabasePath(homeDir);
+  return readCodexThreadsFromDatabasePath(databasePath);
+}
+
+export function readCodexThreadsFromDatabasePath(databasePath: string): CodexThreadRow[] {
   if (!fs.existsSync(databasePath)) {
     throw new Error(`Codex state database not found at ${databasePath}`);
   }
@@ -86,14 +94,13 @@ export function resolveCodexThread(input: ResolveCodexThreadInput) {
   const createdAfterLaunch = candidates.filter((candidate) => codexCreatedAt(candidate) >= tuiStartedAt - 10_000);
 
   if (input.currentExternalSessionId) {
-    const existing = candidates.find((candidate) => candidate.id === input.currentExternalSessionId);
+    const existing = createdAfterLaunch.find((candidate) => candidate.id === input.currentExternalSessionId);
     if (existing) {
       return existing;
     }
   }
 
-  const freshCandidates = createdAfterLaunch.length ? createdAfterLaunch : candidates;
-  return freshCandidates
+  return createdAfterLaunch
     .slice()
     .sort((left, right) => codexUpdatedAt(right) - codexUpdatedAt(left))[0] || null;
 }

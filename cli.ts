@@ -16,9 +16,10 @@ import homepage from "./public/index.html";
 import {
   buildCodexSidecarSummary,
   buildCodexSummary,
+  codexHomeDirFromStateDatabasePath,
   createCodexSummaryPrompt,
   getCodexHomeDir,
-  readCodexThreads,
+  readCodexThreadsFromDatabasePath,
   resolveCodexStateDatabasePath,
   resolveCodexThread,
 } from "./src/codex-sdk.ts";
@@ -823,7 +824,7 @@ async function refreshSessionSdk(session: RuntimeSession) {
 
 async function refreshCodexSessionSdk(session: RuntimeSession) {
   try {
-    const threads = readCodexThreads(getCodexHomeDir(process.env));
+    const threads = readCodexThreadsFromDatabasePath(session.sdk.baseUrl);
     const target = resolveCodexThread({
       threads,
       cwd: session.cwd,
@@ -1066,7 +1067,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
   let sidecarThreadId = "";
   let sidecarCreatedAt = new Date().toISOString();
   try {
-    const threads = readCodexThreads(getCodexHomeDir(process.env));
+    const threads = readCodexThreadsFromDatabasePath(session.sdk.baseUrl);
     const target = resolveCodexThread({
       threads,
       cwd: session.cwd,
@@ -1101,7 +1102,10 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
     publishSession(session);
 
     const codex = new Codex({
-      env: minimalEnv(process.env),
+      env: {
+        ...minimalEnv(process.env),
+        CODEX_HOME: codexHomeDirFromStateDatabasePath(session.sdk.baseUrl),
+      },
     });
     const thread = codex.startThread({
       workingDirectory: session.cwd,

@@ -326,16 +326,38 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const launchedPayload = await fetchSessionPayload(page);
-  writeCodexFixtureState(ctx, launchedPayload.createdAt);
+  const fakeCodexHome = "/tmp/fakeagent-codex-home";
+  fs.rmSync(path.join(fakeCodexHome, "state_5.sqlite"), { force: true });
+  fs.rmSync(path.join(fakeCodexHome, "sessions"), { recursive: true, force: true });
+  writeCodexFixtureState(ctx, launchedPayload.createdAt, {
+    codexHomeDir: path.join(ctx.env.HOME || "", ".codex"),
+    threadId: "this-tuiui-development-session",
+    title: "Supervising Codex session",
+    latestUserText: "fix the tuiui summary tab",
+    latestAssistantText: "this is the wrong supervising session",
+    createdOffsetMs: -60_000,
+    updatedOffsetMs: 2_000,
+  });
+  writeCodexFixtureState(ctx, launchedPayload.createdAt, {
+    codexHomeDir: fakeCodexHome,
+    threadId: "codex-test-thread",
+    title: "Codex fixture thread",
+    latestUserText: "summarize this codex tui",
+    latestAssistantText: "codex can now be summarized",
+    createdOffsetMs: 100,
+    updatedOffsetMs: 1_000,
+  });
 
   await clickSessionMenuButton(page, "Summary");
   await page.getByRole("button", { name: "Refresh SDK" }).click();
 
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("provider: codex");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home/state_5.sqlite");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("providerSessionId: codex-test-thread");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestUserText: summarize this codex tui");
   await expect(page.getByRole("textbox", { name: "SDK data YAML" })).toContainText("latestAssistantText: codex can now be summarized");
+  await expect(page.getByRole("textbox", { name: "SDK data YAML" })).not.toContainText("this is the wrong supervising session");
   await expect.poll(async () => {
     return await page.locator("#sdk-yaml-editor .cm-editor").evaluate((editor) => getComputedStyle(editor).fontSize);
   }).toBe("10px");
@@ -590,19 +612,31 @@ for (let index = 1; index <= 80; index += 1) {
 setTimeout(() => {}, 100000);
 `;
 
-function writeCodexFixtureState(ctx: FixtureContext, launchedAt: string) {
-  const codexDir = path.join(ctx.env.HOME || "", ".codex");
+function writeCodexFixtureState(
+  ctx: FixtureContext,
+  launchedAt: string,
+  options: {
+    codexHomeDir: string;
+    threadId: string;
+    title: string;
+    latestUserText: string;
+    latestAssistantText: string;
+    createdOffsetMs: number;
+    updatedOffsetMs: number;
+  },
+) {
+  const codexDir = options.codexHomeDir;
   const sessionsDir = path.join(codexDir, "sessions", "2026", "05", "08");
   fs.mkdirSync(sessionsDir, { recursive: true });
-  const rolloutPath = path.join(sessionsDir, "rollout-codex-test-thread.jsonl");
+  const rolloutPath = path.join(sessionsDir, `rollout-${options.threadId}.jsonl`);
   fs.writeFileSync(rolloutPath, [
-    codexRolloutMessage("2026-05-08T14:28:02.000Z", "user", "summarize this codex tui"),
-    codexRolloutMessage("2026-05-08T14:28:03.000Z", "assistant", "codex can now be summarized"),
+    codexRolloutMessage("2026-05-08T14:28:02.000Z", "user", options.latestUserText),
+    codexRolloutMessage("2026-05-08T14:28:03.000Z", "assistant", options.latestAssistantText),
   ].join("\n"));
 
-  const databasePath = path.join(codexDir, "state_5.sqlite");
-  const createdAtMs = new Date(launchedAt).getTime() + 100;
-  const updatedAtMs = createdAtMs + 1000;
+  const databasePath = path.join(options.codexHomeDir, "state_5.sqlite");
+  const createdAtMs = new Date(launchedAt).getTime() + options.createdOffsetMs;
+  const updatedAtMs = new Date(launchedAt).getTime() + options.updatedOffsetMs;
   execFileSync("sqlite3", [databasePath, `
     create table if not exists threads (
       id text primary key,
@@ -656,21 +690,21 @@ function writeCodexFixtureState(ctx: FixtureContext, launchedAt: string) {
       created_at_ms,
       updated_at_ms
     ) values (
-      'codex-test-thread',
+      '${sqlString(options.threadId)}',
       '${sqlString(rolloutPath)}',
       ${Math.floor(createdAtMs / 1000)},
       ${Math.floor(updatedAtMs / 1000)},
       'cli',
       'openai',
       '${sqlString(ctx.workspaceDir)}',
-      'Codex fixture thread',
+      '${sqlString(options.title)}',
       'read-only',
       'never',
       42,
       1,
       0,
       '0.129.0',
-      'summarize this codex tui',
+      '${sqlString(options.latestUserText)}',
       'enabled',
       'gpt-5.5',
       'medium',
