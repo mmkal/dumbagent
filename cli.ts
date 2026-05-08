@@ -59,6 +59,7 @@ type SessionPayload = {
   rows: number;
   renderedText: string;
   renderedHtml: string;
+  renderedAnsi: string;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -86,6 +87,7 @@ type RuntimeSession = {
   writeQueue: Promise<void>;
   renderedText: string;
   renderedHtml: string;
+  renderedAnsi: string;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -346,6 +348,7 @@ async function createSession(input: CreateSessionInput) {
     writeQueue: Promise.resolve(),
     renderedText: "",
     renderedHtml: "",
+    renderedAnsi: "",
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
@@ -401,6 +404,7 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
   const renderedText = renderTerminalText(session);
   session.renderedText = renderedText;
   session.renderedHtml = session.serializer.serializeAsHTML({ includeGlobalBackground: true });
+  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(renderedText, { cols: session.cols, rows: session.rows });
   session.title = inferSessionTitle(session, chunk);
@@ -477,6 +481,7 @@ async function resizeSession(session: RuntimeSession, cols: number, rows: number
   session.process.terminal.resize(session.cols, session.rows);
   session.renderedText = renderTerminalText(session);
   session.renderedHtml = session.serializer.serializeAsHTML({ includeGlobalBackground: true });
+  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(session.renderedText, { cols: session.cols, rows: session.rows });
   session.updatedAt = new Date().toISOString();
@@ -550,6 +555,7 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     rows: session.rows,
     renderedText: session.renderedText,
     renderedHtml: session.renderedHtml,
+    renderedAnsi: session.renderedAnsi,
     blocks: session.blocks,
     semantic: session.semantic,
     sdk: session.sdk,

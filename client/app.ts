@@ -21,6 +21,7 @@ type SessionPayload = {
   rows: number;
   renderedText: string;
   renderedHtml: string;
+  renderedAnsi: string;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -567,14 +568,13 @@ async function syncXterm(payload: SessionPayload) {
   const newestId = newestEvent ? newestEvent.id : 0;
   if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
     term.reset();
-    const stdout = await fetchStdoutEvents(payload.id, 0).catch(() => ({ events: payload.stdoutEvents }));
-    if (xtermSessionId !== payload.id) {
+    if (payload.renderedAnsi) {
+      await writeXterm(term, payload.renderedAnsi);
+      xtermLastStdoutEventId = newestId;
       return;
     }
-    for (const event of stdout.events) {
-      await writeXterm(term, event.chunk);
-      xtermLastStdoutEventId = event.id;
-    }
+    await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
+    xtermLastStdoutEventId = newestId;
     return;
   }
 

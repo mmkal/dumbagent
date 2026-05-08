@@ -79,6 +79,11 @@ test("can type directly into the terminal renderer", async ({ page, ctx }) => {
   await page.keyboard.press("Enter");
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  const payload = await fetchSessionPayload(page);
+  expect(payload.renderedAnsi).toContain("three");
+
+  await page.reload();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 });
 
 test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page, ctx }) => {
