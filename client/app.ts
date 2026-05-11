@@ -7,6 +7,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import { stringify as stringifyYaml } from "yaml";
+import { showToast } from "./toast.ts";
 
 type SessionPayload = {
   id: string;
@@ -166,11 +167,41 @@ let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
 
+showPageLoadToast();
 void renderRoute();
 
 window.addEventListener("popstate", () => {
   void renderRoute();
 });
+
+function showPageLoadToast() {
+  const count = incrementPageLoadCount();
+  const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  const kind = navigation && navigation.type ? navigation.type : "load";
+  const time = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  showToast({
+    id: "page-load",
+    title: `Page loaded #${count}`,
+    message: `${kind} at ${time}`,
+    durationMs: 8_000,
+    testId: "page-load-toast",
+  });
+}
+
+function incrementPageLoadCount() {
+  const key = "tuiui-page-load-count";
+  try {
+    const next = Number(localStorage.getItem(key) || "0") + 1;
+    localStorage.setItem(key, String(next));
+    return next;
+  } catch {
+    return 1;
+  }
+}
 
 async function renderRoute() {
   events?.close();

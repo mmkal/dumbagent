@@ -329,6 +329,63 @@ textarea:focus {
   padding: 14px;
 }
 
+.toast-viewport {
+  position: fixed;
+  right: 14px;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 1000;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.app-toast {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #303844;
+  border-radius: 8px;
+  background: #171b21;
+  color: #eef2f7;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.app-toast[data-state="open"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.app-toast[data-state="closed"] {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.app-toast strong {
+  font-size: 12px;
+}
+
+.app-toast span {
+  color: #9ca8b6;
+  font-size: 11px;
+}
+
+.app-toast-info {
+  border-color: #3a4350;
+}
+
+.app-toast-error {
+  border-color: #7f3a46;
+}
+
+.app-toast-success {
+  border-color: #367948;
+}
+
 .session-layout {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1039,6 +1096,12 @@ textarea {
     min-width: 34px;
     padding: 2px 6px;
     font-size: 9px;
+  }
+
+  .toast-viewport {
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: calc(100vw - 16px);
   }
 
   .menu-button {

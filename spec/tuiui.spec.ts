@@ -24,6 +24,15 @@ const test = base.extend<{ ctx: FixtureContext }>({
   },
 });
 
+test("shows a page-load toast on each full document load", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #1");
+
+  await page.reload();
+  await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #2");
+});
+
 test("launches a TUI, translates boxes into semantic sections, and accepts composer input", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
