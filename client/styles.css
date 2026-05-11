@@ -708,10 +708,6 @@ pre {
   touch-action: manipulation;
 }
 
-.terminal-xterm-wrap[data-hydrating="true"] .terminal-host {
-  opacity: 0;
-}
-
 .terminal-host .xterm {
   width: 100%;
   height: 100%;

@@ -279,22 +279,6 @@ test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page,
   expect(scrollTop).toBe(0);
 });
 
-test("hides initial xterm hydration so scrollback does not visibly replay", async ({ page, ctx }) => {
-  await page.addInitScript(() => {
-    (window as any).__tuiuiTestXtermWriteDelayMs = 250;
-  });
-  await page.goto(ctx.baseUrl);
-
-  await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
-  await page.getByRole("button", { name: "Launch" }).click();
-
-  await expect(page.locator(".terminal-xterm-wrap")).toHaveAttribute("data-hydrating", "true");
-  await expect(page.locator(".terminal-host")).toHaveCSS("opacity", "0");
-  await expect(page.locator(".xterm-rows")).toContainText("scrollback line 80");
-  await expect(page.locator(".terminal-xterm-wrap")).not.toHaveAttribute("data-hydrating", "true");
-  await expect(page.locator(".terminal-host")).toHaveCSS("opacity", "1");
-});
-
 test("keeps mobile session chrome compact without document scrolling", async ({ page }) => {
   await using ctx = await createContext({ TUIUI_PAGE_LOAD_TOASTS: "1" });
   await page.setViewportSize({ width: 390, height: 844 });
