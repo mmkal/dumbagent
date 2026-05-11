@@ -157,6 +157,27 @@ button:disabled {
 }
 
 .quick-launch {
+  display: grid;
+  gap: 6px;
+  align-self: stretch;
+  grid-column: 1 / -1;
+}
+
+.quick-launch-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+}
+
+.quick-launch-label {
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.quick-launch-buttons {
   display: flex;
   gap: 6px;
   align-items: center;

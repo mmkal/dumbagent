@@ -207,8 +207,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
       { id: "custom", label: "Custom", command: "", args: [], fakeAgent: "" },
       { id: "opencode", label: "OpenCode", command: "opencode", args: [], fakeAgent: "" },
       { id: "codex", label: "Codex", command: "codex", args: [], fakeAgent: "" },
+      { id: "claude", label: "Claude", command: "claude", args: [], fakeAgent: "" },
       { id: "fake-opencode", label: "Fake OpenCode", command: "opencode", args: [], fakeAgent: "opencode" },
       { id: "fake-codex", label: "Fake Codex", command: "codex", args: [], fakeAgent: "codex" },
+      { id: "fake-claude", label: "Fake Claude", command: "claude", args: [], fakeAgent: "claude" },
       { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
     ]);
   }

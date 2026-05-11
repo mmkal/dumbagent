@@ -204,7 +204,10 @@ async function renderHome() {
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
   ]);
-  const quickLaunchCommands = commands.filter((command) => command.id !== "custom");
+  const quickLaunchRows = [
+    { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
+    { label: "Fake", commands: commands.filter((command) => Boolean(command.fakeAgent)) },
+  ].filter((row) => row.commands.length);
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -215,13 +218,21 @@ async function renderHome() {
       <section class="launcher" aria-label="Launch session">
         <form id="launch-form" class="launch-form">
           <div class="quick-launch" role="group" aria-label="Quick launch">
-            ${quickLaunchCommands.map((command) => `
-              <button
-                type="button"
-                class="preset-button"
-                data-preset-id="${escapeAttr(command.id)}"
-                title="${escapeAttr([command.command, ...command.args].join(" "))}"
-              >${escapeHtml(command.label)}</button>
+            ${quickLaunchRows.map((row) => `
+              <div class="quick-launch-row" role="group" aria-label="${escapeAttr(`${row.label} presets`)}">
+                <span class="quick-launch-label">${escapeHtml(row.label)}</span>
+                <div class="quick-launch-buttons">
+                  ${row.commands.map((command) => `
+                    <button
+                      type="button"
+                      class="preset-button"
+                      data-preset-id="${escapeAttr(command.id)}"
+                      aria-label="${escapeAttr(command.label)}"
+                      title="${escapeAttr([command.command, ...command.args].join(" "))}"
+                    >${escapeHtml(row.label === "Fake" ? command.label.replace(/^Fake /, "") : command.label)}</button>
+                  `).join("")}
+                </div>
+              </div>
             `).join("")}
           </div>
           <label>

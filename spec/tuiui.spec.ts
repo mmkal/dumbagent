@@ -55,6 +55,25 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await expect(page.getByTestId("stdout-log")).toContainText("three");
 });
 
+test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Real presets" }).getByRole("button", { name: "Claude", exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Fake presets" }).getByRole("button", { name: "Fake Claude", exact: true })).toBeVisible();
+
+  const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
+    return elements.map((element) => ({
+      label: element.querySelector(".quick-launch-label")?.textContent?.trim(),
+      buttons: [...element.querySelectorAll("button")].map((button) => button.textContent?.trim()),
+    }));
+  });
+  expect(rows).toMatchObject([
+    { label: "Real", buttons: ["OpenCode", "Codex", "Claude", "ghui"] },
+    { label: "Fake", buttons: ["OpenCode", "Codex", "Claude"] },
+  ]);
+});
+
 test("sends named key chords separately from the composer", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
