@@ -148,6 +148,58 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\x1b");
 });
 
+test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
+  await page.addInitScript(() => {
+    const spoken: string[] = [];
+    let handlers: any = null;
+    (window as any).__voiceSpoken = spoken;
+    (window as any).__voiceEmit = (transcript: string, final = true) => {
+      handlers?.onResult({ transcript, final });
+    };
+    (window as any).__tuiuiVoiceTest = {
+      minReadbackDelayMs: 0,
+      recognizer: {
+        supported: true,
+        start(nextHandlers: any) {
+          handlers = nextHandlers;
+        },
+        stop() {
+        },
+        cancel() {
+          handlers = null;
+        },
+      },
+      speaker: {
+        supported: true,
+        speak(text: string) {
+          spoken.push(text);
+        },
+        stop() {
+          spoken.push("[stop]");
+        },
+      },
+    };
+  });
+
+  await launchFakeCodex(page, ctx);
+
+  await page.getByRole("button", { name: "Push to talk" }).dispatchEvent("pointerdown");
+  await expect(page.getByTestId("voice-status")).toContainText("Listening");
+  await page.evaluate(() => {
+    (window as any).__voiceEmit("what is one plus two");
+  });
+
+  await expect(page.getByTestId("stdin-log")).toContainText("what is one plus two");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__voiceSpoken);
+  }).toEqual(expect.arrayContaining([expect.stringContaining("three")]));
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__voiceSpoken[0]);
+  }).toContain("Sent: what is one plus two");
+  await expect(page.getByTestId("voice-status")).toContainText("Readback complete");
+});
+
 test("key chord buttons do not return focus to the composer", async ({ page, ctx }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await launchFakeCodex(page, ctx);
