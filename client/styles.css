@@ -1287,6 +1287,94 @@ pre {
   padding-top: 8px;
 }
 
+.composer[data-attachment-dragging="true"] .composer-input-row {
+  outline: 2px solid #64d2c8;
+  outline-offset: 2px;
+}
+
+.attachment-preview {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.attachment-preview[hidden] {
+  display: none;
+}
+
+.attachment-preview-item {
+  display: grid;
+  grid-template-rows: 54px auto;
+  gap: 4px;
+  flex: 0 0 92px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #303844;
+  border-radius: 7px;
+  background: #151a20;
+  padding: 5px;
+}
+
+.attachment-preview-item img {
+  width: 100%;
+  height: 54px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: #0f1318;
+}
+
+.attachment-preview-item figcaption,
+.attachment-preview-item strong {
+  overflow: hidden;
+  color: #c8d2df;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.file-preview {
+  place-items: center;
+  grid-template-rows: 30px auto;
+}
+
+.file-preview span {
+  color: #8f9aaa;
+  font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+}
+
+.composer-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 6px;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.attachment-file-input {
+  display: none;
+}
+
+.composer-attach {
+  display: grid;
+  place-items: center;
+  min-width: 38px;
+  min-height: 48px;
+  padding: 0;
+}
+
+.composer-attach svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .chord-shortcuts {
   display: flex;
   align-items: center;
@@ -1540,6 +1628,15 @@ textarea {
     height: 40px;
     padding: 7px 8px;
     font-size: 16px;
+  }
+
+  .composer-input-row {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  .composer-attach {
+    min-width: 34px;
+    min-height: 40px;
   }
 
   .composer-actions {

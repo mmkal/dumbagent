@@ -189,6 +189,19 @@ type LaunchSessionInput = {
   fakeAgent: string;
 };
 
+type AttachmentUpload = {
+  path: string;
+  name: string;
+  originalName: string;
+  type: string;
+  size: number;
+};
+
+type ComposerAttachment = AttachmentUpload & {
+  id: string;
+  previewUrl: string;
+};
+
 declare global {
   interface Window {
     __tuiuiVoiceTest?: {
@@ -231,6 +244,7 @@ let terminalScrollAnimationFrame: number | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
 let voiceReadbackTimer: number | null = null;
+let composerAttachments: ComposerAttachment[] = [];
 
 void boot();
 
@@ -548,7 +562,16 @@ async function renderSession(sessionId: string) {
         </aside>
       </section>
       <section class="composer" aria-label="Session input">
-        <textarea id="stdin" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+        <div id="attachment-preview" class="attachment-preview" data-testid="attachment-preview" aria-live="polite" hidden></div>
+        <div class="composer-input-row">
+          <textarea id="stdin" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+          <input id="attachment-file" class="attachment-file-input" type="file" multiple />
+          <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
+            </svg>
+          </button>
+        </div>
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
           ${renderChordShortcuts(binary)}
         </div>
@@ -590,6 +613,7 @@ function bindSessionControls(sessionId: string) {
   const sendButton = document.getElementById("send") as HTMLButtonElement;
   const chordForm = document.getElementById("chord-form") as HTMLFormElement;
   setupVoiceControls(sessionId, textarea);
+  setupAttachmentControls(sessionId, textarea);
 
   sendButton.addEventListener("click", () => {
     void sendComposer(sessionId);
@@ -676,6 +700,214 @@ function bindSessionControls(sessionId: string) {
       scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
     });
   });
+}
+
+function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElement) {
+  const input = document.getElementById("attachment-file") as HTMLInputElement | null;
+  const button = document.getElementById("attach") as HTMLButtonElement | null;
+  const preview = document.getElementById("attachment-preview") as HTMLElement | null;
+  const composer = document.querySelector<HTMLElement>(".composer");
+  if (!input || !button || !preview || !composer) {
+    return;
+  }
+
+  clearComposerAttachments(preview);
+
+  button.addEventListener("click", () => {
+    input.click();
+  });
+
+  input.addEventListener("change", () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+  });
+
+  textarea.addEventListener("paste", (event) => {
+    const files = imageFilesFromClipboard(event.clipboardData);
+    if (!files.length) {
+      return;
+    }
+    event.preventDefault();
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+  });
+
+  composer.addEventListener("dragover", (event) => {
+    if (!dragEventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    composer.dataset.attachmentDragging = "true";
+  });
+
+  composer.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget instanceof Node && composer.contains(event.relatedTarget)) {
+      return;
+    }
+    delete composer.dataset.attachmentDragging;
+  });
+
+  composer.addEventListener("drop", (event) => {
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) {
+      return;
+    }
+    event.preventDefault();
+    delete composer.dataset.attachmentDragging;
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+  });
+}
+
+async function uploadComposerAttachments(
+  sessionId: string,
+  textarea: HTMLTextAreaElement,
+  preview: HTMLElement,
+  button: HTMLButtonElement,
+  files: File[],
+) {
+  button.disabled = true;
+  try {
+    for (const file of files) {
+      const upload = await uploadAttachment(sessionId, file);
+      const attachment: ComposerAttachment = {
+        ...upload,
+        id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        previewUrl: upload.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+      };
+      composerAttachments.push(attachment);
+      insertAttachmentPath(textarea, attachment.path);
+    }
+    renderAttachmentPreview(preview, composerAttachments);
+  } catch (error) {
+    showToast({
+      title: "Attachment upload failed",
+      message: String(error instanceof Error ? error.message : error),
+      tone: "error",
+      testId: "attachment-upload-error-toast",
+    });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function uploadAttachment(sessionId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file, attachmentUploadName(file));
+  const response = await fetch(`/api/sessions/${sessionId}/attachments`, {
+    method: "POST",
+    body,
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    if (response.status === 404 && message.trim() === "not found") {
+      throw new Error("Attachment endpoint is missing on this server. Restart tuiui so the backend route is loaded.");
+    }
+    throw new Error(message);
+  }
+  return await response.json() as AttachmentUpload;
+}
+
+function attachmentUploadName(file: File) {
+  if (file.name) {
+    return file.name;
+  }
+  if (file.type === "image/png") {
+    return "image.png";
+  }
+  if (file.type === "image/jpeg") {
+    return "image.jpg";
+  }
+  if (file.type === "image/webp") {
+    return "image.webp";
+  }
+  if (file.type === "image/gif") {
+    return "image.gif";
+  }
+  return "attachment";
+}
+
+function renderAttachmentPreview(preview: HTMLElement, attachments: ComposerAttachment[]) {
+  preview.hidden = attachments.length === 0;
+  preview.innerHTML = attachments.map((attachment) => {
+    const label = attachment.originalName || attachment.name;
+    if (attachment.previewUrl) {
+      return `
+        <figure class="attachment-preview-item">
+          <img src="${escapeAttr(attachment.previewUrl)}" alt="${escapeAttr(label)}">
+          <figcaption title="${escapeAttr(attachment.path)}">${escapeHtml(label)}</figcaption>
+        </figure>
+      `;
+    }
+
+    return `
+      <div class="attachment-preview-item file-preview" title="${escapeAttr(attachment.path)}">
+        <span aria-hidden="true">file</span>
+        <strong>${escapeHtml(label)}</strong>
+      </div>
+    `;
+  }).join("");
+}
+
+function clearComposerAttachments(preview = document.getElementById("attachment-preview") as HTMLElement | null) {
+  for (const attachment of composerAttachments) {
+    if (attachment.previewUrl) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  }
+  composerAttachments = [];
+  if (preview) {
+    preview.hidden = true;
+    preview.innerHTML = "";
+  }
+}
+
+function insertAttachmentPath(textarea: HTMLTextAreaElement, filePath: string) {
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  const prefix = before && !/\s$/.test(before) ? " " : "";
+  const suffix = after && !/^\s/.test(after) ? " " : "";
+  const insertion = `${prefix}${filePath}${suffix}`;
+  textarea.value = `${before}${insertion}${after}`;
+  const cursor = before.length + insertion.length;
+  textarea.selectionStart = cursor;
+  textarea.selectionEnd = cursor;
+  textarea.focus();
+}
+
+function imageFilesFromClipboard(data: DataTransfer | null) {
+  if (!data) {
+    return [];
+  }
+
+  const files = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  const itemFiles = Array.from(data.items)
+    .map((item) => item.kind === "file" ? item.getAsFile() : null)
+    .filter((file): file is File => Boolean(file))
+    .filter((file) => file.type.startsWith("image/"));
+
+  return uniqueFiles([...files, ...itemFiles]);
+}
+
+function uniqueFiles(files: File[]) {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function dragEventHasFiles(event: DragEvent) {
+  const transfer = event.dataTransfer;
+  if (!transfer) {
+    return false;
+  }
+  return Array.from(transfer.types).includes("Files");
 }
 
 function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
@@ -767,6 +999,7 @@ async function sendComposer(sessionId: string) {
     method: "POST",
     body: JSON.stringify({ text, submit: true }),
   });
+  clearComposerAttachments();
 }
 
 async function sendKey(sessionId: string, key: string) {

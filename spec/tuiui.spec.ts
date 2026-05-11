@@ -84,6 +84,77 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
   await expect(page.getByTestId("stdout-log")).toContainText("three");
 });
 
+test("uploads composer attachments to a session temp directory and inserts the saved path", async ({ page, ctx }) => {
+  const firstImagePath = path.join(ctx.tempRoot, "tiny.png");
+  const imageBytes = Buffer.from(tinyPngBase64, "base64");
+  fs.writeFileSync(firstImagePath, imageBytes);
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
+
+  const fileChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Attach file" }).click();
+  await (await fileChooser).setFiles(firstImagePath);
+
+  const textarea = page.getByRole("textbox", { name: "Send stdin" });
+  await expect(textarea).toHaveValue(/\/tmp\/tuiui\/tuiui_[a-f0-9]+\/tiny\.png/);
+  const firstSavedPath = (await textarea.inputValue()).trim();
+  expect(fs.existsSync(firstSavedPath)).toBe(true);
+  expect(fs.readFileSync(firstSavedPath).equals(imageBytes)).toBe(true);
+  await expect(page.getByTestId("attachment-preview").locator("img")).toBeVisible();
+
+  await page.locator(".composer").evaluate((composer, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "dropped.png", { type: "image/png" }));
+    const event = new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    });
+    composer.dispatchEvent(event);
+  }, tinyPngBase64);
+
+  await expect(textarea).toHaveValue(/tiny\.png\s+\/tmp\/tuiui\/tuiui_[a-f0-9]+\/dropped\.png/);
+  const paths = (await textarea.inputValue()).trim().split(/\s+/);
+  expect(paths).toHaveLength(2);
+  expect(fs.existsSync(paths[1]!)).toBe(true);
+  await expect(page.getByTestId("attachment-preview").locator("img")).toHaveCount(2);
+
+  const sentText = await textarea.inputValue();
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(textarea).toHaveValue("");
+  await expect(page.getByTestId("attachment-preview")).toBeHidden();
+  await expect.poll(async () => {
+    return (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text;
+  }).toBe(sentText);
+});
+
+test("explains that attachment uploads need a restarted server when the route is missing", async ({ page, ctx }) => {
+  const imagePath = path.join(ctx.tempRoot, "tiny.png");
+  fs.writeFileSync(imagePath, Buffer.from(tinyPngBase64, "base64"));
+  await page.route("**/api/sessions/*/attachments", async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "text/plain",
+      body: "not found",
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
+
+  const fileChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Attach file" }).click();
+  await (await fileChooser).setFiles(imagePath);
+
+  await expect(page.getByTestId("attachment-upload-error-toast")).toContainText("Restart tuiui");
+});
+
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
   writeRecentOpenCodeFixtureState(ctx, {
     sessionId: "mobile-opencode-session",
@@ -883,6 +954,8 @@ for (let index = 1; index <= 80; index += 1) {
 }
 setTimeout(() => {}, 100000);
 `;
+
+const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 function writeCodexFixtureState(
   ctx: FixtureContext,

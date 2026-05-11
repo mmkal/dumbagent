@@ -190,6 +190,8 @@ const defaultRows = 42;
 const idleThresholdMs = 1_000;
 const redrawQuietMs = 600;
 const redrawMaxMs = 10_000;
+const attachmentRoot = path.join("/tmp", "tuiui");
+const terminalScrollbackSnapshotRows = 500;
 
 const cli = parseCliArgs(process.argv.slice(2));
 const state: ServerState = {
@@ -347,6 +349,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json({ ok: true });
   }
 
+  if (request.method === "POST" && action === "attachments") {
+    return await saveSessionAttachment(session, request, url);
+  }
+
   if (request.method === "POST" && action === "sdk-refresh") {
     await refreshSessionSdk(session);
     return Response.json(getSessionPayload(session));
@@ -375,6 +381,63 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   return new Response("not found", { status: 404 });
+}
+
+async function saveSessionAttachment(session: RuntimeSession, request: Request, url: URL) {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    return Response.json({ error: "missing file" }, { status: 400 });
+  }
+
+  const requestedName = url.searchParams.get("filename") || "";
+  const fallbackName = `attachment-${new Date().toISOString().replaceAll(":", "-")}`;
+  const safeName = safeAttachmentName(requestedName || file.name || fallbackName);
+  const extension = path.extname(file.name || "");
+  const fileName = safeName.includes(".") || !extension ? safeName : `${safeName}${extension}`;
+  const attachmentDir = path.join(attachmentRoot, session.id);
+  fs.mkdirSync(attachmentDir, { recursive: true });
+
+  const filePath = nextAvailableAttachmentPath(attachmentDir, fileName);
+  await Bun.write(filePath, file);
+
+  return Response.json({
+    path: filePath,
+    name: path.basename(filePath),
+    originalName: file.name || "",
+    type: file.type || "",
+    size: file.size,
+  });
+}
+
+function safeAttachmentName(name: string) {
+  const cleaned = path.basename(name)
+    .replaceAll("/", "-")
+    .replaceAll("\\", "-")
+    .replaceAll("\0", "")
+    .trim();
+
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return `attachment-${Date.now()}`;
+  }
+
+  return cleaned;
+}
+
+function nextAvailableAttachmentPath(directory: string, fileName: string) {
+  let candidate = path.join(directory, fileName);
+  if (!fs.existsSync(candidate)) {
+    return candidate;
+  }
+
+  const extension = path.extname(fileName);
+  const stem = path.basename(fileName, extension) || "attachment";
+  for (let index = 2; ; index += 1) {
+    candidate = path.join(directory, `${stem}-${index}${extension}`);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
 }
 
 async function createSession(input: CreateSessionInput) {
@@ -780,7 +843,9 @@ function renderTerminalHtml(session: RuntimeSession) {
 }
 
 function renderTerminalAnsi(session: RuntimeSession) {
-  return session.serializer.serialize({ scrollback: 0 });
+  return session.serializer.serialize({
+    scrollback: Math.min(terminalScrollbackSnapshotRows, session.terminal.buffer.active.baseY),
+  });
 }
 
 async function sendToSession(state: ServerState, session: RuntimeSession, text: string, submit: boolean) {
