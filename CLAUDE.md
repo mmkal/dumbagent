@@ -1,0 +1,1 @@
+If I tell you to capture a photo, run `bun upload.ts capture`. It will print out a URL which you should show me. I'll click the URL and upload a photo. The CLI will wait until the photo exists, then print out its path and exit.

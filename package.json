@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "bun run cli.ts daemon",
     "start": "bun run cli.ts",
+    "upload": "bun run upload.ts",
+    "capture-photo": "bun run upload.ts capture",
     "test": "bun test test && playwright test",
     "spec": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
