@@ -115,6 +115,13 @@ test("lists recent OpenCode sessions by latest visible message", () => {
         messageAt("assistant", "opencode is now in the launcher", "2026-05-11T11:59:00.000Z"),
       ],
     },
+    {
+      session: { id: "sidecar-summary", directory: "/repo", title: "Sidecar OpenCode", time_updated: Date.parse("2026-05-11T11:59:30.000Z") },
+      messages: [
+        messageAt("user", structuredSessionBriefPrompt("OpenCode"), "2026-05-11T11:59:20.000Z"),
+        messageAt("assistant", structuredBriefXml(), "2026-05-11T11:59:30.000Z"),
+      ],
+    },
   ], Date.parse("2026-05-11T12:00:00.000Z"));
 
   expect(sessions).toMatchObject([
@@ -179,5 +186,18 @@ function structuredBriefXml() {
     "  <risks_blockers></risks_blockers>",
     "  <suggested_next_actions><item>Run the tests.</item></suggested_next_actions>",
     "</session_brief>",
+  ].join("\n");
+}
+
+function structuredSessionBriefPrompt(provider: string) {
+  return [
+    `Create a structured Session brief for this ${provider} TUI session.`,
+    "",
+    "Return only this XML-style contract, with every tag present even when the value is empty:",
+    "",
+    "<session_brief format=\"tuiui.sessionBrief.v1\">",
+    "</session_brief>",
+    "",
+    "Use only the transcript below.",
   ].join("\n");
 }

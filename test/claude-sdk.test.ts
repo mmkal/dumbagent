@@ -7,6 +7,7 @@ import {
   buildClaudeSidecarSummary,
   claudeConfigDirForEnv,
   createClaudeSummaryPrompt,
+  discardClaudeSessionTranscripts,
   readRecentClaudeSessions,
   resolveClaudeSession,
 } from "../src/claude-sdk.ts";
@@ -104,6 +105,12 @@ test("lists recent Claude sessions from the SDK transcript store", async () => {
     assistantText: "claude is in recent sessions",
     messageAt: "2026-05-11T11:59:00.000Z",
   });
+  writeClaudeJsonlSession(workspace.path, cwd, {
+    sessionId: "00000000-0000-4000-8000-000000000999",
+    userText: structuredSessionBriefPrompt("Claude"),
+    assistantText: structuredBriefXml(),
+    messageAt: "2026-05-11T11:59:30.000Z",
+  });
 
   const sessions = await readRecentClaudeSessions(workspace.path, Date.parse("2026-05-11T12:00:00.000Z"));
 
@@ -117,6 +124,22 @@ test("lists recent Claude sessions from the SDK transcript store", async () => {
       args: ["--resume", "00000000-0000-4000-8000-000000000123"],
     },
   ]);
+});
+
+test("discards Claude sidecar transcript files", () => {
+  using workspace = createTempWorkspace();
+  const cwd = path.join(workspace.path, "repo");
+  const sessionId = "00000000-0000-4000-8000-000000000999";
+  fs.mkdirSync(cwd, { recursive: true });
+  writeClaudeJsonlSession(workspace.path, cwd, {
+    sessionId,
+    userText: structuredSessionBriefPrompt("Claude"),
+    assistantText: structuredBriefXml(),
+    messageAt: "2026-05-11T11:59:30.000Z",
+  });
+
+  expect(discardClaudeSessionTranscripts(workspace.path, sessionId)).toBe(true);
+  expect(fs.existsSync(findClaudeSessionPath(workspace.path, sessionId))).toBe(false);
 });
 
 function claudeSession(sessionId: string, cwd: string, createdAt: string, updatedAt: string) {
@@ -175,6 +198,25 @@ function writeClaudeJsonlSession(
   ].join("\n"));
 }
 
+function findClaudeSessionPath(configDir: string, sessionId: string) {
+  const projectsDir = path.join(configDir, "projects");
+  const directories = [projectsDir];
+  while (directories.length) {
+    const directory = directories.pop() || "";
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        directories.push(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name === `${sessionId}.jsonl`) {
+        return entryPath;
+      }
+    }
+  }
+  return path.join(projectsDir, `${sessionId}.jsonl`);
+}
+
 function structuredBriefXml() {
   return [
     "<session_brief format=\"tuiui.sessionBrief.v1\">",
@@ -186,6 +228,19 @@ function structuredBriefXml() {
     "  <risks_blockers></risks_blockers>",
     "  <suggested_next_actions><item>Run the tests.</item></suggested_next_actions>",
     "</session_brief>",
+  ].join("\n");
+}
+
+function structuredSessionBriefPrompt(provider: string) {
+  return [
+    `Create a structured Session brief for this ${provider} TUI session.`,
+    "",
+    "Return only this XML-style contract, with every tag present even when the value is empty:",
+    "",
+    "<session_brief format=\"tuiui.sessionBrief.v1\">",
+    "</session_brief>",
+    "",
+    "Use only the transcript below.",
   ].join("\n");
 }
 

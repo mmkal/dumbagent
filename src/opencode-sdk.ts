@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import { createStructuredSessionBriefPrompt, parseStructuredSessionBrief, type StructuredSessionBrief } from "./session-brief.ts";
+import {
+  createStructuredSessionBriefPrompt,
+  isStructuredSessionBriefPrompt,
+  parseStructuredSessionBrief,
+  type StructuredSessionBrief,
+} from "./session-brief.ts";
 
 export type AgentProvider = "opencode" | "codex" | "claude";
 
@@ -236,6 +241,9 @@ export function recentOpenCodeSessionsFromRows(
       const visibleMessages = summary.transcript.filter((message) => {
         return (message.role === "user" || message.role === "assistant") && message.text && message.text !== "[compaction]";
       });
+      if (visibleMessages.some((message) => message.role === "user" && isStructuredSessionBriefPrompt(message.text))) {
+        return null;
+      }
       const lastMessage = visibleMessages
         .slice()
         .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;

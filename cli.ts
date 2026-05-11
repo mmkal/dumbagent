@@ -18,6 +18,7 @@ import {
   buildCodexSummary,
   codexHomeDirFromStateDatabasePath,
   createCodexSummaryPrompt,
+  discardCodexThreadFromDatabasePath,
   readRecentCodexSessionsFromDatabasePath,
   readCodexThreadsFromDatabasePath,
   resolveCodexStateDatabasePathForEnv,
@@ -28,6 +29,7 @@ import {
   buildClaudeSummary,
   claudeConfigDirForEnv,
   createClaudeSummaryPrompt,
+  discardClaudeSessionTranscripts,
   readClaudeSessionMessages,
   readClaudeSessions,
   readRecentClaudeSessions,
@@ -1543,9 +1545,12 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "OpenCode produced the structured brief in a sidecar fork. The live provider session remains the source session.",
+        note: "OpenCode produced the structured brief in a disposable sidecar fork. The live provider session remains the source session.",
       },
     };
+    if (forkSessionId !== sourceSessionId) {
+      await discardOpenCodeSidecarSession(client, forkSessionId);
+    }
     await refreshSessionSdk(session);
   } catch (error) {
     const failedAt = new Date().toISOString();
@@ -1579,6 +1584,9 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (forkSessionId !== sourceSessionId) {
+      await discardOpenCodeSidecarSession(createOpenCodeClient(session), forkSessionId);
+    }
   }
 }
 
@@ -1765,6 +1773,9 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
     }
 
     const summarizedAt = new Date().toISOString();
+    if (sidecarThreadId !== sourceThreadId) {
+      await discardCodexSidecarThread(session.sdk.baseUrl, sidecarThreadId);
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceThreadId,
@@ -1791,7 +1802,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "Codex summarized the source transcript in a separate sidecar thread. The live TUI thread remains untouched.",
+        note: "Codex summarized the source transcript in a disposable sidecar thread. The live TUI thread remains untouched.",
       },
     };
     await refreshCodexSessionSdk(session);
@@ -1827,6 +1838,9 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (sidecarThreadId !== sourceThreadId) {
+      await discardCodexSidecarThread(session.sdk.baseUrl, sidecarThreadId);
+    }
   }
 }
 
@@ -1910,6 +1924,9 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
     });
     forkSessionId = sidecar.forkSessionId;
     const summarizedAt = new Date().toISOString();
+    if (forkSessionId !== sourceSessionId) {
+      await discardClaudeSidecarSession(session.sdk.baseUrl, forkSessionId);
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceSessionId,
@@ -1936,7 +1953,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "Claude summarized the source transcript in a separate fork. The live TUI session remains untouched.",
+        note: "Claude summarized the source transcript in a disposable fork. The live TUI session remains untouched.",
       },
     };
     await refreshClaudeSessionSdk(session);
@@ -1972,6 +1989,9 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (forkSessionId !== sourceSessionId) {
+      await discardClaudeSidecarSession(session.sdk.baseUrl, forkSessionId);
+    }
   }
 }
 
@@ -2043,6 +2063,31 @@ function createOpenCodeClient(session: RuntimeSession) {
     baseUrl: session.sdk.baseUrl,
     directory: session.cwd,
   });
+}
+
+async function discardOpenCodeSidecarSession(client: ReturnType<typeof createOpencodeClient>, sessionId: string) {
+  if (!sessionId) {
+    return;
+  }
+  await client.session.delete({
+    path: { id: sessionId },
+    responseStyle: "data",
+    throwOnError: true,
+  }).catch(() => {});
+}
+
+async function discardCodexSidecarThread(databasePath: string, threadId: string) {
+  if (!threadId) {
+    return;
+  }
+  await Promise.resolve().then(() => discardCodexThreadFromDatabasePath(databasePath, threadId)).catch(() => {});
+}
+
+async function discardClaudeSidecarSession(configDir: string, sessionId: string) {
+  if (!sessionId) {
+    return;
+  }
+  await Promise.resolve().then(() => discardClaudeSessionTranscripts(configDir, sessionId)).catch(() => {});
 }
 
 function responseData<T>(value: any): T {

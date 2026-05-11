@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -9,7 +10,7 @@ import {
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentSessionSummary, RecentAgentSession } from "./opencode-sdk.ts";
-import { createStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
+import { createStructuredSessionBriefPrompt, isStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
 
 type ResolveClaudeSessionInput = {
   sessions: SDKSessionInfo[];
@@ -57,6 +58,12 @@ export async function recentClaudeSessionsFromSdkSessions(
       .catch(() => [] as SessionMessage[]);
     const transcript = buildClaudeTranscript(messages);
     const visibleMessages = transcript.filter((message) => message.text && (message.role === "user" || message.role === "assistant"));
+    if (
+      isStructuredSessionBriefPrompt(String(session.firstPrompt || "")) ||
+      visibleMessages.some((message) => message.role === "user" && isStructuredSessionBriefPrompt(message.text))
+    ) {
+      return null;
+    }
     const lastMessage = visibleMessages
       .slice()
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;
@@ -166,6 +173,36 @@ export function buildClaudeSidecarSummary(sessionId: string, finalResponse: stri
 
 export function createClaudeSummaryPrompt(summary: AgentSessionSummary) {
   return createStructuredSessionBriefPrompt("Claude", summary);
+}
+
+export function discardClaudeSessionTranscripts(configDir: string, sessionId: string) {
+  if (!sessionId) {
+    return false;
+  }
+  const projectsDir = path.join(configDir, "projects");
+  if (!fs.existsSync(projectsDir)) {
+    return false;
+  }
+
+  const targetFilename = `${sessionId}.jsonl`;
+  const pendingDirectories = [projectsDir];
+  let discarded = false;
+  while (pendingDirectories.length) {
+    const directory = pendingDirectories.pop() || "";
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pendingDirectories.push(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name === targetFilename) {
+        fs.rmSync(entryPath, { force: true });
+        discarded = true;
+      }
+    }
+  }
+  return discarded;
 }
 
 export async function runClaudeSidecarSummary(input: {

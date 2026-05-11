@@ -62,6 +62,8 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
   await expect(page.getByTestId("semantic-screen")).toContainText("three");
   await clickSessionMenuButton(page, "Summary");
   await expect(page.getByTestId("sdk-summary")).toContainText(/ready|connected/i);
+  await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
+  await page.locator(".tuishot-preview > summary").click();
   await expect(page.getByTestId("tuishot-preview").locator("img")).toBeVisible();
   await expect.poll(async () => {
     return await page.getByTestId("tuishot-preview").locator("img").evaluate((image: HTMLImageElement) => {
@@ -452,11 +454,14 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await page.getByRole("button", { name: "Refresh snapshot" }).click();
   await expect(page.getByTestId("sdk-summary")).toContainText("connected");
   await expect(page.getByTestId("session-brief")).toContainText("No session brief yet.");
+  await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
+  await expect(page.getByTestId("session-brief")).not.toHaveAttribute("open", "");
   await expect(page.locator(".sdk-diagnostics")).not.toHaveAttribute("open", "");
   const refreshedPayload = await fetchSessionPayload(page);
   expect(refreshedPayload.sdk.summary.latestAssistantText).toContain("three");
   await page.getByRole("button", { name: "Get session brief" }).click();
   await expect.poll(async () => (await fetchSessionPayload(page)).sdk.sidecarSummary.status, { timeout: 20_000 }).toBe("completed");
+  await page.locator(".session-brief > summary").click();
   await expect(page.getByTestId("session-brief")).toContainText("current");
   await expect(page.getByTestId("session-brief")).toContainText("Executive summary");
   await expect(page.getByTestId("session-brief")).toContainText("Suggested next actions");
@@ -474,6 +479,8 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
     result: true,
   });
   expect(payload.sdk.forks[0].forkSessionId).not.toBe(payload.sdk.externalSessionId);
+  const recentSessions = await fetchRecentAgentSessions(page);
+  expect(recentSessions.map((session: any) => session.id)).not.toContain(payload.sdk.forks[0].forkSessionId);
   expect(payload.sdk.summary).toMatchObject({ messageCount: 2 });
   await page.getByRole("button", { name: "Get session brief" }).click();
   await expect.poll(async () => (await fetchSessionPayload(page)).sdk.sidecarSummary.note).toContain("Reused the completed session brief for the current fork point.");
@@ -498,6 +505,7 @@ test("keeps provider diagnostics YAML readable and stable", async ({ page, ctx }
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("forkSessionId:");
   const yamlBeforeRefresh = await page.locator("#sdk-yaml-editor .cm-content").textContent();
   const scrollBeforeRefresh = await scrollYamlEditorToBottom(page);
+  expect(scrollBeforeRefresh).toBeGreaterThan(0);
   await markYamlEditorContent(page);
   await page.getByRole("button", { name: "Refresh snapshot" }).click();
   await expect.poll(async () => await page.locator("#sdk-yaml-editor .cm-content").textContent()).not.toBe(yamlBeforeRefresh);
@@ -629,6 +637,12 @@ async function fetchTuishot(page: Page) {
       disposition: response.headers.get("content-disposition") || "",
       body: await response.text(),
     };
+  });
+}
+
+async function fetchRecentAgentSessions(page: Page) {
+  return await page.evaluate(async () => {
+    return await fetch("/api/agent-sessions/recent").then((response) => response.json());
   });
 }
 

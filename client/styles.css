@@ -892,7 +892,7 @@ pre {
 
 .sdk-screen {
   background: #0d1014;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .sdk-panel {
@@ -903,9 +903,10 @@ pre {
     "tuishot"
     "brief"
     "diagnostics";
-  grid-template-rows: auto auto minmax(116px, 0.85fr) minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto auto;
+  align-content: start;
   gap: 8px;
-  height: 100%;
+  height: auto;
   min-height: 100%;
   min-width: 0;
   padding: 8px;
@@ -965,10 +966,65 @@ pre {
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.sdk-panel details {
+  min-width: 0;
+  min-height: 0;
+}
+
+.sdk-panel details > summary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 9px;
+  color: #dce5ef;
+}
+
+.sdk-panel details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sdk-panel details > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid #9ca8b6;
+  transition: transform 120ms ease;
+}
+
+.sdk-panel details[open] > summary {
+  border-bottom: 1px solid #242b35;
+}
+
+.sdk-panel details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.sdk-details-summary-row {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.sdk-details-summary-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
 .tuishot-preview {
   grid-area: tuishot;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -977,22 +1033,11 @@ pre {
   background: #0a0a0a;
 }
 
-.tuishot-preview > header {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-  padding: 7px 9px;
-  border-bottom: 1px solid #242b35;
+.tuishot-preview > summary {
   background: #11161c;
 }
 
-.tuishot-preview > header strong {
-  font-size: 11px;
-  text-transform: uppercase;
-}
-
-.tuishot-preview > header span {
+.tuishot-preview .sdk-details-summary-row span {
   color: #9ca8b6;
   font-size: 10px;
   font-weight: 800;
@@ -1001,6 +1046,7 @@ pre {
 .tuishot-frame {
   min-width: 0;
   min-height: 0;
+  max-height: min(360px, 42dvh);
   overflow: auto;
   padding: 8px;
   background: #0a0a0a;
@@ -1014,8 +1060,6 @@ pre {
 
 .session-brief {
   grid-area: brief;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1024,21 +1068,7 @@ pre {
   background: #11161c;
 }
 
-.session-brief > header {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 9px;
-  border-bottom: 1px solid #242b35;
-}
-
-.session-brief > header strong {
-  font-size: 11px;
-  text-transform: uppercase;
-}
-
-.session-brief > header span {
+.session-brief .sdk-details-summary-row > span {
   border: 1px solid #3a4350;
   border-radius: 999px;
   padding: 3px 7px;
@@ -1048,17 +1078,17 @@ pre {
   text-transform: uppercase;
 }
 
-.session-brief[data-brief-state="current"] > header span {
+.session-brief[data-brief-state="current"] .sdk-details-summary-row > span {
   border-color: #7adf93;
   color: #bff7cc;
 }
 
-.session-brief[data-brief-state="stale"] > header span {
+.session-brief[data-brief-state="stale"] .sdk-details-summary-row > span {
   border-color: #f3c969;
   color: #ffe2a0;
 }
 
-.session-brief[data-brief-state="error"] > header span {
+.session-brief[data-brief-state="error"] .sdk-details-summary-row > span {
   border-color: #f28b8b;
   color: #ffd3d3;
 }
@@ -1066,6 +1096,7 @@ pre {
 .session-brief-content {
   min-width: 0;
   min-height: 0;
+  max-height: min(420px, 46dvh);
   overflow: auto;
   padding: 10px;
   color: #dce5ef;
@@ -1131,28 +1162,18 @@ pre {
   grid-area: diagnostics;
   min-width: 0;
   min-height: 0;
-}
-
-.sdk-diagnostics > summary {
-  cursor: pointer;
-  color: #9ca8b6;
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.sdk-diagnostics[open] {
-  display: grid;
-  grid-template-rows: auto minmax(0, 260px);
-  gap: 6px;
+  overflow: hidden;
+  border: 1px solid #2c333d;
+  border-radius: 7px;
+  background: #11161c;
 }
 
 .sdk-yaml-panel {
   min-width: 0;
   min-height: 0;
+  height: 360px;
+  max-height: 52dvh;
   overflow: hidden;
-  border: 1px solid #2c333d;
-  border-radius: 7px;
 }
 
 #sdk-yaml-editor {
@@ -1160,6 +1181,7 @@ pre {
 }
 
 #sdk-yaml-editor .cm-editor {
+  height: 100%;
   font-size: 10px !important;
   line-height: 1.35 !important;
 }

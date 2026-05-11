@@ -1314,15 +1314,21 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         </header>
         <p class="sdk-error" data-sdk-error hidden></p>
         ${renderTuishotPreviewMarkup()}
-        <section class="session-brief" data-testid="session-brief" data-brief-state="empty">
-          <header>
-            <strong>Session brief</strong>
-            <span data-session-brief-state></span>
-          </header>
+        <details class="session-brief" data-testid="session-brief" data-brief-state="empty">
+          <summary>
+            <span class="sdk-details-summary-row">
+              <strong>Session brief</strong>
+              <span data-session-brief-state></span>
+            </span>
+          </summary>
           <div class="session-brief-content" data-session-brief-content></div>
-        </section>
+        </details>
         <details class="sdk-diagnostics">
-          <summary>Diagnostics</summary>
+          <summary>
+            <span class="sdk-details-summary-row">
+              <strong>Diagnostics</strong>
+            </span>
+          </summary>
           <section class="sdk-yaml-panel" aria-label="Provider snapshot diagnostics YAML panel">
             <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
           </section>
@@ -1340,8 +1346,12 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         showRequestErrorToast("Get session brief failed", error, "sdk-summarize-error-toast");
       });
     });
-    screen.querySelector<HTMLDetailsElement>(".sdk-diagnostics")?.addEventListener("toggle", () => {
-      dataEditorView?.requestMeasure();
+    screen.querySelectorAll<HTMLDetailsElement>(".sdk-panel details").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        if (details.classList.contains("sdk-diagnostics")) {
+          requestAnimationFrame(() => dataEditorView?.requestMeasure());
+        }
+      });
     });
     mountYamlEditor("sdk-yaml-editor", yamlDoc);
   } else {
@@ -1354,15 +1364,17 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
 
 function renderTuishotPreviewMarkup() {
   return `
-    <section class="tuishot-preview" data-testid="tuishot-preview">
-      <header>
-        <strong>Tuishot</strong>
-        <span data-tuishot-meta></span>
-      </header>
+    <details class="tuishot-preview" data-testid="tuishot-preview">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>Tuishot</strong>
+          <span data-tuishot-meta></span>
+        </span>
+      </summary>
       <div class="tuishot-frame">
         <img data-tuishot-image alt="Current terminal view" />
       </div>
-    </section>
+    </details>
   `;
 }
 
