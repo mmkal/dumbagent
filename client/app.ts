@@ -128,6 +128,24 @@ type CommandPreset = {
   fakeAgent: string;
 };
 
+type RecentCodexSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  updatedAt: string;
+  lastMessageAt: string;
+  lastMessageText: string;
+  messageCount: number;
+};
+
+type LaunchSessionInput = {
+  command: string;
+  args: string[];
+  cwd: string;
+  cols: number;
+  fakeAgent: string;
+};
+
 const app = document.getElementById("app")!;
 let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
@@ -199,10 +217,11 @@ function readRendererPreference() {
 }
 
 async function renderHome() {
-  const [cwd, sessions, commands] = await Promise.all([
+  const [cwd, sessions, commands, recentCodexSessions] = await Promise.all([
     api<{ cwd: string }>("/api/cwd"),
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
+    api<RecentCodexSession[]>("/api/codex-sessions/recent"),
   ]);
   const quickLaunchRows = [
     { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
@@ -254,6 +273,29 @@ async function renderHome() {
           <button type="submit">Launch</button>
         </form>
       </section>
+      ${recentCodexSessions.length ? `
+        <section class="recent-codex" aria-label="Recent Codex sessions">
+          <header>
+            <strong>Recent Codex</strong>
+            <span>${recentCodexSessions.length} active in 24h</span>
+          </header>
+          <div class="recent-codex-list">
+            ${recentCodexSessions.map((session) => `
+              <button
+                type="button"
+                class="codex-session-button"
+                data-codex-thread-id="${escapeAttr(session.id)}"
+                aria-label="${escapeAttr(`Resume Codex session ${session.title}`)}"
+                title="${escapeAttr(`codex resume ${session.id}`)}"
+              >
+                <strong>${escapeHtml(session.title || session.id)}</strong>
+                <span>${escapeHtml(session.lastMessageText || "No message text")}</span>
+                <code>${escapeHtml(formatCodexSessionMeta(session))}</code>
+              </button>
+            `).join("")}
+          </div>
+        </section>
+      ` : ""}
       <section class="sessions" aria-label="Sessions">
         ${sessions.length ? sessions.map(renderSessionLink).join("") : `<p class="empty">No sessions</p>`}
       </section>
@@ -264,6 +306,7 @@ async function renderHome() {
   const commandInput = form.elements.namedItem("command") as HTMLInputElement;
   const argsInput = form.elements.namedItem("args") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
+  const recentCodexById = new Map(recentCodexSessions.map((session) => [session.id, session]));
 
   for (const button of form.querySelectorAll<HTMLButtonElement>("[data-preset-id]")) {
     button.addEventListener("click", async () => {
@@ -273,27 +316,66 @@ async function renderHome() {
       }
       commandInput.value = preset.command;
       argsInput.value = preset.args.join(" ");
-      await launchSession(preset);
+      await launchSession({
+        command: preset.command,
+        args: preset.args,
+        cwd: currentLaunchCwd(),
+        cols: currentLaunchCols(),
+        fakeAgent: preset.fakeAgent,
+      });
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-codex-thread-id]")) {
+    button.addEventListener("click", async () => {
+      const session = recentCodexById.get(button.dataset.codexThreadId || "");
+      if (!session) {
+        return;
+      }
+      commandInput.value = "codex";
+      argsInput.value = `resume ${session.id}`;
+      await launchSession({
+        command: "codex",
+        args: ["resume", session.id],
+        cwd: session.cwd || currentLaunchCwd(),
+        cols: currentLaunchCols(),
+        fakeAgent: "",
+      });
     });
   }
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await launchSession();
+    await launchSession({
+      command: commandInput.value,
+      args: parseArgs(argsInput.value),
+      cwd: currentLaunchCwd(),
+      cols: currentLaunchCols(),
+      fakeAgent: "",
+    });
   });
 
-  async function launchSession(preset?: CommandPreset) {
+  function currentLaunchCwd() {
     const data = new FormData(form);
+    return String(data.get("cwd") || "");
+  }
+
+  function currentLaunchCols() {
+    const data = new FormData(form);
+    return Number(data.get("cols") || 120);
+  }
+
+  async function launchSession(input: LaunchSessionInput) {
     const result = await api<{ id: string; url: string }>("/api/sessions", {
       method: "POST",
       body: JSON.stringify({
-        command: preset ? preset.command : String(data.get("command") || ""),
-        args: preset ? preset.args : parseArgs(String(data.get("args") || "")),
-        cwd: String(data.get("cwd") || ""),
-        cols: Number(data.get("cols") || 120),
+        command: input.command,
+        args: input.args,
+        cwd: input.cwd,
+        cols: input.cols,
         rows: 42,
         env: {},
-        fakeAgent: preset?.fakeAgent || "",
+        fakeAgent: input.fakeAgent,
       }),
     });
     history.pushState({}, "", `/sessions/${result.id}`);
@@ -1168,6 +1250,17 @@ function renderSemanticScreen(screen: SemanticScreen) {
       `).join("")}
     </div>
   `;
+}
+
+function formatCodexSessionMeta(session: RecentCodexSession) {
+  const cwd = session.cwd.split("/").filter(Boolean).at(-1) || session.cwd || "/";
+  const time = new Date(session.lastMessageAt).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${time} - ${cwd} - ${session.messageCount} messages`;
 }
 
 function renderSessionLink(session: any) {

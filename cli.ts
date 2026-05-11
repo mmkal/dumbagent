@@ -18,6 +18,7 @@ import {
   buildCodexSummary,
   codexHomeDirFromStateDatabasePath,
   createCodexSummaryPrompt,
+  readRecentCodexSessionsFromDatabasePath,
   readCodexThreadsFromDatabasePath,
   resolveCodexStateDatabasePathForEnv,
   resolveCodexThread,
@@ -213,6 +214,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
       { id: "fake-claude", label: "Fake Claude", command: "claude", args: [], fakeAgent: "claude" },
       { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
     ]);
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/codex-sessions/recent") {
+    return Response.json(readRecentCodexSessions());
   }
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
@@ -633,6 +638,18 @@ function prepareFakeAgentWorkspace(cwd: string) {
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync("/tmp/fakeagent-test", { recursive: true });
   fs.writeFileSync("/tmp/fakeagent-test/hello.txt", "hi\n");
+}
+
+function readRecentCodexSessions() {
+  const databasePath = resolveCodexStateDatabasePathForEnv(process.env);
+  try {
+    return readRecentCodexSessionsFromDatabasePath(databasePath, Date.now());
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Codex state database not found at ")) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {

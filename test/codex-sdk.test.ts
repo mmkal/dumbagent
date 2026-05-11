@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import {
   buildCodexSummary,
   readCodexThreadsFromDatabasePath,
+  recentCodexSessionsFromThreads,
   resolveCodexStateDatabasePathForEnv,
   resolveCodexThread,
   type CodexThreadRow,
@@ -109,6 +110,41 @@ test("repairs a stored CODEX_HOME .codex database path when Codex creates the si
   const threads = readCodexThreadsFromDatabasePath(path.join(codexHome, ".codex", "state_5.sqlite"));
 
   expect(threads).toMatchObject([{ id: "launched-tui" }]);
+});
+
+test("lists recent Codex sessions by latest visible message", () => {
+  using workspace = createTempWorkspace();
+  const nowMs = Date.parse("2026-05-11T12:00:00.000Z");
+  const newestRollout = path.join(workspace.path, "newest.jsonl");
+  const olderRollout = path.join(workspace.path, "older.jsonl");
+  const staleRollout = path.join(workspace.path, "stale.jsonl");
+  fs.writeFileSync(newestRollout, [
+    rolloutMessage("2026-05-11T11:58:00.000Z", "user", "# AGENTS.md instructions for /repo"),
+    rolloutMessage("2026-05-11T11:59:00.000Z", "assistant", "working on the phone launcher"),
+  ].join("\n"));
+  fs.writeFileSync(olderRollout, rolloutMessage("2026-05-11T09:30:00.000Z", "user", "resume this on mobile"));
+  fs.writeFileSync(staleRollout, rolloutMessage("2026-05-09T09:30:00.000Z", "user", "too old"));
+
+  const sessions = recentCodexSessionsFromThreads([
+    codexThread("older", "/repo", "2026-05-11T09:00:00.000Z", "2026-05-11T09:40:00.000Z", olderRollout),
+    codexThread("stale", "/repo", "2026-05-09T09:00:00.000Z", "2026-05-11T11:55:00.000Z", staleRollout),
+    codexThread("newest", "/repo", "2026-05-11T11:00:00.000Z", "2026-05-11T11:59:00.000Z", newestRollout),
+  ], nowMs);
+
+  expect(sessions).toMatchObject([
+    {
+      id: "newest",
+      lastMessageAt: "2026-05-11T11:59:00.000Z",
+      lastMessageText: "working on the phone launcher",
+      messageCount: 1,
+    },
+    {
+      id: "older",
+      lastMessageAt: "2026-05-11T09:30:00.000Z",
+      lastMessageText: "resume this on mobile",
+      messageCount: 1,
+    },
+  ]);
 });
 
 test("builds a Codex summary from rollout messages without treating AGENTS as the latest user message", () => {

@@ -56,11 +56,20 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
 });
 
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
+  writeRecentCodexFixtureState(ctx, {
+    threadId: "mobile-codex-thread",
+    title: "Phone handoff session",
+    latestUserText: "connect to this very session from my phone",
+    latestAssistantText: "adding recent Codex buttons",
+    messageAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  });
+
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "Real presets" }).getByRole("button", { name: "Claude", exact: true })).toBeVisible();
   await expect(page.getByRole("group", { name: "Fake presets" }).getByRole("button", { name: "Fake Claude", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toBeVisible();
 
   const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
     return elements.map((element) => ({
@@ -72,6 +81,15 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     { label: "Real", buttons: ["OpenCode", "Codex", "Claude", "ghui"] },
     { label: "Fake", buttons: ["OpenCode", "Codex", "Claude"] },
   ]);
+
+  await page.getByRole("button", { name: /Resume Codex session Phone handoff session/ }).click();
+  await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
+  const payload = await fetchSessionPayload(page);
+  expect(payload).toMatchObject({
+    command: "codex",
+    args: ["resume", "mobile-codex-thread"],
+    cwd: ctx.workspaceDir,
+  });
 });
 
 test("sends named key chords separately from the composer", async ({ page, ctx }) => {
@@ -735,6 +753,104 @@ function writeCodexFixtureState(
       'medium',
       ${createdAtMs},
       ${updatedAtMs}
+    );
+  `]);
+}
+
+function writeRecentCodexFixtureState(
+  ctx: FixtureContext,
+  options: {
+    threadId: string;
+    title: string;
+    latestUserText: string;
+    latestAssistantText: string;
+    messageAt: string;
+  },
+) {
+  const codexDir = path.join(ctx.env.HOME || "", ".codex");
+  const sessionsDir = path.join(codexDir, "sessions", "2026", "05", "11");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const rolloutPath = path.join(sessionsDir, `rollout-${options.threadId}.jsonl`);
+  const messageAtMs = new Date(options.messageAt).getTime();
+  fs.writeFileSync(rolloutPath, [
+    codexRolloutMessage(new Date(messageAtMs - 1_000).toISOString(), "user", options.latestUserText),
+    codexRolloutMessage(options.messageAt, "assistant", options.latestAssistantText),
+  ].join("\n"));
+
+  const databasePath = path.join(codexDir, "state_5.sqlite");
+  execFileSync("sqlite3", [databasePath, `
+    create table if not exists threads (
+      id text primary key,
+      rollout_path text not null,
+      created_at integer not null,
+      updated_at integer not null,
+      source text not null,
+      model_provider text not null,
+      cwd text not null,
+      title text not null,
+      sandbox_policy text not null,
+      approval_mode text not null,
+      tokens_used integer not null default 0,
+      has_user_event integer not null default 0,
+      archived integer not null default 0,
+      archived_at integer,
+      git_sha text,
+      git_branch text,
+      git_origin_url text,
+      cli_version text not null default '',
+      first_user_message text not null default '',
+      agent_nickname text,
+      agent_role text,
+      memory_mode text not null default 'enabled',
+      model text,
+      reasoning_effort text,
+      agent_path text,
+      created_at_ms integer,
+      updated_at_ms integer,
+      thread_source text
+    );
+    insert or replace into threads (
+      id,
+      rollout_path,
+      created_at,
+      updated_at,
+      source,
+      model_provider,
+      cwd,
+      title,
+      sandbox_policy,
+      approval_mode,
+      tokens_used,
+      has_user_event,
+      archived,
+      cli_version,
+      first_user_message,
+      memory_mode,
+      model,
+      reasoning_effort,
+      created_at_ms,
+      updated_at_ms
+    ) values (
+      '${sqlString(options.threadId)}',
+      '${sqlString(rolloutPath)}',
+      ${Math.floor((messageAtMs - 5_000) / 1000)},
+      ${Math.floor(messageAtMs / 1000)},
+      'cli',
+      'openai',
+      '${sqlString(ctx.workspaceDir)}',
+      '${sqlString(options.title)}',
+      'read-only',
+      'never',
+      42,
+      1,
+      0,
+      '0.129.0',
+      '${sqlString(options.latestUserText)}',
+      'enabled',
+      'gpt-5.5',
+      'medium',
+      ${messageAtMs - 5_000},
+      ${messageAtMs}
     );
   `]);
 }

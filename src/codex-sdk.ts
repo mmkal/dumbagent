@@ -21,6 +21,16 @@ export type CodexThreadRow = {
   updated_at_ms: number | null;
 };
 
+export type RecentCodexSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  updatedAt: string;
+  lastMessageAt: string;
+  lastMessageText: string;
+  messageCount: number;
+};
+
 type ResolveCodexThreadInput = {
   threads: CodexThreadRow[];
   cwd: string;
@@ -110,6 +120,36 @@ function resolveStoredCodexStateDatabasePath(databasePath: string) {
     ? [direct, path.join(path.dirname(parent), "state_5.sqlite")]
     : [direct, path.join(parent, ".codex", "state_5.sqlite")];
   return candidates.find((candidate) => fs.existsSync(candidate)) || direct;
+}
+
+export function readRecentCodexSessionsFromDatabasePath(databasePath: string, nowMs: number) {
+  return recentCodexSessionsFromThreads(readCodexThreadsFromDatabasePath(databasePath), nowMs);
+}
+
+export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs: number) {
+  const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
+  return threads
+    .map((thread): RecentCodexSession | null => {
+      const messages = visibleCodexMessages(thread);
+      const lastMessage = messages
+        .slice()
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;
+      const lastMessageMs = lastMessage ? Date.parse(lastMessage.createdAt) : 0;
+      if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
+        return null;
+      }
+      return {
+        id: thread.id,
+        title: String(thread.title || thread.first_user_message || "Codex session").slice(0, 120),
+        cwd: String(thread.cwd || ""),
+        updatedAt: new Date(codexUpdatedAt(thread)).toISOString(),
+        lastMessageAt: new Date(lastMessageMs).toISOString(),
+        lastMessageText: lastMessage.text.slice(0, 240),
+        messageCount: messages.length,
+      };
+    })
+    .filter((session): session is RecentCodexSession => Boolean(session))
+    .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt));
 }
 
 export function resolveCodexThread(input: ResolveCodexThreadInput) {
@@ -238,6 +278,16 @@ function readCodexTranscript(rolloutPath: string) {
     });
   }
   return transcript;
+}
+
+function visibleCodexMessages(thread: CodexThreadRow) {
+  return readCodexTranscript(thread.rollout_path)
+    .filter((message) => {
+      if (message.role === "assistant") {
+        return true;
+      }
+      return message.role === "user" && !isCodexInternalUserText(message.text);
+    });
 }
 
 function extractCodexMessageText(content: unknown) {
