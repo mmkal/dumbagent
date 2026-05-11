@@ -469,6 +469,33 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   });
 });
 
+test("shows a toast instead of an unhandled rejection when session brief fetch fails", async ({ page, ctx }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("button", { name: "Fake Codex" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");
+  await clickSessionMenuButton(page, "Summary");
+  await page.evaluate(() => {
+    const realFetch = window.fetch.bind(window);
+    (window as any).fetch = (input: any, init: any) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+      if (url.includes("/sdk-summarize")) {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return realFetch(input, init);
+    };
+  });
+
+  await page.getByRole("button", { name: "Get session brief" }).click();
+
+  await expect(page.getByTestId("sdk-summarize-error-toast")).toContainText("Get session brief failed");
+  expect(pageErrors).toEqual([]);
+});
+
 test("can drive Claude through the fake preset", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
   await page.getByRole("button", { name: "Fake Claude" }).click();

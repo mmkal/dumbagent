@@ -1042,10 +1042,14 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
     `;
 
     screen.querySelector<HTMLButtonElement>("[data-action='sdk-refresh']")?.addEventListener("click", () => {
-      void refreshSdk(payload.id);
+      void refreshSdk(payload.id).catch((error) => {
+        showRequestErrorToast("Refresh snapshot failed", error, "sdk-refresh-error-toast");
+      });
     });
     screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']")?.addEventListener("click", () => {
-      void summarizeSdk(payload.id);
+      void summarizeSdk(payload.id).catch((error) => {
+        showRequestErrorToast("Get session brief failed", error, "sdk-summarize-error-toast");
+      });
     });
     screen.querySelector<HTMLDetailsElement>(".sdk-diagnostics")?.addEventListener("toggle", () => {
       dataEditorView?.requestMeasure();
@@ -1236,6 +1240,17 @@ async function refreshSdk(sessionId: string) {
 async function summarizeSdk(sessionId: string) {
   const payload = await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-summarize`, { method: "POST" });
   renderSessionPayload(payload);
+}
+
+function showRequestErrorToast(title: string, error: unknown, testId: string) {
+  showToast({
+    id: testId,
+    title,
+    message: String(error instanceof Error ? error.message : error),
+    tone: "error",
+    durationMs: 10_000,
+    testId,
+  });
 }
 
 function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {

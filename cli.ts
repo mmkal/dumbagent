@@ -119,6 +119,7 @@ type RuntimeSession = {
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
+  sdkSummaryJob: Promise<void> | null;
   stdinEvents: StdinEvent[];
   stdoutEvents: StdoutEvent[];
   subscribers: Set<(payload: SessionPayload) => void>;
@@ -192,6 +193,7 @@ function startServer(options: { host: string; port: number; state: ServerState }
     port: options.port,
     hostname: options.host,
     development: true,
+    idleTimeout: 255,
     routes: {
       "/": homepage,
       "/sessions": homepage,
@@ -297,7 +299,7 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   if (request.method === "POST" && action === "sdk-summarize") {
-    await summarizeSessionWithSdk(session);
+    startSessionBriefJob(session);
     return Response.json(getSessionPayload(session));
   }
 
@@ -402,6 +404,7 @@ async function createSession(input: CreateSessionInput) {
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
+    sdkSummaryJob: null,
     stdinEvents: [],
     stdoutEvents: [],
     subscribers: new Set(),
@@ -1024,8 +1027,6 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
     return;
   }
 
-  await refreshSessionSdk(session);
-
   if (provider === "codex") {
     await summarizeCodexSessionWithSdk(session);
     return;
@@ -1226,6 +1227,99 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
     };
     publishSession(session);
   }
+}
+
+function startSessionBriefJob(session: RuntimeSession) {
+  if (reuseCurrentSessionBrief(session)) {
+    return;
+  }
+
+  if (session.sdkSummaryJob) {
+    return;
+  }
+
+  const method = sidecarSummaryMethodForProvider(session.sdk.provider);
+  if (method) {
+    const startedAt = new Date().toISOString();
+    session.sdk = {
+      ...session.sdk,
+      sidecarSummary: {
+        implemented: true,
+        status: "running",
+        method,
+        sourceSessionId: session.sdk.externalSessionId,
+        forkSessionId: "",
+        forkPoint: session.sdk.summary ? forkPointForSummary(session.sdk.summary) : "",
+        updatedAt: startedAt,
+        result: null,
+        error: "",
+        note: "Getting session brief in the background.",
+      },
+    };
+    publishSession(session);
+  }
+
+  session.sdkSummaryJob = summarizeSessionWithSdk(session)
+    .catch((error) => {
+      const failedAt = new Date().toISOString();
+      session.sdk = {
+        ...session.sdk,
+        sidecarSummary: {
+          implemented: Boolean(method),
+          status: "error",
+          method,
+          sourceSessionId: session.sdk.externalSessionId,
+          forkSessionId: "",
+          forkPoint: session.sdk.summary ? forkPointForSummary(session.sdk.summary) : "",
+          updatedAt: failedAt,
+          result: null,
+          error: String(error instanceof Error ? error.message : error),
+          note: "Session brief failed before the provider adapter could report an error.",
+        },
+      };
+      publishSession(session);
+    })
+    .finally(() => {
+      session.sdkSummaryJob = null;
+    });
+}
+
+function reuseCurrentSessionBrief(session: RuntimeSession) {
+  const provider = session.sdk.provider;
+  const sourceSummary = session.sdk.summary;
+  const sourceSessionId = session.sdk.externalSessionId;
+  const method = sidecarSummaryMethodForProvider(provider);
+  if (!provider || !sourceSummary || !sourceSessionId || !method) {
+    return false;
+  }
+
+  const sourceForkPoint = forkPointForSummary(sourceSummary);
+  const reusableBrief = findReusableSessionBrief(session, provider, sourceSessionId, sourceForkPoint);
+  if (!reusableBrief) {
+    return false;
+  }
+
+  reuseSessionBrief(session, {
+    method,
+    sourceSessionId,
+    sourceForkPoint,
+    sourceSummary,
+    reusableBrief,
+  });
+  return true;
+}
+
+function sidecarSummaryMethodForProvider(provider: SessionSdkPayload["provider"]): SessionSdkPayload["sidecarSummary"]["method"] {
+  if (provider === "opencode") {
+    return "opencode.session.fork+summarize";
+  }
+  if (provider === "codex") {
+    return "codex.startThread+summary";
+  }
+  if (provider === "claude") {
+    return "claude.query+forkSession";
+  }
+  return "";
 }
 
 async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
