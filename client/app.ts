@@ -15,6 +15,7 @@ type SessionPayload = {
   command: string;
   args: string[];
   cwd: string;
+  updatedAt: string;
   lifecycle: "running" | "exited";
   status: "busy" | "idle" | "exited";
   exitCode: number | null;
@@ -446,7 +447,6 @@ async function renderSession(sessionId: string) {
               <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
               <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
               <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
-              <button type="button" class="icon-button" data-action="tuishot">Tuishot</button>
               <button type="button" class="icon-button danger" data-action="kill">Stop</button>
             </div>
           </div>
@@ -553,11 +553,6 @@ function bindSessionControls(sessionId: string) {
     closeSessionMenu();
   });
 
-  document.querySelector<HTMLButtonElement>("[data-action='tuishot']")?.addEventListener("click", () => {
-    downloadTuishot(sessionId);
-    closeSessionMenu();
-  });
-
   document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
     setEventsPaused(sessionId, !eventsPaused);
     closeSessionMenu();
@@ -573,16 +568,6 @@ function bindSessionControls(sessionId: string) {
       scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
     });
   });
-}
-
-function downloadTuishot(sessionId: string) {
-  const anchor = document.createElement("a");
-  anchor.href = `/api/sessions/${sessionId}/tuishot.svg`;
-  anchor.download = `${sessionId}-tuishot.svg`;
-  anchor.rel = "noopener";
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
 }
 
 function closeSessionMenu() {
@@ -1020,8 +1005,10 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
           <strong>No SDK adapter</strong>
           <span>This session is only available through the terminal stream.</span>
         </header>
+        ${renderTuishotPreviewMarkup()}
       </section>
     `;
+    updateTuishotPreview(screen, payload);
     return;
   }
 
@@ -1041,6 +1028,7 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
           <button type="button" class="secondary-button" data-action="sdk-summarize">Get session brief</button>
         </header>
         <p class="sdk-error" data-sdk-error hidden></p>
+        ${renderTuishotPreviewMarkup()}
         <section class="session-brief" data-testid="session-brief" data-brief-state="empty">
           <header>
             <strong>Session brief</strong>
@@ -1075,7 +1063,22 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
     updateDataEditorDoc(yamlDoc);
   }
   updateSdkChrome(screen, payload);
+  updateTuishotPreview(screen, payload);
   updateSessionBrief(screen, payload);
+}
+
+function renderTuishotPreviewMarkup() {
+  return `
+    <section class="tuishot-preview" data-testid="tuishot-preview">
+      <header>
+        <strong>Tuishot</strong>
+        <span data-tuishot-meta></span>
+      </header>
+      <div class="tuishot-frame">
+        <img data-tuishot-image alt="Current terminal view" />
+      </div>
+    </section>
+  `;
 }
 
 function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
@@ -1102,6 +1105,20 @@ function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
     error.hidden = !sdk.error;
     error.textContent = sdk.error;
   }
+}
+
+function updateTuishotPreview(screen: HTMLElement, payload: SessionPayload) {
+  const image = screen.querySelector<HTMLImageElement>("[data-tuishot-image]");
+  const meta = screen.querySelector<HTMLElement>("[data-tuishot-meta]");
+  if (!image || !meta) {
+    return;
+  }
+  const src = `/api/sessions/${payload.id}/tuishot.svg?updated=${encodeURIComponent(payload.updatedAt)}`;
+  if (image.getAttribute("src") !== src) {
+    image.src = src;
+  }
+  image.alt = `Current terminal view for ${payload.title || payload.command}`;
+  meta.textContent = `${payload.cols}x${payload.rows}`;
 }
 
 function updateSessionBrief(screen: HTMLElement, payload: SessionPayload) {

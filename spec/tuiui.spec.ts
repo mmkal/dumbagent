@@ -56,13 +56,17 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await expect(page.getByTestId("semantic-section").filter({ hasText: "three" })).toBeVisible();
   await clickSessionMenuButton(page, "Summary");
   await expect(page.getByTestId("sdk-summary")).toContainText("No SDK adapter");
+  await expect(page.getByTestId("tuishot-preview").locator("img")).toBeVisible();
+  await expect.poll(async () => {
+    return await page.getByTestId("tuishot-preview").locator("img").evaluate((image: HTMLImageElement) => {
+      return image.complete && image.naturalWidth > 0;
+    });
+  }).toBe(true);
   await clickSessionMenuButton(page, "TTY");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
-  await openSessionMenu(page);
-  await expect(page.getByRole("button", { name: "Tuishot" })).toBeVisible();
-  await page.getByRole("button", { name: "TTY" }).click();
   const shot = await fetchTuishot(page);
   expect(shot.contentType).toContain("image/svg+xml");
+  expect(shot.disposition).toContain("inline");
   expect(shot.body).toContain("<svg");
   expect(shot.body).toContain("semantic-agent");
   expect(shot.body).toContain("three");
@@ -305,7 +309,6 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await expect(page.getByRole("button", { name: "HTML" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Pause events" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Logs" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Tuishot" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
   await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
 });
@@ -547,6 +550,7 @@ async function fetchTuishot(page: Page) {
     const response = await fetch(`/api/sessions/${id}/tuishot.svg`);
     return {
       contentType: response.headers.get("content-type") || "",
+      disposition: response.headers.get("content-disposition") || "",
       body: await response.text(),
     };
   });

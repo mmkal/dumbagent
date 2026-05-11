@@ -651,7 +651,7 @@ function createTuishotResponse(session: RuntimeSession) {
   return new Response(svg, {
     headers: {
       "Content-Type": "image/svg+xml;charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": `inline; filename="${filename}"`,
       "Cache-Control": "no-store",
     },
   });

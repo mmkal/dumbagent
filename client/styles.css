@@ -832,7 +832,13 @@ pre {
 
 .sdk-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "header"
+    "error"
+    "tuishot"
+    "brief"
+    "diagnostics";
+  grid-template-rows: auto auto minmax(116px, 0.85fr) minmax(0, 1fr) auto;
   gap: 8px;
   height: 100%;
   min-height: 100%;
@@ -841,6 +847,7 @@ pre {
 }
 
 .sdk-panel > header {
+  grid-area: header;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
@@ -883,6 +890,7 @@ pre {
 }
 
 .sdk-error {
+  grid-area: error;
   margin: 0;
   border: 1px solid #6e3434;
   border-radius: 7px;
@@ -892,7 +900,55 @@ pre {
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.tuishot-preview {
+  grid-area: tuishot;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #2c333d;
+  border-radius: 7px;
+  background: #0a0a0a;
+}
+
+.tuishot-preview > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border-bottom: 1px solid #242b35;
+  background: #11161c;
+}
+
+.tuishot-preview > header strong {
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.tuishot-preview > header span {
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.tuishot-frame {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  background: #0a0a0a;
+}
+
+.tuishot-frame img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 .session-brief {
+  grid-area: brief;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
@@ -955,6 +1011,7 @@ pre {
 }
 
 .sdk-diagnostics {
+  grid-area: diagnostics;
   min-width: 0;
   min-height: 0;
 }
