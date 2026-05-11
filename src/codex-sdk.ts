@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import type { AgentSessionSummary } from "./opencode-sdk.ts";
+import type { AgentSessionSummary, RecentAgentSession } from "./opencode-sdk.ts";
 
 export type CodexThreadRow = {
   id: string;
@@ -19,16 +19,6 @@ export type CodexThreadRow = {
   reasoning_effort: string;
   created_at_ms: number | null;
   updated_at_ms: number | null;
-};
-
-export type RecentCodexSession = {
-  id: string;
-  title: string;
-  cwd: string;
-  updatedAt: string;
-  lastMessageAt: string;
-  lastMessageText: string;
-  messageCount: number;
 };
 
 type ResolveCodexThreadInput = {
@@ -129,7 +119,7 @@ export function readRecentCodexSessionsFromDatabasePath(databasePath: string, no
 export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs: number) {
   const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
   return threads
-    .map((thread): RecentCodexSession | null => {
+    .map((thread): RecentAgentSession | null => {
       const messages = visibleCodexMessages(thread);
       const lastMessage = messages
         .slice()
@@ -139,6 +129,7 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         return null;
       }
       return {
+        provider: "codex",
         id: thread.id,
         title: String(thread.title || thread.first_user_message || "Codex session").slice(0, 120),
         cwd: String(thread.cwd || ""),
@@ -146,9 +137,11 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
         messageCount: messages.length,
+        command: "codex",
+        args: ["resume", thread.id],
       };
     })
-    .filter((session): session is RecentCodexSession => Boolean(session))
+    .filter((session): session is RecentAgentSession => Boolean(session))
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt));
 }
 

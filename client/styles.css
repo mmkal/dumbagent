@@ -124,7 +124,7 @@ button:disabled {
 }
 
 .launcher,
-.recent-codex,
+.recent-agents,
 .sessions {
   border: 1px solid #2c333d;
   border-radius: 8px;
@@ -226,35 +226,35 @@ textarea:focus {
   overflow: hidden;
 }
 
-.recent-codex {
+.recent-agents {
   display: grid;
   gap: 10px;
   padding: 12px;
 }
 
-.recent-codex > header {
+.recent-agents > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.recent-codex > header strong {
+.recent-agents > header strong {
   font-size: 12px;
 }
 
-.recent-codex > header span {
+.recent-agents > header span {
   color: #9ca8b6;
   font-size: 11px;
 }
 
-.recent-codex-list {
+.recent-agents-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
 }
 
-.codex-session-button {
+.agent-session-button {
   display: grid;
   gap: 4px;
   min-height: 0;
@@ -265,28 +265,57 @@ textarea:focus {
   text-align: left;
 }
 
-.codex-session-button strong,
-.codex-session-button span,
-.codex-session-button code {
+.agent-session-button strong,
+.agent-session-button span,
+.agent-session-button code {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.codex-session-button strong {
+.agent-session-button strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
 }
 
-.codex-session-button span {
+.agent-session-button span {
   color: #b9c5d4;
   font-size: 11px;
   font-weight: 500;
 }
 
-.codex-session-button code {
+.agent-session-button code {
   color: #9ca8b6;
   font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.provider-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #05070a !important;
+  font-size: 9px !important;
+  font-weight: 900 !important;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.provider-pill[data-provider="codex"] {
+  background: #7dd3fc;
+}
+
+.provider-pill[data-provider="opencode"] {
+  background: #d8f36a;
+}
+
+.provider-pill[data-provider="claude"] {
+  background: #f3a86a;
 }
 
 .session-link {

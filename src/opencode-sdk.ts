@@ -1,7 +1,12 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { Database } from "bun:sqlite";
+
+export type AgentProvider = "opencode" | "codex" | "claude";
 
 export type SessionSdkPayload = {
-  provider: "" | "opencode" | "codex";
+  provider: "" | AgentProvider;
   state: "unavailable" | "ready" | "connected" | "not-found" | "error";
   baseUrl: string;
   externalSessionId: string;
@@ -16,7 +21,7 @@ export type SessionSdkPayload = {
 export type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary";
+  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary" | "claude.query+forkSession";
   sourceSessionId: string;
   forkSessionId: string;
   updatedAt: string;
@@ -26,7 +31,7 @@ export type SidecarSummaryState = {
 };
 
 export type SidecarSummaryFork = {
-  provider: "opencode" | "codex";
+  provider: AgentProvider;
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
@@ -39,7 +44,7 @@ export type SidecarSummaryFork = {
 };
 
 export type AgentSessionSummary = {
-  provider: "opencode" | "codex";
+  provider: AgentProvider;
   title: string;
   messageCount: number;
   diffCount: number;
@@ -58,6 +63,19 @@ export type AgentSessionSummary = {
     additions: number;
     deletions: number;
   }>;
+};
+
+export type RecentAgentSession = {
+  provider: AgentProvider;
+  id: string;
+  title: string;
+  cwd: string;
+  updatedAt: string;
+  lastMessageAt: string;
+  lastMessageText: string;
+  messageCount: number;
+  command: string;
+  args: string[];
 };
 
 type ResolveOpenCodeSessionInput = {
@@ -127,6 +145,85 @@ export function buildOpenCodeSummary(session: any, messages: any[], diffs: any[]
   };
 }
 
+export function openCodeDatabasePathForEnv(env: NodeJS.ProcessEnv) {
+  const explicitPath = String(env.OPENCODE_DB_PATH || "");
+  if (explicitPath) {
+    return explicitPath;
+  }
+  const dataHome = String(env.XDG_DATA_HOME || path.join(String(env.HOME || os.homedir()), ".local", "share"));
+  return path.join(dataHome, "opencode", "opencode.db");
+}
+
+export function readRecentOpenCodeSessionsFromDatabasePath(databasePath: string, nowMs: number): RecentAgentSession[] {
+  if (!fs.existsSync(databasePath)) {
+    throw new Error(`OpenCode database not found at ${databasePath}`);
+  }
+  const database = new Database(databasePath, { readonly: true, strict: true });
+  try {
+    const sessions = database.query(`
+      select
+        id,
+        directory,
+        title,
+        time_created,
+        time_updated
+      from session
+      where time_archived is null
+      order by time_updated desc
+      limit 500
+    `).all() as Array<{
+      id: string;
+      directory: string;
+      title: string;
+      time_created: number;
+      time_updated: number;
+    }>;
+    return recentOpenCodeSessionsFromRows(sessions.map((session) => {
+      return {
+        session,
+        messages: readOpenCodeMessagesFromDatabase(database, session.id),
+      };
+    }), nowMs);
+  } finally {
+    database.close();
+  }
+}
+
+export function recentOpenCodeSessionsFromRows(
+  rows: Array<{ session: any; messages: any[] }>,
+  nowMs: number,
+): RecentAgentSession[] {
+  const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
+  return rows
+    .map((row): RecentAgentSession | null => {
+      const summary = buildOpenCodeSummary(row.session, row.messages, []);
+      const visibleMessages = summary.transcript.filter((message) => {
+        return (message.role === "user" || message.role === "assistant") && message.text && message.text !== "[compaction]";
+      });
+      const lastMessage = visibleMessages
+        .slice()
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;
+      const lastMessageMs = lastMessage ? Date.parse(lastMessage.createdAt) : 0;
+      if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
+        return null;
+      }
+      return {
+        provider: "opencode",
+        id: String(row.session.id || ""),
+        title: summary.title.slice(0, 120),
+        cwd: String(row.session.directory || ""),
+        updatedAt: new Date(Number(row.session.time_updated || lastMessageMs)).toISOString(),
+        lastMessageAt: new Date(lastMessageMs).toISOString(),
+        lastMessageText: lastMessage.text.slice(0, 240),
+        messageCount: visibleMessages.length,
+        command: "opencode",
+        args: ["--session", String(row.session.id || "")],
+      };
+    })
+    .filter((session): session is RecentAgentSession => Boolean(session))
+    .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt));
+}
+
 export function pickOpenCodeModel(messages: any[]) {
   for (const message of [...messages].reverse()) {
     const info = message.info || {};
@@ -163,6 +260,83 @@ function extractOpenCodePartText(part: any) {
     return `[${String(part.type)}]`;
   }
   return "";
+}
+
+function readOpenCodeMessagesFromDatabase(database: Database, sessionId: string) {
+  const messages = database.query(`
+    select
+      id,
+      session_id,
+      time_created,
+      time_updated,
+      data
+    from message
+    where session_id = $sessionId
+    order by time_created asc, id asc
+  `).all({ sessionId }) as Array<{
+    id: string;
+    session_id: string;
+    time_created: number;
+    time_updated: number;
+    data: string;
+  }>;
+  const parts = database.query(`
+    select
+      id,
+      message_id,
+      session_id,
+      time_created,
+      time_updated,
+      data
+    from part
+    where session_id = $sessionId
+    order by time_created asc, id asc
+  `).all({ sessionId }) as Array<{
+    id: string;
+    message_id: string;
+    session_id: string;
+    time_created: number;
+    time_updated: number;
+    data: string;
+  }>;
+  const partsByMessage = new Map<string, any[]>();
+  for (const part of parts) {
+    const data = parseJson(part.data) || {};
+    const enriched = {
+      id: part.id,
+      messageID: part.message_id,
+      sessionID: part.session_id,
+      time: {
+        created: part.time_created,
+        updated: part.time_updated,
+      },
+      ...data,
+    };
+    partsByMessage.set(part.message_id, [...(partsByMessage.get(part.message_id) || []), enriched]);
+  }
+  return messages.map((message) => {
+    const data = parseJson(message.data) || {};
+    return {
+      info: {
+        id: message.id,
+        sessionID: message.session_id,
+        time: {
+          created: message.time_created,
+          updated: message.time_updated,
+        },
+        ...data,
+      },
+      parts: partsByMessage.get(message.id) || [],
+    };
+  });
+}
+
+function parseJson(value: string): any {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 function getExplicitOpenCodeSessionId(args: string[]) {

@@ -23,12 +23,26 @@ import {
   resolveCodexStateDatabasePathForEnv,
   resolveCodexThread,
 } from "./src/codex-sdk.ts";
+import {
+  buildClaudeSidecarSummary,
+  buildClaudeSummary,
+  claudeConfigDirForEnv,
+  createClaudeSummaryPrompt,
+  readClaudeSessionMessages,
+  readClaudeSessions,
+  readRecentClaudeSessions,
+  resolveClaudeSession,
+  runClaudeSidecarSummary,
+} from "./src/claude-sdk.ts";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
 import {
   buildOpenCodeSummary,
+  openCodeDatabasePathForEnv,
   pickOpenCodeModel,
+  readRecentOpenCodeSessionsFromDatabasePath,
   resolveOpenCodeSession,
   type AgentSessionSummary,
+  type RecentAgentSession,
   type SessionSdkPayload,
 } from "./src/opencode-sdk.ts";
 import { createSessionId } from "./src/session-id.ts";
@@ -85,6 +99,7 @@ type RuntimeSession = {
   command: string;
   args: string[];
   cwd: string;
+  env: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   lastOutputAt: string;
@@ -216,6 +231,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     ]);
   }
 
+  if (request.method === "GET" && url.pathname === "/api/agent-sessions/recent") {
+    return Response.json(await readRecentAgentSessions());
+  }
+
   if (request.method === "GET" && url.pathname === "/api/codex-sessions/recent") {
     return Response.json(readRecentCodexSessions());
   }
@@ -345,6 +364,7 @@ async function createSession(input: CreateSessionInput) {
       ...fakeSpawn.env,
       XDG_CONFIG_HOME: path.join(fakeAgentRoot, "config"),
       XDG_DATA_HOME: path.join(fakeAgentRoot, "data"),
+      CLAUDE_CONFIG_DIR: path.join(fakeAgentRoot, "claude"),
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
@@ -362,6 +382,7 @@ async function createSession(input: CreateSessionInput) {
     command,
     args,
     cwd,
+    env,
     createdAt: now,
     updatedAt: now,
     lastOutputAt: now,
@@ -652,6 +673,34 @@ function readRecentCodexSessions() {
   }
 }
 
+async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
+  const nowMs = Date.now();
+  const results = await Promise.all([
+    readRecentProviderSessions(() => readRecentCodexSessionsFromDatabasePath(resolveCodexStateDatabasePathForEnv(process.env), nowMs)),
+    readRecentProviderSessions(() => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePathForEnv(process.env), nowMs)),
+    readRecentProviderSessions(async () => await readRecentClaudeSessions(claudeConfigDirForEnv(process.env), nowMs)),
+  ]);
+  return results
+    .flat()
+    .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt))
+    .slice(0, 24);
+}
+
+async function readRecentProviderSessions(read: () => RecentAgentSession[] | Promise<RecentAgentSession[]>) {
+  try {
+    return await read();
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    if (
+      message.startsWith("Codex state database not found at ") ||
+      message.startsWith("OpenCode database not found at ")
+    ) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {
   if (isCodexCommand(command)) {
     const now = new Date().toISOString();
@@ -662,6 +711,26 @@ async function prepareSessionSdk(command: string, args: string[], env: Record<st
         provider: "codex" as const,
         state: "ready" as const,
         baseUrl: resolveCodexStateDatabasePathForEnv(env),
+        externalSessionId: "",
+        status: "",
+        updatedAt: now,
+        error: "",
+        sidecarSummary: createIdleSidecarSummary(now),
+        forks: [],
+        summary: null,
+      },
+    };
+  }
+
+  if (isClaudeCommand(command)) {
+    const now = new Date().toISOString();
+    return {
+      command,
+      args,
+      payload: {
+        provider: "claude" as const,
+        state: "ready" as const,
+        baseUrl: claudeConfigDirForEnv(env),
         externalSessionId: "",
         status: "",
         updatedAt: now,
@@ -764,6 +833,10 @@ function isCodexCommand(command: string) {
   return path.basename(command).toLowerCase() === "codex";
 }
 
+function isClaudeCommand(command: string) {
+  return path.basename(command).toLowerCase() === "claude";
+}
+
 function usesLfCrSubmit(command: string) {
   const name = path.basename(command).toLowerCase();
   return name === "opencode" || name === "codex";
@@ -772,6 +845,11 @@ function usesLfCrSubmit(command: string) {
 async function refreshSessionSdk(session: RuntimeSession) {
   if (session.sdk.provider === "codex") {
     await refreshCodexSessionSdk(session);
+    return;
+  }
+
+  if (session.sdk.provider === "claude") {
+    await refreshClaudeSessionSdk(session);
     return;
   }
 
@@ -888,9 +966,62 @@ async function refreshCodexSessionSdk(session: RuntimeSession) {
   publishSession(session);
 }
 
+async function refreshClaudeSessionSdk(session: RuntimeSession) {
+  try {
+    const sessions = await readClaudeSessions(session.sdk.baseUrl, session.cwd);
+    const target = resolveClaudeSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      session.sdk = {
+        ...session.sdk,
+        state: "not-found",
+        status: "",
+        updatedAt: new Date().toISOString(),
+        error: "Claude session storage is readable, but no matching session is visible yet.",
+        summary: null,
+      };
+      publishSession(session);
+      return;
+    }
+
+    const messages = await readClaudeSessionMessages(session.sdk.baseUrl, target.sessionId, session.cwd);
+    const summary = buildClaudeSummary(target, messages);
+    session.sdk = {
+      ...session.sdk,
+      state: "connected",
+      status: target.gitBranch || "",
+      externalSessionId: String(target.sessionId || ""),
+      updatedAt: new Date().toISOString(),
+      error: "",
+      summary,
+    };
+    if (!session.title || session.title === path.basename(session.command)) {
+      session.title = summary.title || session.title;
+    }
+  } catch (error) {
+    session.sdk = {
+      ...session.sdk,
+      state: "error",
+      updatedAt: new Date().toISOString(),
+      error: String(error instanceof Error ? error.message : error),
+    };
+  }
+  publishSession(session);
+}
+
 async function summarizeSessionWithSdk(session: RuntimeSession) {
   if (session.sdk.provider === "codex") {
     await summarizeCodexSessionWithSdk(session);
+    return;
+  }
+
+  if (session.sdk.provider === "claude") {
+    await summarizeClaudeSessionWithSdk(session);
     return;
   }
 
@@ -1195,6 +1326,132 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         result: null,
         error: String(error instanceof Error ? error.message : error),
         note: "Codex sidecar summary failed before producing a result.",
+      },
+    };
+    publishSession(session);
+  }
+}
+
+async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
+  session.sdk = {
+    ...session.sdk,
+    sidecarSummary: {
+      implemented: true,
+      status: "running",
+      method: "claude.query+forkSession",
+      sourceSessionId: session.sdk.externalSessionId,
+      forkSessionId: "",
+      updatedAt: new Date().toISOString(),
+      result: null,
+      error: "",
+      note: "Resolving the Claude source session before creating a sidecar summary fork.",
+    },
+  };
+  publishSession(session);
+
+  let sourceSessionId = session.sdk.externalSessionId;
+  let forkSessionId = "";
+  let forkCreatedAt = new Date().toISOString();
+  try {
+    const sessions = await readClaudeSessions(session.sdk.baseUrl, session.cwd);
+    const target = resolveClaudeSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      throw new Error("Claude session storage is readable, but no matching session is visible yet.");
+    }
+
+    sourceSessionId = String(target.sessionId || "");
+    const sourceMessages = await readClaudeSessionMessages(session.sdk.baseUrl, sourceSessionId, session.cwd);
+    const sourceSummary = buildClaudeSummary(target, sourceMessages);
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceSessionId,
+      state: "connected",
+      status: target.gitBranch || "",
+      summary: sourceSummary,
+      sidecarSummary: {
+        implemented: true,
+        status: "running",
+        method: "claude.query+forkSession",
+        sourceSessionId,
+        forkSessionId: "",
+        updatedAt: new Date().toISOString(),
+        result: null,
+        error: "",
+        note: "Creating a separate Claude fork for the summary so the live TUI session is left untouched.",
+      },
+    };
+    publishSession(session);
+
+    const sidecar = await runClaudeSidecarSummary({
+      sourceSessionId,
+      cwd: session.cwd,
+      configDir: session.sdk.baseUrl,
+      env: minimalEnv(session.env),
+      prompt: createClaudeSummaryPrompt(sourceSummary),
+    });
+    forkSessionId = sidecar.forkSessionId;
+    const summarizedAt = new Date().toISOString();
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceSessionId,
+      forks: upsertSidecarFork(session.sdk.forks, {
+        provider: "claude",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        createdAt: forkCreatedAt,
+        updatedAt: summarizedAt,
+        status: "summarized",
+        result: true,
+        error: "",
+        summary: buildClaudeSidecarSummary(forkSessionId, sidecar.finalResponse),
+      }),
+      sidecarSummary: {
+        implemented: true,
+        status: "completed",
+        method: "claude.query+forkSession",
+        sourceSessionId,
+        forkSessionId,
+        updatedAt: summarizedAt,
+        result: true,
+        error: "",
+        note: "Claude summarized the source transcript in a separate fork. The live TUI session remains untouched.",
+      },
+    };
+    await refreshClaudeSessionSdk(session);
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const existingFork = session.sdk.forks.find((candidate) => candidate.forkSessionId === forkSessionId);
+    session.sdk = {
+      ...session.sdk,
+      forks: forkSessionId ? upsertSidecarFork(session.sdk.forks, {
+        provider: "claude",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        createdAt: existingFork ? existingFork.createdAt : forkCreatedAt,
+        updatedAt: failedAt,
+        status: "error",
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        summary: existingFork ? existingFork.summary : null,
+      }) : session.sdk.forks,
+      sidecarSummary: {
+        implemented: true,
+        status: "error",
+        method: "claude.query+forkSession",
+        sourceSessionId,
+        forkSessionId,
+        updatedAt: failedAt,
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        note: "Claude sidecar summary failed before producing a result.",
       },
     };
     publishSession(session);

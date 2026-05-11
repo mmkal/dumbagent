@@ -65,12 +65,26 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
 });
 
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
+  writeRecentOpenCodeFixtureState(ctx, {
+    sessionId: "mobile-opencode-session",
+    title: "OpenCode handoff session",
+    latestUserText: "resume opencode from phone",
+    latestAssistantText: "adding OpenCode recent buttons",
+    messageAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+  });
   writeRecentCodexFixtureState(ctx, {
     threadId: "mobile-codex-thread",
     title: "Phone handoff session",
     latestUserText: "connect to this very session from my phone",
     latestAssistantText: "adding recent Codex buttons",
     messageAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  });
+  writeRecentClaudeFixtureState(ctx, {
+    sessionId: "00000000-0000-4000-8000-000000000456",
+    title: "Claude handoff session",
+    latestUserText: "resume claude from phone",
+    latestAssistantText: "adding Claude recent buttons",
+    messageAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
   });
 
   await page.goto(ctx.baseUrl);
@@ -79,6 +93,11 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   await expect(page.getByRole("group", { name: "Real presets" }).getByRole("button", { name: "Claude", exact: true })).toBeVisible();
   await expect(page.getByRole("group", { name: "Fake presets" }).getByRole("button", { name: "Fake Claude", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume OpenCode session OpenCode handoff session/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Claude session Claude handoff session/ })).toBeVisible();
+  await expect(page.locator(".provider-pill", { hasText: "Codex" })).toBeVisible();
+  await expect(page.locator(".provider-pill", { hasText: "OpenCode" })).toBeVisible();
+  await expect(page.locator(".provider-pill", { hasText: "Claude" })).toBeVisible();
 
   const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
     return elements.map((element) => ({
@@ -439,6 +458,25 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   });
 });
 
+test("can drive Claude through the fake preset", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("button", { name: "Fake Claude" }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Claude test TUI");
+  await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  const payload = await fetchSessionPayload(page);
+  expect(payload).toMatchObject({
+    command: "claude",
+    sdk: {
+      provider: "claude",
+      state: "ready",
+    },
+  });
+});
+
 async function fetchSessionPayload(page: Page) {
   return await page.evaluate(async () => {
     const id = location.pathname.split("/").at(-1);
@@ -514,6 +552,7 @@ async function createContext() {
   fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "codex"), codexTuiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
   const env = {
@@ -881,6 +920,142 @@ function writeRecentCodexFixtureState(
   `]);
 }
 
+function writeRecentOpenCodeFixtureState(
+  ctx: FixtureContext,
+  options: {
+    sessionId: string;
+    title: string;
+    latestUserText: string;
+    latestAssistantText: string;
+    messageAt: string;
+  },
+) {
+  const databasePath = path.join(ctx.env.HOME || "", ".local", "share", "opencode", "opencode.db");
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  const messageAtMs = new Date(options.messageAt).getTime();
+  const userMessageId = `${options.sessionId}-user`;
+  const assistantMessageId = `${options.sessionId}-assistant`;
+  execFileSync("sqlite3", [databasePath, `
+    create table if not exists session (
+      id text primary key,
+      directory text not null,
+      title text not null,
+      version text not null default '',
+      time_created integer not null,
+      time_updated integer not null,
+      time_archived integer
+    );
+    create table if not exists message (
+      id text primary key,
+      session_id text not null,
+      time_created integer not null,
+      time_updated integer not null,
+      data text not null
+    );
+    create table if not exists part (
+      id text primary key,
+      message_id text not null,
+      session_id text not null,
+      time_created integer not null,
+      time_updated integer not null,
+      data text not null
+    );
+    insert or replace into session (
+      id, directory, title, version, time_created, time_updated, time_archived
+    ) values (
+      '${sqlString(options.sessionId)}',
+      '${sqlString(ctx.workspaceDir)}',
+      '${sqlString(options.title)}',
+      '1.0.0',
+      ${messageAtMs - 5_000},
+      ${messageAtMs},
+      null
+    );
+    insert or replace into message (
+      id, session_id, time_created, time_updated, data
+    ) values (
+      '${sqlString(userMessageId)}',
+      '${sqlString(options.sessionId)}',
+      ${messageAtMs - 1_000},
+      ${messageAtMs - 1_000},
+      '${sqlString(JSON.stringify({ role: "user" }))}'
+    );
+    insert or replace into message (
+      id, session_id, time_created, time_updated, data
+    ) values (
+      '${sqlString(assistantMessageId)}',
+      '${sqlString(options.sessionId)}',
+      ${messageAtMs},
+      ${messageAtMs},
+      '${sqlString(JSON.stringify({ role: "assistant" }))}'
+    );
+    insert or replace into part (
+      id, message_id, session_id, time_created, time_updated, data
+    ) values (
+      '${sqlString(`${userMessageId}-text`)}',
+      '${sqlString(userMessageId)}',
+      '${sqlString(options.sessionId)}',
+      ${messageAtMs - 1_000},
+      ${messageAtMs - 1_000},
+      '${sqlString(JSON.stringify({ type: "text", text: options.latestUserText }))}'
+    );
+    insert or replace into part (
+      id, message_id, session_id, time_created, time_updated, data
+    ) values (
+      '${sqlString(`${assistantMessageId}-text`)}',
+      '${sqlString(assistantMessageId)}',
+      '${sqlString(options.sessionId)}',
+      ${messageAtMs},
+      ${messageAtMs},
+      '${sqlString(JSON.stringify({ type: "text", text: options.latestAssistantText }))}'
+    );
+  `]);
+}
+
+function writeRecentClaudeFixtureState(
+  ctx: FixtureContext,
+  options: {
+    sessionId: string;
+    title: string;
+    latestUserText: string;
+    latestAssistantText: string;
+    messageAt: string;
+  },
+) {
+  const claudeDir = path.join(ctx.env.HOME || "", ".claude", "projects", ctx.workspaceDir.replace(/[^A-Za-z0-9]/g, "-"));
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const messageAtMs = new Date(options.messageAt).getTime();
+  fs.writeFileSync(path.join(claudeDir, `${options.sessionId}.jsonl`), [
+    JSON.stringify({
+      type: "custom-title",
+      customTitle: options.title,
+      uuid: "00000000-0000-4000-8000-000000000101",
+      sessionId: options.sessionId,
+      cwd: ctx.workspaceDir,
+      timestamp: new Date(messageAtMs - 2_000).toISOString(),
+    }),
+    JSON.stringify({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000102",
+      sessionId: options.sessionId,
+      cwd: ctx.workspaceDir,
+      timestamp: new Date(messageAtMs - 1_000).toISOString(),
+      message: { role: "user", content: options.latestUserText },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000103",
+      sessionId: options.sessionId,
+      cwd: ctx.workspaceDir,
+      timestamp: options.messageAt,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: options.latestAssistantText }],
+      },
+    }),
+  ].join("\n"));
+}
+
 function codexRolloutMessage(timestamp: string, role: string, text: string) {
   return JSON.stringify({
     timestamp,
@@ -935,6 +1110,43 @@ process.stdin.on("data", (chunk) => {
         input = "";
       }
       sawLineFeed = false;
+      continue;
+    }
+    input += char;
+  }
+  draw();
+});
+`;
+
+const claudeTuiSource = `#!/usr/bin/env node
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.setEncoding("utf8");
+
+let input = "";
+let answer = "";
+
+function draw() {
+  process.stdout.write("\\x1b[2J\\x1b[H");
+  process.stdout.write("\\x1b[35m╭─ Claude test TUI ────────────╮\\x1b[0m\\r\\n");
+  process.stdout.write("\\x1b[35m│\\x1b[0m status idle                  \\x1b[35m│\\x1b[0m\\r\\n");
+  process.stdout.write("╰──────────────────────────────╯\\r\\n");
+  process.stdout.write("\\r\\n");
+  process.stdout.write(("> " + input + "                              ").slice(0, 32) + "\\r\\n");
+  if (answer) {
+    process.stdout.write("\\x1b[32m" + answer + "\\x1b[0m\\r\\n");
+  }
+}
+
+draw();
+process.stdin.on("data", (chunk) => {
+  for (const char of chunk) {
+    if (char === "\\u0003") process.exit(0);
+    if (char === "\\r" || char === "\\n") {
+      if (input.trim()) {
+        answer = /one plus two/i.test(input) ? "three" : "heard " + input;
+        input = "";
+      }
       continue;
     }
     input += char;

@@ -31,7 +31,7 @@ type SessionPayload = {
 };
 
 type SessionSdkPayload = {
-  provider: "" | "opencode" | "codex";
+  provider: "" | "opencode" | "codex" | "claude";
   state: "unavailable" | "ready" | "connected" | "not-found" | "error";
   baseUrl: string;
   externalSessionId: string;
@@ -41,7 +41,7 @@ type SessionSdkPayload = {
   sidecarSummary: SidecarSummaryState;
   forks: SidecarSummaryFork[];
   summary: null | {
-    provider: "opencode" | "codex";
+    provider: "opencode" | "codex" | "claude";
     title: string;
     messageCount: number;
     diffCount: number;
@@ -57,7 +57,7 @@ type SessionSdkPayload = {
 type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary";
+  method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary" | "claude.query+forkSession";
   sourceSessionId: string;
   forkSessionId: string;
   updatedAt: string;
@@ -67,7 +67,7 @@ type SidecarSummaryState = {
 };
 
 type SidecarSummaryFork = {
-  provider: "opencode" | "codex";
+  provider: "opencode" | "codex" | "claude";
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
@@ -129,7 +129,8 @@ type CommandPreset = {
   fakeAgent: string;
 };
 
-type RecentCodexSession = {
+type RecentAgentSession = {
+  provider: "opencode" | "codex" | "claude";
   id: string;
   title: string;
   cwd: string;
@@ -137,6 +138,8 @@ type RecentCodexSession = {
   lastMessageAt: string;
   lastMessageText: string;
   messageCount: number;
+  command: string;
+  args: string[];
 };
 
 type LaunchSessionInput = {
@@ -248,11 +251,11 @@ function readRendererPreference() {
 }
 
 async function renderHome() {
-  const [cwd, sessions, commands, recentCodexSessions] = await Promise.all([
+  const [cwd, sessions, commands, recentAgentSessions] = await Promise.all([
     api<{ cwd: string }>("/api/cwd"),
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
-    api<RecentCodexSession[]>("/api/codex-sessions/recent"),
+    api<RecentAgentSession[]>("/api/agent-sessions/recent"),
   ]);
   const quickLaunchRows = [
     { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
@@ -304,24 +307,27 @@ async function renderHome() {
           <button type="submit">Launch</button>
         </form>
       </section>
-      ${recentCodexSessions.length ? `
-        <section class="recent-codex" aria-label="Recent Codex sessions">
+      ${recentAgentSessions.length ? `
+        <section class="recent-agents" aria-label="Recent agent sessions">
           <header>
-            <strong>Recent Codex</strong>
-            <span>${recentCodexSessions.length} active in 24h</span>
+            <strong>Recent Sessions</strong>
+            <span>${recentAgentSessions.length} active in 24h</span>
           </header>
-          <div class="recent-codex-list">
-            ${recentCodexSessions.map((session) => `
+          <div class="recent-agents-list">
+            ${recentAgentSessions.map((session) => `
               <button
                 type="button"
-                class="codex-session-button"
-                data-codex-thread-id="${escapeAttr(session.id)}"
-                aria-label="${escapeAttr(`Resume Codex session ${session.title}`)}"
-                title="${escapeAttr(`codex resume ${session.id}`)}"
+                class="agent-session-button"
+                data-agent-session-id="${escapeAttr(`${session.provider}:${session.id}`)}"
+                aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
+                title="${escapeAttr([session.command, ...session.args].join(" "))}"
               >
-                <strong>${escapeHtml(session.title || session.id)}</strong>
+                <strong>
+                  <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+                  <span>${escapeHtml(session.title || session.id)}</span>
+                </strong>
                 <span>${escapeHtml(session.lastMessageText || "No message text")}</span>
-                <code>${escapeHtml(formatCodexSessionMeta(session))}</code>
+                <code>${escapeHtml(formatAgentSessionMeta(session))}</code>
               </button>
             `).join("")}
           </div>
@@ -337,7 +343,7 @@ async function renderHome() {
   const commandInput = form.elements.namedItem("command") as HTMLInputElement;
   const argsInput = form.elements.namedItem("args") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
-  const recentCodexById = new Map(recentCodexSessions.map((session) => [session.id, session]));
+  const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
 
   for (const button of form.querySelectorAll<HTMLButtonElement>("[data-preset-id]")) {
     button.addEventListener("click", async () => {
@@ -357,17 +363,17 @@ async function renderHome() {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-codex-thread-id]")) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-agent-session-id]")) {
     button.addEventListener("click", async () => {
-      const session = recentCodexById.get(button.dataset.codexThreadId || "");
+      const session = recentAgentSessionsByKey.get(button.dataset.agentSessionId || "");
       if (!session) {
         return;
       }
-      commandInput.value = "codex";
-      argsInput.value = `resume ${session.id}`;
+      commandInput.value = session.command;
+      argsInput.value = session.args.join(" ");
       await launchSession({
-        command: "codex",
-        args: ["resume", session.id],
+        command: session.command,
+        args: session.args,
         cwd: session.cwd || currentLaunchCwd(),
         cols: currentLaunchCols(),
         fakeAgent: "",
@@ -1286,7 +1292,7 @@ function renderSemanticScreen(screen: SemanticScreen) {
   `;
 }
 
-function formatCodexSessionMeta(session: RecentCodexSession) {
+function formatAgentSessionMeta(session: RecentAgentSession) {
   const cwd = session.cwd.split("/").filter(Boolean).at(-1) || session.cwd || "/";
   const time = new Date(session.lastMessageAt).toLocaleString([], {
     month: "short",
@@ -1295,6 +1301,16 @@ function formatCodexSessionMeta(session: RecentCodexSession) {
     minute: "2-digit",
   });
   return `${time} - ${cwd} - ${session.messageCount} messages`;
+}
+
+function providerLabel(provider: RecentAgentSession["provider"]) {
+  if (provider === "opencode") {
+    return "OpenCode";
+  }
+  if (provider === "codex") {
+    return "Codex";
+  }
+  return "Claude";
 }
 
 function renderSessionLink(session: any) {
