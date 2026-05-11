@@ -518,9 +518,12 @@ function bindSessionControls(sessionId: string) {
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-key]").forEach((button) => {
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+    });
     button.addEventListener("click", () => {
+      textarea.blur();
       void sendKey(sessionId, button.dataset.key || "");
-      textarea.focus();
     });
   });
 

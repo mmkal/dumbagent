@@ -114,6 +114,23 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect(page.getByTestId("semantic-section").filter({ hasText: "key escape" })).toBeVisible();
 });
 
+test("key chord buttons do not return focus to the composer", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("semantic-agent");
+  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Ask anything");
+
+  const composer = page.getByRole("textbox", { name: "Send stdin" });
+  await composer.focus();
+  await expect(composer).toBeFocused();
+  await page.getByRole("button", { name: "esc" }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("key escape");
+  expect(await composer.evaluate((element) => document.activeElement === element)).toBe(false);
+});
+
 test("can type directly into the terminal renderer", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
