@@ -1767,10 +1767,26 @@ function minimalEnv(env: NodeJS.ProcessEnv) {
 
 function terminalBaseEnv(processEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) {
   const env = minimalEnv(processEnv);
+  if (!("PATH" in explicitEnv) && env.PATH) {
+    env.PATH = stripLeadingPackageBinPaths(env.PATH);
+  }
   if (!("NO_COLOR" in explicitEnv)) {
     delete env.NO_COLOR;
   }
   return env;
+}
+
+function stripLeadingPackageBinPaths(value: string) {
+  const entries = value.split(path.delimiter);
+  while (entries.length > 0 && isPackageBinPath(entries[0] || "")) {
+    entries.shift();
+  }
+  return entries.join(path.delimiter);
+}
+
+function isPackageBinPath(value: string) {
+  const normalized = path.normalize(value);
+  return path.basename(normalized) === ".bin" && path.basename(path.dirname(normalized)) === "node_modules";
 }
 
 function isAgentName(value: unknown): value is AgentName {

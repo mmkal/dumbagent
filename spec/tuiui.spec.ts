@@ -344,6 +344,16 @@ test("does not inherit NO_COLOR into launched TUIs", async ({ page, ctx }) => {
   });
 });
 
+test("does not let package-manager bin shims shadow real agent commands", async ({ page }) => {
+  await using ctx = await createContextWithCodexShimShadow();
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("button", { name: "Codex", exact: true }).click();
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");
+  await expect(page.getByTestId("rendered-terminal")).not.toContainText("shadowed repo-local codex");
+});
+
 test("can drive OpenCode through fakeagent when OpenCode is installed", async ({ page, ctx }) => {
   test.skip(!commandExists("opencode"), "opencode is not installed");
 
@@ -587,6 +597,28 @@ function countSerializedHtmlRows(html: string) {
 }
 
 async function createContext() {
+  return await createContextWithPathPrefix("");
+}
+
+async function createContextWithCodexShimShadow() {
+  const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-codex-shadow-"));
+  const shadowBinDir = path.join(shadowRoot, "node_modules", ".bin");
+  fs.mkdirSync(shadowBinDir, { recursive: true });
+  fs.writeFileSync(path.join(shadowBinDir, "codex"), `#!/usr/bin/env node
+process.stdout.write("shadowed repo-local codex\\n");
+setTimeout(() => process.exit(0), 100);
+`, { mode: 0o755 });
+  const ctx = await createContextWithPathPrefix(shadowBinDir);
+  return {
+    ...ctx,
+    async [Symbol.asyncDispose]() {
+      await ctx[Symbol.asyncDispose]();
+      fs.rmSync(shadowRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+async function createContextWithPathPrefix(pathPrefix: string) {
   const rootDir = path.resolve(import.meta.dirname, "..");
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-spec-"));
   const workspaceDir = path.join(tempRoot, "workspace");
@@ -601,9 +633,10 @@ async function createContext() {
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
+  const pathParts = [pathPrefix, fakeBinDir, process.env.PATH || ""].filter(Boolean);
   const env = {
     ...process.env,
-    PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
+    PATH: pathParts.join(path.delimiter),
     HOME: path.join(tempRoot, "home"),
     NO_COLOR: "1",
   };
