@@ -54,7 +54,9 @@ test("launches a TUI, translates boxes into semantic sections, and accepts compo
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByTestId("semantic-section").filter({ hasText: "three" })).toBeVisible();
+  await expect(page.getByTestId("semantic-section").filter({ hasText: "Answer" }).filter({ hasText: "three" })).toBeVisible();
+  await expect(page.getByTestId("semantic-section").filter({ hasText: "me: what is one plus two" })).toBeVisible();
+  await expect(page.getByTestId("semantic-section").filter({ hasText: "agent: three" })).toBeVisible();
   await clickSessionMenuButton(page, "Summary");
   await expect(page.getByTestId("sdk-summary")).toContainText("No SDK adapter");
   await expect(page.getByTestId("tuishot-preview").locator("img")).toBeVisible();
@@ -762,30 +764,45 @@ process.stdin.setEncoding("utf8");
 let input = "";
 let answer = "";
 let key = "";
+const messages = [];
+
+function line(text) {
+  return ("│ " + (text || " ") + "                              │").slice(0, 32) + "│\\r\\n";
+}
 
 function draw() {
   process.stdout.write("\\x1b[2J\\x1b[H");
   process.stdout.write("╭─ semantic-agent ─────────────╮\\r\\n");
   process.stdout.write("│ status idle                  │\\r\\n");
   process.stdout.write("╰──────────────────────────────╯\\r\\n");
+  if (messages.length > 0) {
+    process.stdout.write("\\r\\n╭─ Message history ────────────╮\\r\\n");
+    for (const message of messages.slice(-4)) {
+      process.stdout.write(line(message));
+    }
+    process.stdout.write("╰──────────────────────────────╯\\r\\n");
+  }
   process.stdout.write("\\r\\n");
   process.stdout.write("╭─ Ask anything ───────────────╮\\r\\n");
-  process.stdout.write(("│ " + (input || " ") + "                              │").slice(0, 32) + "│\\r\\n");
+  process.stdout.write(line(input));
   process.stdout.write("╰──────────────────────────────╯\\r\\n");
   if (answer) {
     process.stdout.write("\\r\\n╭─ Answer ─────────────────────╮\\r\\n");
-    process.stdout.write(("│ " + answer + "                              │").slice(0, 32) + "│\\r\\n");
+    process.stdout.write(line(answer));
     process.stdout.write("╰──────────────────────────────╯\\r\\n");
   }
   if (key) {
     process.stdout.write("\\r\\n╭─ Key ────────────────────────╮\\r\\n");
-    process.stdout.write(("│ " + key + "                              │").slice(0, 32) + "│\\r\\n");
+    process.stdout.write(line(key));
     process.stdout.write("╰──────────────────────────────╯\\r\\n");
   }
 }
 
 function submit() {
+  const submitted = input;
   answer = /one plus two/i.test(input) ? "three" : "heard " + input;
+  messages.push("me: " + submitted);
+  messages.push("agent: " + answer);
   input = "";
   draw();
 }
