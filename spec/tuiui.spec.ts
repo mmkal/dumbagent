@@ -25,7 +25,16 @@ const test = base.extend<{ ctx: FixtureContext }>({
   },
 });
 
-test("shows a page-load toast on each full document load", async ({ page, ctx }) => {
+test("does not show a page-load toast by default", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.waitForTimeout(200);
+  await expect(page.getByTestId("page-load-toast")).toHaveCount(0);
+});
+
+test("shows a page-load toast on each full document load when opted in", async ({ page }) => {
+  await using ctx = await createContext({ TUIUI_PAGE_LOAD_TOASTS: "1" });
+
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #1");
@@ -640,8 +649,8 @@ function countSerializedHtmlRows(html: string) {
   return html.match(/<div><span>/g)?.length || 0;
 }
 
-async function createContext() {
-  return await createContextWithPathPrefix("");
+async function createContext(envOverrides: Record<string, string> = {}) {
+  return await createContextWithPathPrefix("", envOverrides);
 }
 
 async function createContextWithCodexShimShadow() {
@@ -652,7 +661,7 @@ async function createContextWithCodexShimShadow() {
 process.stdout.write("shadowed repo-local codex\\n");
 setTimeout(() => process.exit(0), 100);
 `, { mode: 0o755 });
-  const ctx = await createContextWithPathPrefix(shadowBinDir);
+  const ctx = await createContextWithPathPrefix(shadowBinDir, {});
   return {
     ...ctx,
     async [Symbol.asyncDispose]() {
@@ -662,7 +671,7 @@ setTimeout(() => process.exit(0), 100);
   };
 }
 
-async function createContextWithPathPrefix(pathPrefix: string) {
+async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Record<string, string>) {
   const rootDir = path.resolve(import.meta.dirname, "..");
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-spec-"));
   const workspaceDir = path.join(tempRoot, "workspace");
@@ -683,6 +692,7 @@ async function createContextWithPathPrefix(pathPrefix: string) {
     PATH: pathParts.join(path.delimiter),
     HOME: path.join(tempRoot, "home"),
     NO_COLOR: "1",
+    ...envOverrides,
   };
   const server = spawn("bun", ["run", path.join(rootDir, "cli.ts"), "--host", "127.0.0.1", "--port", String(port)], {
     cwd: workspaceDir,
