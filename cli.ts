@@ -49,6 +49,7 @@ import {
 import { createSessionId } from "./src/session-id.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
+import { renderTerminalShotSvg } from "./src/tuishot.ts";
 
 if (typeof Bun === "undefined") {
   throw new Error("tuiui requires the Bun runtime. Run `bun run cli.ts ...`.");
@@ -285,6 +286,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json({
       events: session.stdoutEvents.filter((event) => event.id > after),
     });
+  }
+
+  if (request.method === "GET" && (action === "tuishot" || action === "tuishot.svg")) {
+    return createTuishotResponse(session);
   }
 
   if (request.method === "POST" && action === "send") {
@@ -632,6 +637,24 @@ function toSessionListItem(session: RuntimeSession) {
     lifecycle: session.lifecycle,
     updatedAt: session.updatedAt,
   };
+}
+
+function createTuishotResponse(session: RuntimeSession) {
+  const svg = renderTerminalShotSvg(session.terminal, {
+    title: `${session.title || session.command} tuishot`,
+    fontSize: 12,
+    cellWidth: 7.25,
+    lineHeight: 14.2,
+    padding: 10,
+  });
+  const filename = `${session.id}-tuishot.svg`;
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml;charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 async function createTestingFakeAgent() {

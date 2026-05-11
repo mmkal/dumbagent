@@ -446,6 +446,7 @@ async function renderSession(sessionId: string) {
               <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
               <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
               <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
+              <button type="button" class="icon-button" data-action="tuishot">Tuishot</button>
               <button type="button" class="icon-button danger" data-action="kill">Stop</button>
             </div>
           </div>
@@ -552,6 +553,11 @@ function bindSessionControls(sessionId: string) {
     closeSessionMenu();
   });
 
+  document.querySelector<HTMLButtonElement>("[data-action='tuishot']")?.addEventListener("click", () => {
+    downloadTuishot(sessionId);
+    closeSessionMenu();
+  });
+
   document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
     setEventsPaused(sessionId, !eventsPaused);
     closeSessionMenu();
@@ -567,6 +573,16 @@ function bindSessionControls(sessionId: string) {
       scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
     });
   });
+}
+
+function downloadTuishot(sessionId: string) {
+  const anchor = document.createElement("a");
+  anchor.href = `/api/sessions/${sessionId}/tuishot.svg`;
+  anchor.download = `${sessionId}-tuishot.svg`;
+  anchor.rel = "noopener";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 function closeSessionMenu() {
