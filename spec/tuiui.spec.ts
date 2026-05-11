@@ -316,11 +316,18 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await page.goto(ctx.baseUrl);
   const commands = await page.evaluate(async () => await fetch("/api/commands").then((response) => response.json()));
   expect(commands).toContainEqual(expect.objectContaining({
+    id: "codex",
+    command: "codex",
+    fakeAgent: "",
+  }));
+  expect(commands).toContainEqual(expect.objectContaining({
     id: "fake-codex",
     command: "codex",
     fakeAgent: "codex",
   }));
   await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "OpenCode", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Codex", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Fake Codex" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");

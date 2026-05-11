@@ -205,6 +205,8 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   if (request.method === "GET" && url.pathname === "/api/commands") {
     return Response.json([
       { id: "custom", label: "Custom", command: "", args: [], fakeAgent: "" },
+      { id: "opencode", label: "OpenCode", command: "opencode", args: [], fakeAgent: "" },
+      { id: "codex", label: "Codex", command: "codex", args: [], fakeAgent: "" },
       { id: "fake-opencode", label: "Fake OpenCode", command: "opencode", args: [], fakeAgent: "opencode" },
       { id: "fake-codex", label: "Fake Codex", command: "codex", args: [], fakeAgent: "codex" },
       { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
