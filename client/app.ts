@@ -38,6 +38,8 @@ type SessionPayload = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi?: string;
+  screenVersion: number;
+  snapshotEventId: number;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -221,6 +223,7 @@ let xtermFit: FitAddon | null = null;
 let xtermReady: Promise<XtermTerminal> | null = null;
 let xtermSessionId = "";
 let xtermLastStdoutEventId = 0;
+let xtermScreenVersion = -1;
 let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
@@ -1092,19 +1095,23 @@ async function syncXterm(payload: SessionPayload) {
   term.resize(payload.cols, payload.rows);
   const newestEvent = payload.stdoutEvents[payload.stdoutEvents.length - 1];
   const newestId = newestEvent ? newestEvent.id : 0;
-  if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
+  if (payload.screenVersion !== xtermScreenVersion) {
     term.reset();
     if (payload.renderedAnsi) {
       await writeXterm(term, payload.renderedAnsi);
-      xtermLastStdoutEventId = newestId;
-      return;
+    } else {
+      await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
     }
-    await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
-    xtermLastStdoutEventId = newestId;
+    xtermLastStdoutEventId = payload.snapshotEventId || newestId;
+    xtermScreenVersion = payload.screenVersion;
     return;
   }
 
-  if (newestId === xtermLastStdoutEventId) {
+  if (newestId === 0 || newestId === xtermLastStdoutEventId) {
+    return;
+  }
+
+  if (newestId < xtermLastStdoutEventId) {
     return;
   }
 
@@ -1157,6 +1164,7 @@ function destroyXterm() {
   xtermReady = null;
   xtermSessionId = "";
   xtermLastStdoutEventId = 0;
+  xtermScreenVersion = -1;
   xtermInputQueue = Promise.resolve();
   xtermSyncQueue = Promise.resolve();
 }

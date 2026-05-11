@@ -99,6 +99,8 @@ type SessionPayload = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi: string;
+  screenVersion: number;
+  snapshotEventId: number;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -128,14 +130,24 @@ type RuntimeSession = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi: string;
+  screenVersion: number;
+  snapshotEventId: number;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
   sdkSummaryJob: Promise<void> | null;
   stdinEvents: StdinEvent[];
   stdoutEvents: StdoutEvent[];
+  redrawGate: RedrawGate;
   subscribers: Set<(payload: SessionPayload) => void>;
   fakeAgent: FakeAgent | null;
+};
+
+type RedrawGate = {
+  active: boolean;
+  startedAfterEventId: number;
+  quietTimer: ReturnType<typeof setTimeout> | null;
+  maxTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type BunPtyBackendHandle = {
@@ -173,6 +185,8 @@ const defaultPort = 7373;
 const defaultCols = 120;
 const defaultRows = 42;
 const idleThresholdMs = 1_000;
+const redrawQuietMs = 600;
+const redrawMaxMs = 10_000;
 
 const cli = parseCliArgs(process.argv.slice(2));
 const state: ServerState = {
@@ -349,7 +363,6 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   if (request.method === "POST" && action === "resize") {
     const body = await request.json() as { cols?: number; rows?: number };
     await resizeSession(session, Number(body.cols || session.cols), Number(body.rows || session.rows));
-    publishSession(session);
     return Response.json({ ok: true });
   }
 
@@ -438,12 +451,15 @@ async function createSession(input: CreateSessionInput) {
     renderedText: "",
     renderedHtml: "",
     renderedAnsi: "",
+    screenVersion: 0,
+    snapshotEventId: 0,
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
     sdkSummaryJob: null,
     stdinEvents: [],
     stdoutEvents: [],
+    redrawGate: createRedrawGate(true),
     subscribers: new Set(),
     fakeAgent,
   };
@@ -472,6 +488,7 @@ async function createSession(input: CreateSessionInput) {
         if (flushed) {
           await appendOutput(state, session, flushed);
         }
+        flushRedrawGate(session);
         session.lifecycle = "exited";
         session.exitCode = exitCode;
         session.updatedAt = new Date().toISOString();
@@ -535,12 +552,15 @@ async function reconnectSession(state: ServerState, id: string) {
     renderedText: "",
     renderedHtml: "",
     renderedAnsi: "",
+    screenVersion: 0,
+    snapshotEventId: 0,
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
     sdkSummaryJob: null,
     stdinEvents: [],
     stdoutEvents: [],
+    redrawGate: createRedrawGate(true),
     subscribers: new Set(),
     fakeAgent: null,
   };
@@ -555,6 +575,7 @@ async function reconnectSession(state: ServerState, id: string) {
         if (flushed) {
           await appendOutput(state, session!, flushed);
         }
+        flushRedrawGate(session!);
         session!.lifecycle = "exited";
         session!.exitCode = exitCode;
         session!.updatedAt = new Date().toISOString();
@@ -652,7 +673,7 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
   const renderedText = renderTerminalText(session);
   session.renderedText = renderedText;
   session.renderedHtml = renderTerminalHtml(session);
-  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
+  session.renderedAnsi = renderTerminalAnsi(session);
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(renderedText, { cols: session.cols, rows: session.rows });
   session.title = inferSessionTitle(session, chunk);
@@ -665,7 +686,68 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
     createdAt: now,
   });
   state.nextStdoutEventId += 1;
+  if (session.redrawGate.active) {
+    scheduleRedrawGateFlush(session);
+    return;
+  }
   publishSession(session);
+}
+
+function createRedrawGate(active: boolean): RedrawGate {
+  return {
+    active,
+    startedAfterEventId: 0,
+    quietTimer: null,
+    maxTimer: null,
+  };
+}
+
+function beginRedrawGate(session: RuntimeSession) {
+  session.redrawGate.active = true;
+  session.redrawGate.startedAfterEventId = latestStdoutEventId(session);
+  scheduleRedrawGateFlush(session);
+}
+
+function scheduleRedrawGateFlush(session: RuntimeSession) {
+  const gate = session.redrawGate;
+  if (!gate.active) {
+    return;
+  }
+  if (gate.quietTimer) {
+    clearTimeout(gate.quietTimer);
+  }
+  gate.quietTimer = setTimeout(() => {
+    flushRedrawGate(session);
+  }, redrawQuietMs);
+  if (!gate.maxTimer) {
+    gate.maxTimer = setTimeout(() => {
+      flushRedrawGate(session);
+    }, redrawMaxMs);
+  }
+}
+
+function flushRedrawGate(session: RuntimeSession) {
+  const gate = session.redrawGate;
+  if (!gate.active) {
+    return;
+  }
+  gate.active = false;
+  if (gate.quietTimer) {
+    clearTimeout(gate.quietTimer);
+    gate.quietTimer = null;
+  }
+  if (gate.maxTimer) {
+    clearTimeout(gate.maxTimer);
+    gate.maxTimer = null;
+  }
+  session.screenVersion += 1;
+  session.snapshotEventId = latestStdoutEventId(session);
+  session.renderedAnsi = renderTerminalAnsi(session);
+  publishSession(session);
+}
+
+function latestStdoutEventId(session: RuntimeSession) {
+  return session.stdoutEvents[session.stdoutEvents.length - 1]?.id || 0;
 }
 
 async function writeToTerminal(terminal: HeadlessTerminal, chunk: string) {
@@ -691,10 +773,15 @@ function renderTerminalHtml(session: RuntimeSession) {
   return session.serializer.serializeAsHTML({ includeGlobalBackground: true, scrollback: 0 });
 }
 
+function renderTerminalAnsi(session: RuntimeSession) {
+  return session.serializer.serialize({ scrollback: 0 });
+}
+
 async function sendToSession(state: ServerState, session: RuntimeSession, text: string, submit: boolean) {
   if (session.lifecycle !== "running") {
     throw new Error("session is not running");
   }
+  flushRedrawGate(session);
   const now = new Date().toISOString();
   session.stdinEvents.push({
     id: state.nextStdinEventId,
@@ -737,13 +824,14 @@ function normalizeInput(text: string) {
 }
 
 async function resizeSession(session: RuntimeSession, cols: number, rows: number) {
+  beginRedrawGate(session);
   session.cols = Math.max(40, Math.min(240, Math.round(cols)));
   session.rows = Math.max(12, Math.min(80, Math.round(rows)));
   session.terminal.resize(session.cols, session.rows);
   await session.backend.resize(session.cols, session.rows);
   session.renderedText = renderTerminalText(session);
   session.renderedHtml = renderTerminalHtml(session);
-  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
+  session.renderedAnsi = renderTerminalAnsi(session);
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(session.renderedText, { cols: session.cols, rows: session.rows });
   session.updatedAt = new Date().toISOString();
@@ -801,9 +889,14 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     : Date.now() - new Date(session.lastOutputAt).getTime() < idleThresholdMs
       ? "busy"
       : "idle";
+  const latestEventId = latestStdoutEventId(session);
+  const suppressRedrawOutput = session.redrawGate.active;
+  const emptyTerminal = suppressRedrawOutput
+    ? new HeadlessTerminal({ cols: session.cols, rows: session.rows, allowProposedApi: true })
+    : null;
   return {
     id: session.id,
-    title: session.semantic.title || session.title,
+    title: suppressRedrawOutput ? session.title : session.semantic.title || session.title,
     command: session.command,
     args: session.args,
     cwd: session.cwd,
@@ -815,14 +908,16 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     exitCode: session.exitCode,
     cols: session.cols,
     rows: session.rows,
-    renderedText: session.renderedText,
-    renderedHtml: session.renderedHtml,
-    renderedAnsi: session.renderedAnsi,
-    blocks: session.blocks,
-    semantic: session.semantic,
+    renderedText: suppressRedrawOutput ? "" : session.renderedText,
+    renderedHtml: suppressRedrawOutput ? "" : session.renderedHtml,
+    renderedAnsi: suppressRedrawOutput ? "" : session.renderedAnsi,
+    screenVersion: session.screenVersion,
+    snapshotEventId: suppressRedrawOutput ? session.snapshotEventId : latestEventId,
+    blocks: suppressRedrawOutput ? analyzeTerminalBlocks(emptyTerminal!) : session.blocks,
+    semantic: suppressRedrawOutput ? analyzeTerminalScreen("", { cols: session.cols, rows: session.rows }) : session.semantic,
     sdk: session.sdk,
     stdinEvents: session.stdinEvents.slice(-100),
-    stdoutEvents: session.stdoutEvents.slice(-200),
+    stdoutEvents: suppressRedrawOutput ? [] : session.stdoutEvents.slice(-200),
   };
 }
 
