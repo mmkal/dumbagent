@@ -566,25 +566,6 @@ async function renderSession(sessionId: string) {
           </div>
         </form>
         <div class="composer-actions">
-          <div class="keys" role="group" aria-label="Keys">
-            ${renderKeyButton("esc", "Esc")}
-            ${renderKeyButton("tab", "Tab")}
-            ${renderKeyButton("up", "↑")}
-            ${renderKeyButton("down", "↓")}
-            ${renderKeyButton("left", "←", "overflow-key")}
-            ${renderKeyButton("right", "→", "overflow-key")}
-            ${renderKeyButton("ctrl+c", "^C", "overflow-key")}
-            <details class="key-overflow">
-              <summary class="icon-button key-more" role="button" aria-label="More keys">...</summary>
-              <div class="key-overflow-panel">
-                ${renderKeyButton("left", "←")}
-                ${renderKeyButton("right", "→")}
-                ${renderKeyButton("ctrl+c", "^C")}
-              </div>
-            </details>
-          </div>
-          <div class="voice-controls" role="group" aria-label="Voice mode">
-          <button type="button" class="secondary-button" data-action="toggle-chord" aria-expanded="false">Chord</button>
           <div class="voice-controls" role="group" aria-label="Voice mode">
             <button type="button" id="voice-talk" class="icon-button voice-talk" aria-label="Push to talk" data-voice-status="idle">Talk</button>
             <button type="button" id="voice-cancel" class="icon-button" aria-label="Cancel listening">Cancel</button>
@@ -608,7 +589,6 @@ function bindSessionControls(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const sendButton = document.getElementById("send") as HTMLButtonElement;
   const chordForm = document.getElementById("chord-form") as HTMLFormElement;
-  const chordToggle = document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']")!;
   setupVoiceControls(sessionId, textarea);
 
   sendButton.addEventListener("click", () => {
@@ -634,29 +614,10 @@ function bindSessionControls(sessionId: string) {
     void sendKey(sessionId, key);
   });
 
-  document.querySelectorAll<HTMLButtonElement>("[data-key]").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      textarea.blur();
-      void sendKey(sessionId, button.dataset.key || "");
-    });
-  });
-
-  chordToggle.addEventListener("click", () => {
-    const nextHidden = !chordForm.hidden;
-    chordForm.hidden = nextHidden;
-    chordToggle.setAttribute("aria-expanded", String(!nextHidden));
-    if (!nextHidden) {
-      const sequenceInput = chordForm.elements.namedItem("sequence") as HTMLInputElement;
-      sequenceInput.focus();
-    }
-  });
+  bindChordShortcutControls(sessionId, chordForm);
 
   document.querySelector<HTMLButtonElement>("[data-action='cancel-chord']")?.addEventListener("click", () => {
-    chordForm.hidden = true;
-    chordToggle.setAttribute("aria-expanded", "false");
+    setChordFormOpen(chordForm, false);
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-chord-insert]").forEach((button) => {
@@ -680,19 +641,8 @@ function bindSessionControls(sessionId: string) {
     refreshChordShortcuts(binary);
     labelInput.value = "";
     sequenceInput.value = "";
-    chordForm.hidden = true;
-    chordToggle.setAttribute("aria-expanded", "false");
+    setChordFormOpen(chordForm, false);
     void sendChordSequence(sessionId, chord.sequence, chord.id);
-  });
-
-  document.querySelectorAll<HTMLButtonElement>("[data-chord-sequence]").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      textarea.blur();
-      void sendChordSequence(sessionId, button.dataset.chordSequence || "", button.dataset.chordId || "");
-    });
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
@@ -845,15 +795,38 @@ function refreshChordShortcuts(binary: ChordBinary) {
     return;
   }
   container.innerHTML = renderChordShortcuts(binary);
+  const chordForm = document.getElementById("chord-form") as HTMLFormElement | null;
+  if (!chordForm) {
+    return;
+  }
+  bindChordShortcutControls(activeSession?.id || "", chordForm);
+}
+
+function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement) {
+  const chordToggle = document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']");
+  chordToggle?.addEventListener("click", () => {
+    const open = chordForm.hidden;
+    setChordFormOpen(chordForm, open);
+    if (open) {
+      const sequenceInput = chordForm.elements.namedItem("sequence") as HTMLInputElement;
+      sequenceInput.focus();
+    }
+  });
+
   document.querySelectorAll<HTMLButtonElement>("[data-chord-sequence]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
     });
     button.addEventListener("click", () => {
       document.getElementById("stdin")?.blur();
-      void sendChordSequence(activeSession?.id || "", button.dataset.chordSequence || "", button.dataset.chordId || "");
+      void sendChordSequence(sessionId, button.dataset.chordSequence || "", button.dataset.chordId || "");
     });
   });
+}
+
+function setChordFormOpen(chordForm: HTMLFormElement, open: boolean) {
+  chordForm.hidden = !open;
+  document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']")?.setAttribute("aria-expanded", String(open));
 }
 
 function subscribe(sessionId: string) {
@@ -1826,18 +1799,13 @@ function renderSessionLink(session: any) {
   `;
 }
 
-function renderKeyButton(key: string, label: string, className = "") {
-  const classes = ["icon-button", "key-button", className].filter(Boolean).join(" ");
-  return `<button type="button" class="${escapeAttr(classes)}" data-key="${escapeAttr(key)}" aria-label="${escapeAttr(key)}">${escapeHtml(label)}</button>`;
-}
-
 function renderChordShortcuts(binary: ChordBinary) {
   const userChords = readStoredChords()
     .filter((chord) => chord.binary === binary)
     .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt))
     .slice(0, 5);
   const userSequences = new Set(userChords.map((chord) => chord.sequence.toLowerCase()));
-  const presetChords = presetsForBinary(binary).filter((preset) => !userSequences.has(preset.sequence.toLowerCase())).slice(0, 8);
+  const presetChords = presetsForBinary(binary).filter((preset) => !userSequences.has(preset.sequence.toLowerCase())).slice(0, 9);
   const buttons = [
     ...userChords.map((chord) => renderChordButton({
       id: chord.id,
@@ -1852,28 +1820,63 @@ function renderChordShortcuts(binary: ChordBinary) {
       userDefined: false,
     })),
   ];
-  return buttons.join("");
+  return `${buttons.join("")}<span class="chord-divider" aria-hidden="true"></span>${renderChordToggle()}`;
 }
 
 function renderChordButton(input: { id: string; label: string; sequence: string; userDefined: boolean }) {
   const classes = ["secondary-button", "chord-button", input.userDefined ? "user-chord" : "preset-chord"].join(" ");
+  const renderedLabel = formatChordButtonLabel(input.label);
   return `
     <button
       type="button"
       class="${escapeAttr(classes)}"
       data-chord-id="${escapeAttr(input.id)}"
       data-chord-sequence="${escapeAttr(input.sequence)}"
-      title="${escapeAttr(input.sequence)}"
-    >${escapeHtml(input.label)}</button>
+      aria-label="${escapeAttr(input.label)}"
+      title="${escapeAttr(`${input.label}: ${input.sequence}`)}"
+    >${escapeHtml(renderedLabel)}</button>
   `;
+}
+
+function renderChordToggle() {
+  return `<button type="button" class="secondary-button chord-toggle" data-action="toggle-chord" aria-label="Chord" title="Chord" aria-expanded="false">🎹</button>`;
+}
+
+function formatChordButtonLabel(label: string) {
+  return label
+    .replace(/\bCtrl[-+ ]?/gi, "^")
+    .replace(/\bControl[-+ ]?/gi, "^")
+    .replace(/\bShift[-+ ]?/gi, "⇧")
+    .replace(/\bAlt[-+ ]?/gi, "⌥")
+    .replace(/\bOpt[-+ ]?/gi, "⌥")
+    .replace(/\bCmd[-+ ]?/gi, "⌘")
+    .replace(/\bMeta[-+ ]?/gi, "⌘")
+    .replace(/\bEsc(?:ape)?\b/gi, "esc")
+    .replace(/\bTab\b/gi, "⇥")
+    .replace(/\bUp\b/gi, "↑")
+    .replace(/\bDown\b/gi, "↓")
+    .replace(/\bLeft\b/gi, "←")
+    .replace(/\bRight\b/gi, "→")
+    .replace(/\bEnter\b|\bReturn\b/gi, "↵")
+    .replace(/\bBackspace\b|\bBack\b/gi, "⌫");
 }
 
 function formatChordHelper(value: string) {
   switch (value) {
+    case "ctrl+":
+      return "^";
+    case "shift+":
+      return "⇧";
+    case "alt+":
+      return "⌥";
     case ";enter":
-      return "Enter";
+      return "↵";
+    case "tab":
+      return "⇥";
+    case "esc":
+      return "esc";
     case "backspace":
-      return "Back";
+      return "⌫";
     case "up":
       return "↑";
     case "down":

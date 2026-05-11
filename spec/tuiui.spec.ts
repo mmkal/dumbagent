@@ -143,7 +143,7 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await clickSessionMenuButton(page, "HTML");
   await expect(page.getByTestId("semantic-screen")).toContainText("OpenAI Codex");
 
-  await page.getByRole("group", { name: "Keys" }).getByRole("button", { name: "esc" }).click();
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Esc" }).click();
 
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\x1b");
 });
@@ -200,14 +200,14 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
   await expect(page.getByTestId("voice-status")).toContainText("Readback complete");
 });
 
-test("key chord buttons do not return focus to the composer", async ({ page, ctx }) => {
+test("shortcut chord buttons do not return focus to the composer", async ({ page, ctx }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await launchFakeCodex(page, ctx);
 
   const composer = page.getByRole("textbox", { name: "Send stdin" });
   await composer.focus();
   await expect(composer).toBeFocused();
-  await page.getByRole("group", { name: "Keys" }).getByRole("button", { name: "esc" }).click();
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Esc" }).click();
 
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\x1b");
   expect(await composer.evaluate((element) => document.activeElement === element)).toBe(false);
@@ -215,7 +215,7 @@ test("key chord buttons do not return focus to the composer", async ({ page, ctx
 
 test("renders binary-aware chord presets and sends user-defined chords", async ({ page, ctx }) => {
   await launchFakeCodex(page, ctx);
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Tab" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Tab" })).toHaveText("⇥");
 
   await page.getByRole("button", { name: "Chord" }).click();
   await page.getByRole("textbox", { name: "Chord label" }).fill("Ask");
@@ -230,12 +230,12 @@ test("orders chord presets by the running agent binary", async ({ page, ctx }) =
   await page.goto(ctx.baseUrl);
 
   await page.getByRole("button", { name: "Fake Codex" }).click();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ctrl-J" })).toBeVisible();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("Esc");
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ctrl-J" })).toHaveText("^J");
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("esc");
 
   await page.goto(ctx.baseUrl);
   await page.getByRole("button", { name: "Fake OpenCode" }).click();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("Esc Esc");
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("esc esc");
 });
 
 test("can type directly into the terminal renderer", async ({ page, ctx }) => {
@@ -371,8 +371,8 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     textareaTouchAction: "manipulation",
   });
 
-  const keyMetrics = await page.locator(".keys").evaluate((keys) => {
-    const visibleBoxes = [...keys.querySelectorAll<HTMLElement>(".key-button:not(.overflow-key), .key-more")]
+  const chordMetrics = await page.locator(".chord-shortcuts").evaluate((shortcuts) => {
+    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-button")]
       .filter((button) => getComputedStyle(button).display !== "none")
       .map((button) => button.getBoundingClientRect())
       .filter((box) => box.width > 0 && box.height > 0);
@@ -380,14 +380,12 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     return {
       visibleButtonCount: visibleBoxes.length,
       topSpread: Math.max(...tops) - Math.min(...tops),
-      hasOverflowMenu: getComputedStyle(keys.querySelector<HTMLElement>(".key-overflow")!).display !== "none",
     };
   });
-  expect(keyMetrics).toMatchObject({
-    visibleButtonCount: 5,
-    hasOverflowMenu: true,
+  expect(chordMetrics).toMatchObject({
+    visibleButtonCount: 7,
   });
-  expect(keyMetrics.topSpread).toBeLessThan(2);
+  expect(chordMetrics.topSpread).toBeLessThan(2);
 
   await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "TTY" })).toBeVisible();

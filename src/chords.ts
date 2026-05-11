@@ -20,6 +20,7 @@ type ResolvedKey = {
 const commonBinary: ChordBinary = "";
 
 export const chordPresets: ChordPreset[] = [
+  { id: "common-escape", label: "Esc", sequence: "esc", binaries: [commonBinary] },
   { id: "common-tab", label: "Tab", sequence: "tab", binaries: [commonBinary] },
   { id: "common-up", label: "Up", sequence: "up", binaries: [commonBinary] },
   { id: "common-down", label: "Down", sequence: "down", binaries: [commonBinary] },
@@ -59,10 +60,11 @@ export function detectChordBinary(command: string, args: string[], provider: str
 export function presetsForBinary(binary: ChordBinary) {
   const seen = new Set<string>();
   const selected: ChordPreset[] = [];
-  for (const preset of chordPresets) {
-    if (!preset.binaries.includes(binary) && !preset.binaries.includes(commonBinary)) {
-      continue;
-    }
+  const candidates = [
+    ...chordPresets.filter((preset) => binary && preset.binaries.includes(binary)),
+    ...chordPresets.filter((preset) => preset.binaries.includes(commonBinary)),
+  ];
+  for (const preset of candidates) {
     const key = preset.sequence.toLowerCase();
     if (seen.has(key)) {
       continue;
@@ -70,11 +72,7 @@ export function presetsForBinary(binary: ChordBinary) {
     seen.add(key);
     selected.push(preset);
   }
-  return selected.sort((left, right) => {
-    const leftSpecific = left.binaries.includes(binary) && binary ? 0 : 1;
-    const rightSpecific = right.binaries.includes(binary) && binary ? 0 : 1;
-    return leftSpecific - rightSpecific;
-  });
+  return selected;
 }
 
 export function parseChordSteps(input: string): ChordStep[] {

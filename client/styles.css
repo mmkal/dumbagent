@@ -426,7 +426,6 @@ textarea:focus {
 
 .toolbar,
 .composer-actions,
-.keys,
 .voice-controls {
   display: flex;
   align-items: center;
@@ -439,13 +438,11 @@ textarea:focus {
   justify-self: end;
 }
 
-.session-menu > summary,
-.key-overflow > summary {
+.session-menu > summary {
   list-style: none;
 }
 
-.session-menu > summary::-webkit-details-marker,
-.key-overflow > summary::-webkit-details-marker {
+.session-menu > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -1270,6 +1267,7 @@ pre {
 
 .chord-shortcuts {
   display: flex;
+  align-items: center;
   gap: 4px;
   min-width: 0;
   overflow-x: auto;
@@ -1284,8 +1282,28 @@ pre {
   font-size: 11px;
 }
 
+.chord-toggle {
+  flex: 0 0 auto;
+  min-width: 34px;
+  width: 34px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 14px;
+}
+
+.chord-divider {
+  flex: 0 0 1px;
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: #303844;
+}
+
 .user-chord {
-  border-color: #64d2c8;
+  border-color: #3a4350;
+  background: #253036;
+  color: #e4f4f2;
 }
 
 .preset-chord {
@@ -1363,51 +1381,6 @@ textarea {
   min-height: 34px;
   padding: 0;
   font-size: 17px;
-}
-
-.keys {
-  flex: 1 1 230px;
-  min-width: 0;
-  flex-wrap: nowrap;
-  gap: 4px;
-}
-
-.key-button,
-.key-more {
-  min-width: 34px;
-  min-height: 30px;
-  height: 30px;
-  padding: 0 9px;
-  font-size: 11px;
-}
-
-.key-overflow {
-  display: none;
-  position: relative;
-}
-
-.key-more {
-  display: grid;
-  place-items: center;
-  list-style: none;
-}
-
-.key-overflow-panel {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: 15;
-  display: flex;
-  gap: 4px;
-  border: 1px solid #303844;
-  border-radius: 7px;
-  background: #151a20;
-  padding: 6px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
-}
-
-.key-overflow:not([open]) .key-overflow-panel {
-  display: none;
 }
 
 @media (max-width: 900px) {
@@ -1551,7 +1524,6 @@ textarea {
     gap: 6px;
   }
 
-  .keys,
   .voice-controls {
     flex: 1 1 auto;
   }
@@ -1580,11 +1552,4 @@ textarea {
     flex-basis: auto;
   }
 
-  .overflow-key {
-    display: none;
-  }
-
-  .key-overflow {
-    display: block;
-  }
 }
