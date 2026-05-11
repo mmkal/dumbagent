@@ -266,8 +266,7 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   test.skip(!commandExists("opencode"), "opencode is not installed");
 
   await page.goto(ctx.baseUrl);
-  await page.getByRole("combobox", { name: "Preset" }).selectOption("fake-opencode");
-  await page.getByRole("button", { name: "Launch" }).click();
+  await page.getByRole("button", { name: "Fake OpenCode" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText(/Ask anything|OpenCode/i);
 
@@ -321,8 +320,8 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
     command: "codex",
     fakeAgent: "codex",
   }));
-  await page.getByRole("combobox", { name: "Preset" }).selectOption("fake-codex");
-  await page.getByRole("button", { name: "Launch" }).click();
+  await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Fake Codex" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("Codex test TUI");
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");

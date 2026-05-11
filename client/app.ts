@@ -204,6 +204,7 @@ async function renderHome() {
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
   ]);
+  const quickLaunchCommands = commands.filter((command) => command.id !== "custom");
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -213,12 +214,16 @@ async function renderHome() {
       </header>
       <section class="launcher" aria-label="Launch session">
         <form id="launch-form" class="launch-form">
-          <label>
-            <span>Preset</span>
-            <select name="preset" aria-label="Preset">
-              ${commands.map((command) => `<option value="${escapeAttr(command.id)}">${escapeHtml(command.label)}</option>`).join("")}
-            </select>
-          </label>
+          <div class="quick-launch" role="group" aria-label="Quick launch">
+            ${quickLaunchCommands.map((command) => `
+              <button
+                type="button"
+                class="preset-button"
+                data-preset-id="${escapeAttr(command.id)}"
+                title="${escapeAttr([command.command, ...command.args].join(" "))}"
+              >${escapeHtml(command.label)}</button>
+            `).join("")}
+          </div>
           <label>
             <span>Command</span>
             <input name="command" aria-label="Command" autocomplete="off" required />
@@ -245,33 +250,34 @@ async function renderHome() {
   `;
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
-  const presetInput = form.elements.namedItem("preset") as HTMLSelectElement;
   const commandInput = form.elements.namedItem("command") as HTMLInputElement;
   const argsInput = form.elements.namedItem("args") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
 
-  function applyPreset() {
-    const preset = presets.get(presetInput.value);
-    if (!preset || preset.id === "custom") {
-      return;
-    }
-    commandInput.value = preset.command;
-    argsInput.value = preset.args.join(" ");
-    form.dataset.fakeAgent = preset.fakeAgent;
+  for (const button of form.querySelectorAll<HTMLButtonElement>("[data-preset-id]")) {
+    button.addEventListener("click", async () => {
+      const preset = presets.get(button.dataset.presetId || "");
+      if (!preset) {
+        return;
+      }
+      commandInput.value = preset.command;
+      argsInput.value = preset.args.join(" ");
+      await launchSession(preset);
+    });
   }
-
-  presetInput.addEventListener("change", applyPreset);
-  applyPreset();
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    await launchSession();
+  });
+
+  async function launchSession(preset?: CommandPreset) {
     const data = new FormData(form);
-    const preset = presets.get(String(data.get("preset") || ""));
     const result = await api<{ id: string; url: string }>("/api/sessions", {
       method: "POST",
       body: JSON.stringify({
-        command: String(data.get("command") || ""),
-        args: parseArgs(String(data.get("args") || "")),
+        command: preset ? preset.command : String(data.get("command") || ""),
+        args: preset ? preset.args : parseArgs(String(data.get("args") || "")),
         cwd: String(data.get("cwd") || ""),
         cols: Number(data.get("cols") || 120),
         rows: 42,
@@ -281,7 +287,7 @@ async function renderHome() {
     });
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
-  });
+  }
 }
 
 async function renderSession(sessionId: string) {

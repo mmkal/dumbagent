@@ -151,9 +151,26 @@ button:disabled {
 
 .launch-form {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1fr) minmax(220px, 1.4fr) minmax(220px, 1.5fr) 100px auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(180px, 1fr) minmax(220px, 1.4fr) minmax(220px, 1.5fr) 100px auto;
   gap: 10px;
   align-items: end;
+}
+
+.quick-launch {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.preset-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: #3a4350;
+  background: #20262e;
+  color: #dce5ef;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 label {
