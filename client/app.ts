@@ -194,6 +194,7 @@ declare global {
       minReadbackDelayMs?: number;
       now?: () => number;
     };
+    __tuiuiTestXtermWriteDelayMs?: number;
   }
 }
 
@@ -1093,14 +1094,21 @@ async function syncXterm(payload: SessionPayload) {
   const newestEvent = payload.stdoutEvents[payload.stdoutEvents.length - 1];
   const newestId = newestEvent ? newestEvent.id : 0;
   if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
-    term.reset();
-    if (payload.renderedAnsi) {
-      await writeXterm(term, payload.renderedAnsi);
+    setXtermHydrating(true);
+    try {
+      term.reset();
+      if (payload.renderedAnsi) {
+        await writeXterm(term, payload.renderedAnsi);
+        term.scrollToBottom();
+        xtermLastStdoutEventId = newestId;
+        return;
+      }
+      await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
+      term.scrollToBottom();
       xtermLastStdoutEventId = newestId;
-      return;
+    } finally {
+      setXtermHydrating(false);
     }
-    await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
-    xtermLastStdoutEventId = newestId;
     return;
   }
 
@@ -1122,9 +1130,25 @@ async function syncXterm(payload: SessionPayload) {
 }
 
 async function writeXterm(term: XtermTerminal, text: string) {
+  const delayMs = Number(window.__tuiuiTestXtermWriteDelayMs || 0);
+  if (delayMs > 0) {
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  }
   await new Promise<void>((resolve) => {
     term.write(text, () => resolve());
   });
+}
+
+function setXtermHydrating(hydrating: boolean) {
+  const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
+  if (!wrap) {
+    return;
+  }
+  if (hydrating) {
+    wrap.dataset.hydrating = "true";
+    return;
+  }
+  delete wrap.dataset.hydrating;
 }
 
 async function fetchStdoutEvents(sessionId: string, after: number) {
@@ -1159,6 +1183,7 @@ function destroyXterm() {
   xtermLastStdoutEventId = 0;
   xtermInputQueue = Promise.resolve();
   xtermSyncQueue = Promise.resolve();
+  setXtermHydrating(false);
 }
 
 function cancelTerminalScrollAnimation() {
