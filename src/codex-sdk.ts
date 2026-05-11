@@ -178,6 +178,7 @@ export function buildCodexSummary(thread: CodexThreadRow): AgentSessionSummary {
   return {
     provider: "codex",
     title: String(thread.title || thread.first_user_message || "Codex thread").slice(0, 200),
+    forkPoint: transcript.at(-1)?.id || "",
     messageCount: transcript.length,
     diffCount: 0,
     additions: 0,
@@ -195,6 +196,7 @@ export function buildCodexSidecarSummary(threadId: string, finalResponse: string
   return {
     provider: "codex",
     title: "Codex sidecar summary",
+    forkPoint: text ? `${threadId}-summary` : "",
     messageCount: text ? 1 : 0,
     diffCount: 0,
     additions: 0,
@@ -213,7 +215,7 @@ export function buildCodexSidecarSummary(threadId: string, finalResponse: string
 
 export function createCodexSummaryPrompt(summary: AgentSessionSummary) {
   return [
-    "Summarize this Codex TUI session for a human supervising multiple local agent sessions.",
+    "Summarize this Codex TUI session for someone supervising multiple local agent sessions.",
     "",
     "Return concise markdown with these headings:",
     "- Current state",

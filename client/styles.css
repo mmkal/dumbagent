@@ -832,7 +832,7 @@ pre {
 
 .sdk-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 8px;
   height: 100%;
   min-height: 100%;
@@ -890,6 +890,87 @@ pre {
   color: #ffd3d3;
   padding: 7px;
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.session-brief {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #2c333d;
+  border-radius: 7px;
+  background: #11161c;
+}
+
+.session-brief > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border-bottom: 1px solid #242b35;
+}
+
+.session-brief > header strong {
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.session-brief > header span {
+  border: 1px solid #3a4350;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.session-brief[data-brief-state="current"] > header span {
+  border-color: #7adf93;
+  color: #bff7cc;
+}
+
+.session-brief[data-brief-state="stale"] > header span {
+  border-color: #f3c969;
+  color: #ffe2a0;
+}
+
+.session-brief[data-brief-state="error"] > header span {
+  border-color: #f28b8b;
+  color: #ffd3d3;
+}
+
+.session-brief pre {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  color: #dce5ef;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.sdk-diagnostics {
+  min-width: 0;
+  min-height: 0;
+}
+
+.sdk-diagnostics > summary {
+  cursor: pointer;
+  color: #9ca8b6;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sdk-diagnostics[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 260px);
+  gap: 6px;
 }
 
 .sdk-yaml-panel {

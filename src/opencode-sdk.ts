@@ -24,6 +24,7 @@ export type SidecarSummaryState = {
   method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary" | "claude.query+forkSession";
   sourceSessionId: string;
   forkSessionId: string;
+  forkPoint: string;
   updatedAt: string;
   result: boolean | null;
   error: string;
@@ -35,6 +36,7 @@ export type SidecarSummaryFork = {
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
+  forkPoint: string;
   createdAt: string;
   updatedAt: string;
   status: "created" | "summarized" | "error";
@@ -46,6 +48,7 @@ export type SidecarSummaryFork = {
 export type AgentSessionSummary = {
   provider: AgentProvider;
   title: string;
+  forkPoint: string;
   messageCount: number;
   diffCount: number;
   additions: number;
@@ -125,6 +128,7 @@ export function buildOpenCodeSummary(session: any, messages: any[], diffs: any[]
   const assistantMessages = transcript.filter((message) => message.role === "assistant" && message.text);
   const latestUserText = userMessages.at(-1)?.text || "";
   const latestAssistantText = assistantMessages.at(-1)?.text || "";
+  const forkPoint = transcript.at(-1)?.id || "";
   const normalizedDiffs = diffs.map((diff) => ({
     file: String(diff.file || ""),
     additions: Number(diff.additions || 0),
@@ -134,6 +138,7 @@ export function buildOpenCodeSummary(session: any, messages: any[], diffs: any[]
   return {
     provider: "opencode",
     title: String(session.title || "OpenCode session"),
+    forkPoint,
     messageCount: messages.length,
     diffCount: normalizedDiffs.length,
     additions: normalizedDiffs.reduce((total, diff) => total + diff.additions, 0),

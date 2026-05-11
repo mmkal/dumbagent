@@ -41,6 +41,7 @@ import {
   pickOpenCodeModel,
   readRecentOpenCodeSessionsFromDatabasePath,
   resolveOpenCodeSession,
+  type AgentProvider,
   type AgentSessionSummary,
   type RecentAgentSession,
   type SessionSdkPayload,
@@ -798,6 +799,7 @@ function createIdleSidecarSummary(updatedAt: string): SessionSdkPayload["sidecar
     method: "",
     sourceSessionId: "",
     forkSessionId: "",
+    forkPoint: "",
     updatedAt,
     result: null,
     error: "",
@@ -1015,17 +1017,26 @@ async function refreshClaudeSessionSdk(session: RuntimeSession) {
 }
 
 async function summarizeSessionWithSdk(session: RuntimeSession) {
-  if (session.sdk.provider === "codex") {
+  const provider = session.sdk.provider;
+  if (!provider) {
+    session.sdk = createUnavailableSdkPayload();
+    publishSession(session);
+    return;
+  }
+
+  await refreshSessionSdk(session);
+
+  if (provider === "codex") {
     await summarizeCodexSessionWithSdk(session);
     return;
   }
 
-  if (session.sdk.provider === "claude") {
+  if (provider === "claude") {
     await summarizeClaudeSessionWithSdk(session);
     return;
   }
 
-  if (session.sdk.provider !== "opencode") {
+  if (provider !== "opencode") {
     session.sdk = createUnavailableSdkPayload();
     publishSession(session);
     return;
@@ -1039,6 +1050,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
       method: "opencode.session.fork+summarize",
       sourceSessionId: session.sdk.externalSessionId,
       forkSessionId: "",
+      forkPoint: "",
       updatedAt: new Date().toISOString(),
       result: null,
       error: "",
@@ -1049,6 +1061,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
 
   let sourceSessionId = session.sdk.externalSessionId;
   let forkSessionId = "";
+  let sourceForkPoint = "";
   try {
     const client = createOpenCodeClient(session);
     const sessions = responseData<any[]>(await client.session.list({ responseStyle: "data", throwOnError: true }));
@@ -1070,6 +1083,19 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
       responseStyle: "data",
       throwOnError: true,
     }));
+    const sourceSummary = buildOpenCodeSummary(target, sourceMessages, []);
+    sourceForkPoint = forkPointForSummary(sourceSummary);
+    const reusableBrief = findReusableSessionBrief(session, "opencode", sourceSessionId, sourceForkPoint);
+    if (reusableBrief) {
+      reuseSessionBrief(session, {
+        method: "opencode.session.fork+summarize",
+        sourceSessionId,
+        sourceForkPoint,
+        sourceSummary,
+        reusableBrief,
+      });
+      return;
+    }
     const model = pickOpenCodeModel(sourceMessages);
     if (!model) {
       throw new Error("OpenCode session has no model metadata yet; send a prompt before summarizing.");
@@ -1095,6 +1121,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         createdAt: forkCreatedAt,
         updatedAt: forkCreatedAt,
         status: "created",
@@ -1108,6 +1135,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         method: "opencode.session.fork+summarize",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         updatedAt: forkCreatedAt,
         result: null,
         error: "",
@@ -1143,6 +1171,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         createdAt: forkCreatedAt,
         updatedAt: summarizedAt,
         status: "summarized",
@@ -1156,6 +1185,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         method: "opencode.session.fork+summarize",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         updatedAt: summarizedAt,
         result,
         error: "",
@@ -1173,6 +1203,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId,
         forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         createdAt: existingFork ? existingFork.createdAt : failedAt,
         updatedAt: failedAt,
         status: "error",
@@ -1186,6 +1217,7 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         method: "opencode.session.fork+summarize",
         sourceSessionId,
         forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         updatedAt: failedAt,
         result: null,
         error: String(error instanceof Error ? error.message : error),
@@ -1205,6 +1237,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
       method: "codex.startThread+summary",
       sourceSessionId: session.sdk.externalSessionId,
       forkSessionId: "",
+      forkPoint: "",
       updatedAt: new Date().toISOString(),
       result: null,
       error: "",
@@ -1216,6 +1249,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
   let sourceThreadId = session.sdk.externalSessionId;
   let sidecarThreadId = "";
   let sidecarCreatedAt = new Date().toISOString();
+  let sourceForkPoint = "";
   try {
     const threads = readCodexThreadsFromDatabasePath(session.sdk.baseUrl);
     const target = resolveCodexThread({
@@ -1231,6 +1265,18 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
 
     sourceThreadId = String(target.id || "");
     const sourceSummary = buildCodexSummary(target);
+    sourceForkPoint = forkPointForSummary(sourceSummary);
+    const reusableBrief = findReusableSessionBrief(session, "codex", sourceThreadId, sourceForkPoint);
+    if (reusableBrief) {
+      reuseSessionBrief(session, {
+        method: "codex.startThread+summary",
+        sourceSessionId: sourceThreadId,
+        sourceForkPoint,
+        sourceSummary,
+        reusableBrief,
+      });
+      return;
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceThreadId,
@@ -1243,6 +1289,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         method: "codex.startThread+summary",
         sourceSessionId: sourceThreadId,
         forkSessionId: "",
+        forkPoint: sourceForkPoint,
         updatedAt: new Date().toISOString(),
         result: null,
         error: "",
@@ -1279,6 +1326,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId: sourceThreadId,
         forkSessionId: sidecarThreadId,
+        forkPoint: sourceForkPoint,
         createdAt: sidecarCreatedAt,
         updatedAt: summarizedAt,
         status: "summarized",
@@ -1292,6 +1340,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         method: "codex.startThread+summary",
         sourceSessionId: sourceThreadId,
         forkSessionId: sidecarThreadId,
+        forkPoint: sourceForkPoint,
         updatedAt: summarizedAt,
         result: true,
         error: "",
@@ -1309,6 +1358,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId: sourceThreadId,
         forkSessionId: sidecarThreadId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         createdAt: existingFork ? existingFork.createdAt : sidecarCreatedAt,
         updatedAt: failedAt,
         status: "error",
@@ -1322,6 +1372,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         method: "codex.startThread+summary",
         sourceSessionId: sourceThreadId,
         forkSessionId: sidecarThreadId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         updatedAt: failedAt,
         result: null,
         error: String(error instanceof Error ? error.message : error),
@@ -1341,6 +1392,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
       method: "claude.query+forkSession",
       sourceSessionId: session.sdk.externalSessionId,
       forkSessionId: "",
+      forkPoint: "",
       updatedAt: new Date().toISOString(),
       result: null,
       error: "",
@@ -1352,6 +1404,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
   let sourceSessionId = session.sdk.externalSessionId;
   let forkSessionId = "";
   let forkCreatedAt = new Date().toISOString();
+  let sourceForkPoint = "";
   try {
     const sessions = await readClaudeSessions(session.sdk.baseUrl, session.cwd);
     const target = resolveClaudeSession({
@@ -1368,6 +1421,18 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
     sourceSessionId = String(target.sessionId || "");
     const sourceMessages = await readClaudeSessionMessages(session.sdk.baseUrl, sourceSessionId, session.cwd);
     const sourceSummary = buildClaudeSummary(target, sourceMessages);
+    sourceForkPoint = forkPointForSummary(sourceSummary);
+    const reusableBrief = findReusableSessionBrief(session, "claude", sourceSessionId, sourceForkPoint);
+    if (reusableBrief) {
+      reuseSessionBrief(session, {
+        method: "claude.query+forkSession",
+        sourceSessionId,
+        sourceForkPoint,
+        sourceSummary,
+        reusableBrief,
+      });
+      return;
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceSessionId,
@@ -1380,6 +1445,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         method: "claude.query+forkSession",
         sourceSessionId,
         forkSessionId: "",
+        forkPoint: sourceForkPoint,
         updatedAt: new Date().toISOString(),
         result: null,
         error: "",
@@ -1405,6 +1471,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         createdAt: forkCreatedAt,
         updatedAt: summarizedAt,
         status: "summarized",
@@ -1418,6 +1485,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         method: "claude.query+forkSession",
         sourceSessionId,
         forkSessionId,
+        forkPoint: sourceForkPoint,
         updatedAt: summarizedAt,
         result: true,
         error: "",
@@ -1435,6 +1503,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         purpose: "sidecarSummary",
         sourceSessionId,
         forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         createdAt: existingFork ? existingFork.createdAt : forkCreatedAt,
         updatedAt: failedAt,
         status: "error",
@@ -1448,6 +1517,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         method: "claude.query+forkSession",
         sourceSessionId,
         forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
         updatedAt: failedAt,
         result: null,
         error: String(error instanceof Error ? error.message : error),
@@ -1466,6 +1536,59 @@ function upsertSidecarFork(
     ...forks.filter((candidate) => candidate.forkSessionId !== fork.forkSessionId),
     fork,
   ];
+}
+
+function findReusableSessionBrief(
+  session: RuntimeSession,
+  provider: AgentProvider,
+  sourceSessionId: string,
+  forkPoint: string,
+) {
+  if (!forkPoint) {
+    return null;
+  }
+  return session.sdk.forks
+    .filter((fork) => {
+      return fork.provider === provider &&
+        fork.sourceSessionId === sourceSessionId &&
+        fork.forkPoint === forkPoint &&
+        fork.status === "summarized" &&
+        Boolean(fork.summary?.latestAssistantText);
+    })
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0] || null;
+}
+
+function reuseSessionBrief(session: RuntimeSession, input: {
+  method: SessionSdkPayload["sidecarSummary"]["method"];
+  sourceSessionId: string;
+  sourceForkPoint: string;
+  sourceSummary: AgentSessionSummary;
+  reusableBrief: SessionSdkPayload["forks"][number];
+}) {
+  const reusedAt = new Date().toISOString();
+  session.sdk = {
+    ...session.sdk,
+    externalSessionId: input.sourceSessionId,
+    state: "connected",
+    summary: input.sourceSummary,
+    sidecarSummary: {
+      implemented: true,
+      status: "completed",
+      method: input.method,
+      sourceSessionId: input.sourceSessionId,
+      forkSessionId: input.reusableBrief.forkSessionId,
+      forkPoint: input.sourceForkPoint,
+      updatedAt: reusedAt,
+      result: input.reusableBrief.result,
+      error: "",
+      note: "Reused the completed session brief for the current fork point.",
+    },
+  };
+  publishSession(session);
+}
+
+function forkPointForSummary(summary: AgentSessionSummary) {
+  return summary.forkPoint || summary.transcript.at(-1)?.id || "";
 }
 
 function createOpenCodeClient(session: RuntimeSession) {

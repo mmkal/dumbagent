@@ -126,6 +126,7 @@ export function buildClaudeSummary(session: SDKSessionInfo, messages: SessionMes
   return {
     provider: "claude",
     title: String(session.summary || session.firstPrompt || "Claude session").slice(0, 200),
+    forkPoint: transcript.at(-1)?.id || "",
     messageCount: transcript.length,
     diffCount: 0,
     additions: 0,
@@ -143,6 +144,7 @@ export function buildClaudeSidecarSummary(sessionId: string, finalResponse: stri
   return {
     provider: "claude",
     title: "Claude sidecar summary",
+    forkPoint: text ? `${sessionId}-summary` : "",
     messageCount: text ? 1 : 0,
     diffCount: 0,
     additions: 0,
@@ -161,7 +163,7 @@ export function buildClaudeSidecarSummary(sessionId: string, finalResponse: stri
 
 export function createClaudeSummaryPrompt(summary: AgentSessionSummary) {
   return [
-    "Summarize this Claude TUI session for a human supervising multiple local agent sessions.",
+    "Summarize this Claude TUI session for someone supervising multiple local agent sessions.",
     "",
     "Return concise markdown with these headings:",
     "- Current state",

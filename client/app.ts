@@ -43,6 +43,7 @@ type SessionSdkPayload = {
   summary: null | {
     provider: "opencode" | "codex" | "claude";
     title: string;
+    forkPoint: string;
     messageCount: number;
     diffCount: number;
     additions: number;
@@ -60,6 +61,7 @@ type SidecarSummaryState = {
   method: "" | "opencode.session.fork+summarize" | "codex.startThread+summary" | "claude.query+forkSession";
   sourceSessionId: string;
   forkSessionId: string;
+  forkPoint: string;
   updatedAt: string;
   result: boolean | null;
   error: string;
@@ -71,6 +73,7 @@ type SidecarSummaryFork = {
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
+  forkPoint: string;
   createdAt: string;
   updatedAt: string;
   status: "created" | "summarized" | "error";
@@ -1018,13 +1021,23 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
             <span data-sdk-base-url></span>
           </div>
           <span class="sdk-state" data-sdk-state></span>
-          <button type="button" class="secondary-button" data-action="sdk-refresh">Refresh SDK</button>
-          <button type="button" class="secondary-button" data-action="sdk-summarize">Summarize via SDK</button>
+          <button type="button" class="secondary-button" data-action="sdk-refresh">Refresh snapshot</button>
+          <button type="button" class="secondary-button" data-action="sdk-summarize">Get session brief</button>
         </header>
         <p class="sdk-error" data-sdk-error hidden></p>
-        <section class="sdk-yaml-panel" aria-label="SDK data YAML panel">
-          <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
+        <section class="session-brief" data-testid="session-brief" data-brief-state="empty">
+          <header>
+            <strong>Session brief</strong>
+            <span data-session-brief-state></span>
+          </header>
+          <pre data-session-brief-markdown></pre>
         </section>
+        <details class="sdk-diagnostics">
+          <summary>Diagnostics</summary>
+          <section class="sdk-yaml-panel" aria-label="Provider snapshot diagnostics YAML panel">
+            <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
+          </section>
+        </details>
       </section>
     `;
 
@@ -1034,11 +1047,15 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
     screen.querySelector<HTMLButtonElement>("[data-action='sdk-summarize']")?.addEventListener("click", () => {
       void summarizeSdk(payload.id);
     });
+    screen.querySelector<HTMLDetailsElement>(".sdk-diagnostics")?.addEventListener("toggle", () => {
+      dataEditorView?.requestMeasure();
+    });
     mountYamlEditor("sdk-yaml-editor", yamlDoc);
   } else {
     updateDataEditorDoc(yamlDoc);
   }
   updateSdkChrome(screen, payload);
+  updateSessionBrief(screen, payload);
 }
 
 function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
@@ -1067,6 +1084,20 @@ function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
   }
 }
 
+function updateSessionBrief(screen: HTMLElement, payload: SessionPayload) {
+  const brief = selectSessionBrief(payload.sdk);
+  const container = screen.querySelector<HTMLElement>("[data-testid='session-brief']");
+  const state = screen.querySelector<HTMLElement>("[data-session-brief-state]");
+  const markdown = screen.querySelector<HTMLElement>("[data-session-brief-markdown]");
+  if (!container || !state || !markdown) {
+    return;
+  }
+
+  container.dataset.briefState = brief.state;
+  state.textContent = brief.label;
+  markdown.textContent = brief.markdown;
+}
+
 function buildSdkYamlData(payload: SessionPayload) {
   return {
     tuiui: {
@@ -1091,6 +1122,7 @@ function buildSdkYamlData(payload: SessionPayload) {
     forks: payload.sdk.forks,
     providerData: payload.sdk.summary ? {
       title: payload.sdk.summary.title,
+      forkPoint: payload.sdk.summary.forkPoint,
       messageCount: payload.sdk.summary.messageCount,
       diffCount: payload.sdk.summary.diffCount,
       additions: payload.sdk.summary.additions,
@@ -1100,6 +1132,57 @@ function buildSdkYamlData(payload: SessionPayload) {
       transcript: payload.sdk.summary.transcript,
       diffs: payload.sdk.summary.diffs,
     } : null,
+  };
+}
+
+function selectSessionBrief(sdk: SessionSdkPayload) {
+  const currentForkPoint = sdk.summary?.forkPoint || sdk.summary?.transcript.at(-1)?.id || "";
+  const completed = sdk.forks
+    .filter((fork) => {
+      return fork.status === "summarized" &&
+        fork.provider === sdk.provider &&
+        fork.sourceSessionId === sdk.externalSessionId &&
+        Boolean(fork.summary?.latestAssistantText);
+    })
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  const current = completed.find((fork) => {
+    return fork.provider === sdk.provider &&
+      fork.sourceSessionId === sdk.externalSessionId &&
+      fork.forkPoint === currentForkPoint;
+  });
+  if (current?.summary?.latestAssistantText) {
+    return {
+      state: "current",
+      label: "current",
+      markdown: current.summary.latestAssistantText,
+    };
+  }
+  const stale = completed[0];
+  if (stale?.summary?.latestAssistantText) {
+    return {
+      state: "stale",
+      label: "stale",
+      markdown: stale.summary.latestAssistantText,
+    };
+  }
+  if (sdk.sidecarSummary.status === "running") {
+    return {
+      state: "running",
+      label: "running",
+      markdown: "Getting session brief...",
+    };
+  }
+  if (sdk.sidecarSummary.status === "error") {
+    return {
+      state: "error",
+      label: "error",
+      markdown: sdk.sidecarSummary.error || "Session brief failed.",
+    };
+  }
+  return {
+    state: "empty",
+    label: "none",
+    markdown: "No session brief yet.",
   };
 }
 
@@ -1118,7 +1201,7 @@ function mountYamlEditor(hostId: string, doc: string) {
         yaml(),
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
-        EditorView.contentAttributes.of({ "aria-label": "SDK data YAML" }),
+        EditorView.contentAttributes.of({ "aria-label": "Provider snapshot diagnostics YAML" }),
         editorTheme(),
       ],
     }),
