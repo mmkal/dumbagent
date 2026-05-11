@@ -40,6 +40,7 @@ type SessionPayload = {
   renderedAnsi?: string;
   screenVersion: number;
   snapshotEventId: number;
+  redrawActive: boolean;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -1026,16 +1027,32 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
       <div class="terminal-xterm-wrap" data-testid="rendered-terminal">
         <div id="xterm-terminal" class="terminal-host"></div>
         <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
+        <div class="terminal-redraw-overlay" data-testid="terminal-redraw-overlay" hidden>
+          <div class="terminal-redraw-pill" role="status" aria-live="polite">
+            <span class="terminal-redraw-spinner" aria-hidden="true"></span>
+            <span>Restoring terminal...</span>
+          </div>
+        </div>
       </div>
     `;
   }
 
+  updateTerminalRedrawOverlay(screen, payload.redrawActive);
   const snapshot = screen.querySelector<HTMLElement>(".terminal-text-snapshot");
   if (snapshot) {
     snapshot.textContent = payload.renderedText;
   }
   xtermSyncQueue = xtermSyncQueue.then(() => syncXterm(payload)).catch(() => undefined);
   startTerminalAutoResize(payload.id);
+}
+
+function updateTerminalRedrawOverlay(screen: HTMLElement, active: boolean) {
+  const overlay = screen.querySelector<HTMLElement>(".terminal-redraw-overlay");
+  if (!overlay) {
+    return;
+  }
+  overlay.hidden = !active;
+  overlay.setAttribute("aria-hidden", String(!active));
 }
 
 async function ensureXterm(payload: SessionPayload) {

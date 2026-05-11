@@ -101,6 +101,7 @@ type SessionPayload = {
   renderedAnsi: string;
   screenVersion: number;
   snapshotEventId: number;
+  redrawActive: boolean;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -465,6 +466,7 @@ async function createSession(input: CreateSessionInput) {
   };
 
   state.sessions.set(id, session);
+  scheduleRedrawGateFlush(session);
 
   session.backend = await createSessionBackend(input.backend, {
     id,
@@ -565,6 +567,7 @@ async function reconnectSession(state: ServerState, id: string) {
     fakeAgent: null,
   };
   state.sessions.set(id, session);
+  scheduleRedrawGateFlush(session);
   if (reconnected.handle.initialCapture) {
     await appendOutput(state, session, reconnected.handle.initialCapture);
   }
@@ -706,6 +709,7 @@ function beginRedrawGate(session: RuntimeSession) {
   session.redrawGate.active = true;
   session.redrawGate.startedAfterEventId = latestStdoutEventId(session);
   scheduleRedrawGateFlush(session);
+  publishSession(session);
 }
 
 function scheduleRedrawGateFlush(session: RuntimeSession) {
@@ -913,6 +917,7 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     renderedAnsi: suppressRedrawOutput ? "" : session.renderedAnsi,
     screenVersion: session.screenVersion,
     snapshotEventId: suppressRedrawOutput ? session.snapshotEventId : latestEventId,
+    redrawActive: session.redrawGate.active,
     blocks: suppressRedrawOutput ? analyzeTerminalBlocks(emptyTerminal!) : session.blocks,
     semantic: suppressRedrawOutput ? analyzeTerminalScreen("", { cols: session.cols, rows: session.rows }) : session.semantic,
     sdk: session.sdk,

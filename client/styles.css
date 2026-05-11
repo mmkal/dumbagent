@@ -689,6 +689,7 @@ pre {
 }
 
 .terminal-xterm-wrap {
+  position: relative;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -698,6 +699,49 @@ pre {
   background: #0a0a0a;
   font: 12px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
   touch-action: manipulation;
+}
+
+.terminal-redraw-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 10, 0.42);
+  pointer-events: none;
+}
+
+.terminal-redraw-overlay[hidden] {
+  display: none;
+}
+
+.terminal-redraw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid rgba(216, 243, 106, 0.38);
+  border-radius: 999px;
+  background: rgba(12, 14, 17, 0.78);
+  color: #edf6f6;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0;
+}
+
+.terminal-redraw-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(237, 246, 246, 0.26);
+  border-top-color: #d8f36a;
+  border-radius: 999px;
+  animation: terminal-redraw-spin 760ms linear infinite;
+}
+
+@keyframes terminal-redraw-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .terminal-host {
