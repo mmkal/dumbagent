@@ -4,6 +4,7 @@
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { stripVTControlCharacters } from "node:util";
@@ -269,7 +270,11 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   if (request.method === "GET" && url.pathname === "/api/cwd") {
-    return Response.json({ cwd: fs.realpathSync(process.cwd()) });
+    return Response.json({
+      cwd: fs.realpathSync(process.cwd()),
+      homeDir: os.homedir(),
+      homeDirs: [os.homedir(), realpathIfPossible(os.homedir())],
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/commands") {
@@ -1097,6 +1102,17 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
     .flat()
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt))
     .slice(0, 24);
+}
+
+function realpathIfPossible(value: string) {
+  if (!value) {
+    return "";
+  }
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
 }
 
 async function readRecentProviderSessions(read: () => RecentAgentSession[] | Promise<RecentAgentSession[]>) {

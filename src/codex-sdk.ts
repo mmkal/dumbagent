@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import type { AgentSessionSummary, RecentAgentSession } from "./opencode-sdk.ts";
+import { recentSessionPreviewFromMessages, recentSessionPreviewText, type AgentSessionSummary, type RecentAgentSession } from "./opencode-sdk.ts";
 import { createStructuredSessionBriefPrompt, isStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
 
 export type CodexThreadRow = {
@@ -174,6 +174,9 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
       if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
         return null;
       }
+      const preview = recentSessionPreviewFromMessages(messages);
+      const firstUserMessage = String(thread.first_user_message || "");
+      const initialUserText = preview.initialUserText || (isCodexInternalUserText(firstUserMessage) ? "" : recentSessionPreviewText(firstUserMessage));
       return {
         provider: "codex",
         id: thread.id,
@@ -182,6 +185,10 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         updatedAt: new Date(codexUpdatedAt(thread)).toISOString(),
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
+        initialUserText,
+        latestUserText: preview.latestUserText || initialUserText,
+        userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
+        latestAssistantText: preview.latestAssistantText,
         messageCount: messages.length,
         command: "codex",
         args: ["resume", thread.id],

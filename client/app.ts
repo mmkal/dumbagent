@@ -177,6 +177,10 @@ type RecentAgentSession = {
   updatedAt: string;
   lastMessageAt: string;
   lastMessageText: string;
+  initialUserText: string;
+  latestUserText: string;
+  userMessageCount: number;
+  latestAssistantText: string;
   messageCount: number;
   command: string;
   args: string[];
@@ -348,11 +352,12 @@ function readRendererPreference() {
 
 async function renderHome() {
   const [cwd, sessions, commands, recentAgentSessions] = await Promise.all([
-    api<{ cwd: string }>("/api/cwd"),
+    api<{ cwd: string; homeDir?: string; homeDirs?: string[] }>("/api/cwd"),
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
     api<RecentAgentSession[]>("/api/agent-sessions/recent"),
   ]);
+  const displayHomeDirs = homeDirsForDisplay(cwd);
   const quickLaunchRows = [
     { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
     { label: "Fake", commands: commands.filter((command) => Boolean(command.fakeAgent)) },
@@ -418,12 +423,16 @@ async function renderHome() {
                 aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
                 title="${escapeAttr([session.command, ...session.args].join(" "))}"
               >
-                <strong>
+                ${renderRecentSessionTitle(session)}
+                ${renderRecentUserPreviewRows(session)}
+                <span class="agent-session-preview">
+                  <span class="agent-session-preview-label">assistant</span>
+                  <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
+                </span>
+                <span class="agent-session-card-footer">
+                  <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
                   <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
-                  <span>${escapeHtml(session.title || session.id)}</span>
-                </strong>
-                <span>${escapeHtml(session.lastMessageText || "No message text")}</span>
-                <code>${escapeHtml(formatAgentSessionMeta(session))}</code>
+                </span>
               </button>
             `).join("")}
           </div>
@@ -2029,8 +2038,8 @@ function renderSemanticScreen(screen: SemanticScreen) {
   `;
 }
 
-function formatAgentSessionMeta(session: RecentAgentSession) {
-  const cwd = session.cwd.split("/").filter(Boolean).at(-1) || session.cwd || "/";
+function formatAgentSessionMeta(session: RecentAgentSession, homeDirs: string[]) {
+  const cwd = formatPathForDisplay(session.cwd, homeDirs);
   const time = new Date(session.lastMessageAt).toLocaleString([], {
     month: "short",
     day: "numeric",
@@ -2038,6 +2047,96 @@ function formatAgentSessionMeta(session: RecentAgentSession) {
     minute: "2-digit",
   });
   return `${time} - ${cwd} - ${session.messageCount} messages`;
+}
+
+function homeDirsForDisplay(input: { cwd: string; homeDir?: string; homeDirs?: string[] }) {
+  return [...new Set([
+    ...(Array.isArray(input.homeDirs) ? input.homeDirs : []),
+    input.homeDir || "",
+    inferHomeDir(input.cwd),
+  ].filter(Boolean))];
+}
+
+function inferHomeDir(value: string) {
+  const match = value.match(/^(\/Users\/[^/]+|\/home\/[^/]+)/);
+  return match?.[1] || "";
+}
+
+function formatPathForDisplay(value: string, homeDirs: string[]) {
+  const path = value || "/";
+  for (const candidate of homeDirs) {
+    const home = candidate.replace(/\/+$/g, "");
+    if (path === home) {
+      return "~";
+    }
+    if (path.startsWith(`${home}/`)) {
+      return `~${path.slice(home.length)}`;
+    }
+  }
+  return path;
+}
+
+function renderRecentSessionTitle(session: RecentAgentSession) {
+  const title = session.title || session.id;
+  if (!title || textIsBasicallySame(title, session.initialUserText)) {
+    return "";
+  }
+  return `<strong class="agent-session-title">${escapeHtml(title)}</strong>`;
+}
+
+function renderRecentUserPreviewRows(session: RecentAgentSession) {
+  if (session.userMessageCount > 1 && formatRecentSessionLine(session.latestUserText, "")) {
+    return `
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">user (first)</span>
+        <span>${escapeHtml(formatRecentSessionLine(session.initialUserText, "No user message"))}</span>
+      </span>
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">user (last)</span>
+        <span>${escapeHtml(formatRecentSessionLine(session.latestUserText, "No user message"))}</span>
+      </span>
+    `;
+  }
+  return `
+    <span class="agent-session-preview">
+      <span class="agent-session-preview-label">user</span>
+      <span>${escapeHtml(formatRecentSessionLine(session.initialUserText || session.latestUserText, "No user message"))}</span>
+    </span>
+  `;
+}
+
+function textIsBasicallySame(left: string, right: string) {
+  const leftText = normalizeComparableText(formatRecentSessionLine(left, ""));
+  const rightText = normalizeComparableText(formatRecentSessionLine(right, ""));
+  if (!leftText || !rightText) {
+    return false;
+  }
+  if (leftText === rightText) {
+    return true;
+  }
+  const shorter = leftText.length < rightText.length ? leftText : rightText;
+  const longer = leftText.length < rightText.length ? rightText : leftText;
+  return shorter.length >= 24 && longer.startsWith(shorter);
+}
+
+function normalizeComparableText(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function formatRecentSessionLine(text: string, empty: string) {
+  const firstParagraph = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n[ \t]*\n/)
+    .map((paragraph) => paragraph.trim())
+    .find(Boolean) || "";
+  const previewText = firstParagraph
+    .replace(/[ \t]*\n[ \t]*/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  if (!previewText) {
+    return empty;
+  }
+  return previewText;
 }
 
 function providerLabel(provider: RecentAgentSession["provider"]) {

@@ -169,6 +169,7 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     threadId: "mobile-codex-thread",
     title: "Phone handoff session",
     latestUserText: "connect to this very session from my phone",
+    lastUserText: "make the recent cards easier to scan",
     latestAssistantText: "adding recent Codex buttons",
     messageAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
   });
@@ -191,6 +192,13 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   await expect(page.locator(".provider-pill", { hasText: "Codex" })).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "OpenCode" })).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "Claude" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (first)");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("connect to this very session from my phone");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (last)");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("make the recent cards easier to scan");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("assistant");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("adding recent Codex buttons");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText(ctx.workspaceDir.replace(ctx.env.HOME || "", "~"));
 
   const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
     return elements.map((element) => ({
@@ -1114,6 +1122,7 @@ function writeRecentCodexFixtureState(
     threadId: string;
     title: string;
     latestUserText: string;
+    lastUserText: string;
     latestAssistantText: string;
     messageAt: string;
   },
@@ -1124,7 +1133,8 @@ function writeRecentCodexFixtureState(
   const rolloutPath = path.join(sessionsDir, `rollout-${options.threadId}.jsonl`);
   const messageAtMs = new Date(options.messageAt).getTime();
   fs.writeFileSync(rolloutPath, [
-    codexRolloutMessage(new Date(messageAtMs - 1_000).toISOString(), "user", options.latestUserText),
+    codexRolloutMessage(new Date(messageAtMs - 2_000).toISOString(), "user", options.latestUserText),
+    codexRolloutMessage(new Date(messageAtMs - 1_000).toISOString(), "user", options.lastUserText),
     codexRolloutMessage(options.messageAt, "assistant", options.latestAssistantText),
   ].join("\n"));
 

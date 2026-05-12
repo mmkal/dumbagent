@@ -124,6 +124,7 @@ test("lists recent Codex sessions by latest visible message", () => {
   const sidecarRollout = path.join(workspace.path, "sidecar.jsonl");
   fs.writeFileSync(newestRollout, [
     rolloutMessage("2026-05-11T11:58:00.000Z", "user", "# AGENTS.md instructions for /repo"),
+    rolloutMessage("2026-05-11T11:58:30.000Z", "user", "build the phone launcher"),
     rolloutMessage("2026-05-11T11:59:00.000Z", "assistant", "working on the phone launcher"),
   ].join("\n"));
   fs.writeFileSync(olderRollout, rolloutMessage("2026-05-11T09:30:00.000Z", "user", "resume this on mobile"));
@@ -145,7 +146,11 @@ test("lists recent Codex sessions by latest visible message", () => {
       id: "newest",
       lastMessageAt: "2026-05-11T11:59:00.000Z",
       lastMessageText: "working on the phone launcher",
-      messageCount: 1,
+      initialUserText: "build the phone launcher",
+      latestUserText: "build the phone launcher",
+      userMessageCount: 1,
+      latestAssistantText: "working on the phone launcher",
+      messageCount: 2,
     },
     {
       id: "older",

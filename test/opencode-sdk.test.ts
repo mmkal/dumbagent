@@ -4,6 +4,7 @@ import {
   buildOpenCodeSummary,
   createOpenCodeSummaryPrompt,
   recentOpenCodeSessionsFromRows,
+  recentSessionPreviewFromMessages,
   resolveOpenCodeSession,
 } from "../src/opencode-sdk.ts";
 
@@ -70,6 +71,25 @@ test("does not treat compaction as the latest user message", () => {
   });
 });
 
+test("formats recent session previews from the first paragraph", () => {
+  const summary = buildOpenCodeSummary(
+    { title: "TUI UI test" },
+    [
+      message("user", "first line\nsecond line\n\nhidden paragraph"),
+      message("assistant", "assistant line\nassistant continuation\n\nextra details"),
+      message("user", "last user line\nlast continuation"),
+    ],
+    [],
+  );
+
+  expect(recentSessionPreviewFromMessages(summary.transcript)).toMatchObject({
+    initialUserText: "first line second line",
+    latestUserText: "last user line last continuation",
+    userMessageCount: 2,
+    latestAssistantText: "assistant line assistant continuation",
+  });
+});
+
 test("asks OpenCode sidecars for the shared XML session brief contract", () => {
   const summary = buildOpenCodeSummary(
     { title: "TUI UI test" },
@@ -112,6 +132,7 @@ test("lists recent OpenCode sessions by latest visible message", () => {
       session: { id: "newest", directory: "/repo", title: "Newest OpenCode", time_updated: Date.parse("2026-05-11T11:59:00.000Z") },
       messages: [
         messageAt("user", "[compaction]", "2026-05-11T11:58:00.000Z"),
+        messageAt("user", "wire recent cards", "2026-05-11T11:58:30.000Z"),
         messageAt("assistant", "opencode is now in the launcher", "2026-05-11T11:59:00.000Z"),
       ],
     },
@@ -130,6 +151,10 @@ test("lists recent OpenCode sessions by latest visible message", () => {
       id: "newest",
       lastMessageAt: "2026-05-11T11:59:00.000Z",
       lastMessageText: "opencode is now in the launcher",
+      initialUserText: "wire recent cards",
+      latestUserText: "wire recent cards",
+      userMessageCount: 1,
+      latestAssistantText: "opencode is now in the launcher",
       command: "opencode",
       args: ["--session", "newest"],
     },

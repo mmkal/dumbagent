@@ -9,7 +9,7 @@ import {
   type SDKSessionInfo,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentSessionSummary, RecentAgentSession } from "./opencode-sdk.ts";
+import { recentSessionPreviewFromMessages, recentSessionPreviewText, type AgentSessionSummary, type RecentAgentSession } from "./opencode-sdk.ts";
 import { createStructuredSessionBriefPrompt, isStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
 
 type ResolveClaudeSessionInput = {
@@ -71,6 +71,8 @@ export async function recentClaudeSessionsFromSdkSessions(
     if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
       return null;
     }
+    const preview = recentSessionPreviewFromMessages(visibleMessages);
+    const initialUserText = preview.initialUserText || recentSessionPreviewText(String(session.firstPrompt || ""));
     return {
       provider: "claude",
       id: session.sessionId,
@@ -79,6 +81,10 @@ export async function recentClaudeSessionsFromSdkSessions(
       updatedAt: new Date(Number(session.lastModified || lastMessageMs)).toISOString(),
       lastMessageAt: new Date(lastMessageMs).toISOString(),
       lastMessageText: lastMessage.text.slice(0, 240),
+      initialUserText,
+      latestUserText: preview.latestUserText || initialUserText,
+      userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
+      latestAssistantText: preview.latestAssistantText,
       messageCount: visibleMessages.length,
       command: "claude",
       args: ["--resume", session.sessionId],
