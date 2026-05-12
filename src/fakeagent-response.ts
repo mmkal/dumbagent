@@ -1,8 +1,19 @@
 export function formatFakeAgentFallback(text: string) {
-  if (!text) {
+  const cleanText = stripXmlBlocks(text).trim();
+  if (!cleanText) {
     return "fakeagent ready";
   }
-  return `"${spongebobCase(text.slice(0, 50))}" do you hear yourself`;
+  return `"${spongebobCase(cleanText.slice(0, 50))}" do you hear yourself`;
+}
+
+function stripXmlBlocks(text: string) {
+  let result = text;
+  let previous = "";
+  while (result !== previous) {
+    previous = result;
+    result = result.replace(/<([A-Za-z][\w:-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g, "");
+  }
+  return result.replace(/<\/?[A-Za-z][\w:-]*(?:\s[^>]*)?>/g, "");
 }
 
 function spongebobCase(text: string) {
