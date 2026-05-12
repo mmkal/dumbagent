@@ -505,6 +505,43 @@ test("can type directly into the terminal renderer", async ({ page, ctx }) => {
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 });
 
+test("opens http links from terminal output in a new tab", async ({ page, ctx }) => {
+  const url = "https://example.test/docs?q=tuiui";
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("link-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText(url);
+  await page.evaluate(() => {
+    (window as any).__tuiuiOpenedTerminalLinks = [];
+    window.open = ((linkUrl?: string | URL, target?: string, features?: string) => {
+      (window as any).__tuiuiOpenedTerminalLinks.push({
+        url: String(linkUrl),
+        target: target || "",
+        features: features || "",
+      });
+      return null;
+    }) as typeof window.open;
+  });
+
+  const rowsBox = await page.locator(".xterm-rows").boundingBox();
+  if (!rowsBox) {
+    throw new Error("terminal rows were not rendered");
+  }
+  const linkX = rowsBox.x + 32;
+  const linkY = rowsBox.y + 8;
+  await page.mouse.move(linkX, linkY);
+  await page.mouse.click(linkX, linkY);
+
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiOpenedTerminalLinks);
+  }).toMatchObject([{
+    url,
+    target: "_blank",
+    features: "noopener,noreferrer",
+  }]);
+});
+
 test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page, ctx }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await launchFakeCodex(page, ctx);
@@ -1060,6 +1097,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -1171,6 +1209,11 @@ const scrollbackAgentSource = `#!/usr/bin/env node
 for (let index = 1; index <= 80; index += 1) {
   process.stdout.write("scrollback line " + String(index).padStart(2, "0") + "\\r\\n");
 }
+setTimeout(() => {}, 100000);
+`;
+
+const linkAgentSource = `#!/usr/bin/env node
+process.stdout.write("https://example.test/docs?q=tuiui\\r\\n");
 setTimeout(() => {}, 100000);
 `;
 

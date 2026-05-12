@@ -4,7 +4,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import { FitAddon } from "@xterm/addon-fit";
-import type { Terminal as XtermTerminal } from "@xterm/xterm";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import {
   detectChordBinary,
@@ -251,6 +252,13 @@ let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
 let voiceReadbackTimer: number | null = null;
 let composerAttachments: ComposerAttachment[] = [];
+
+const terminalHttpLinkHandler: ILinkHandler = {
+  activate(event, uri) {
+    openTerminalHttpLink(event, uri);
+  },
+  allowNonHttpProtocols: false,
+};
 
 void boot();
 
@@ -1554,6 +1562,20 @@ function updateTerminalRedrawOverlay(screen: HTMLElement, active: boolean) {
   overlay.setAttribute("aria-hidden", String(!active));
 }
 
+function openTerminalHttpLink(event: MouseEvent, uri: string) {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
+  event.preventDefault();
+  window.open(url.href, "_blank", "noopener,noreferrer");
+}
+
 async function ensureXterm(payload: SessionPayload) {
   const host = document.getElementById("xterm-terminal");
   if (!host) {
@@ -1578,9 +1600,11 @@ async function ensureXterm(payload: SessionPayload) {
       },
       allowTransparency: false,
       scrollback: 5000,
+      linkHandler: terminalHttpLinkHandler,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(openTerminalHttpLink));
     term.open(host);
     xtermFit = fit;
     term.onData((text) => {
