@@ -10,6 +10,7 @@ import {parseRequest} from '../api.ts'
  * - converted browser globals into a dependency-free TypeScript module;
  * - removed DOM rendering, timers, and Array.prototype mutation;
  * - preserved the response tables, synonyms, wildcard handling, and word reflection;
+ * - removed the one-off emotional overrides so "i am sad" rotates through the broader "i am" rule;
  * - added FakeAgent Request/Response helpers.
  *
  * MIT License
@@ -274,18 +275,6 @@ const responses: Record<string, ResponseRule> = {
     weight: 1,
     responses: ['Did you achieve it or simply moved on?'],
   },
-  'i am sad': {
-    weight: 1,
-    responses: ['Sorry to hear you are. Tell me about it.'],
-  },
-  'i am happy': {
-    weight: 1,
-    responses: ["That's good. What is making you happy?"],
-  },
-  'i am bored': {
-    weight: 1,
-    responses: ['What makes you bored?'],
-  },
 }
 
 const synonyms: Record<string, string[]> = {
@@ -298,9 +287,6 @@ const synonyms: Record<string, string[]> = {
 }
 
 const responsesWithWildcard: Record<string, WildcardRule> = {
-  'i am *1-3* happy': {weight: 20, replacementWord: 'i am happy'},
-  'i am *1-3* sad': {weight: 20, replacementWord: 'i am sad'},
-  'i am *1-3* bored': {weight: 20, replacementWord: 'i am bored'},
 }
 
 const initialMessages = ['Hello. How are you feeling today?']
@@ -309,7 +295,7 @@ const keywords = getKeywordsByWeight()
 
 export class ElizaBot {
   private conversationOver = false
-  private usedResponses: string[] = []
+  private responseCursors: Record<string, number> = {}
 
   initial() {
     return initialMessages[0]
@@ -324,9 +310,7 @@ export class ElizaBot {
       return 'Our conversation has ended. Refresh the page to start again.'
     }
 
-    const response = this.analyze(cleanMessage)
-    this.usedResponses.push(response)
-    return response
+    return this.analyze(cleanMessage)
   }
 
   private analyze(message: string) {
@@ -361,9 +345,10 @@ export class ElizaBot {
 
   private selectResponse(word: string) {
     const potentialResponses = responses[word] || findResponsesForSimilarWord(word) || responses.NOTFOUND
-    const freshResponses = potentialResponses.responses.filter((response) => !this.usedResponses.includes(response))
-    const choices = freshResponses.length > 0 ? freshResponses : potentialResponses.responses
-    return choices[0]
+    const index = this.responseCursors[word] || 0
+    const response = potentialResponses.responses[index % potentialResponses.responses.length]
+    this.responseCursors[word] = index + 1
+    return response
   }
 }
 

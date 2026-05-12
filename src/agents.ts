@@ -44,8 +44,8 @@ export const agents = {
         // Auto-allow all tool permissions so TUI tests don't get blocked by prompts
         OPENCODE_PERMISSION: JSON.stringify({'*': 'allow'}),
         // Isolate from user's global config (MCP servers, plugins, etc.) and database
-        XDG_CONFIG_HOME: '/tmp/fakeagent-opencode-config',
-        XDG_DATA_HOME: '/tmp/fakeagent-opencode-data',
+        XDG_CONFIG_HOME: `/tmp/fakeagent-opencode-config-${port}`,
+        XDG_DATA_HOME: `/tmp/fakeagent-opencode-data-${port}`,
       }
     },
   },
@@ -65,7 +65,7 @@ export const agents = {
     args: [],
     spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
     getEnv(port) {
-      const dir = '/tmp/fakeagent-codex-home'
+      const dir = `/tmp/fakeagent-codex-home-${port}`
       mkdirSync(dir, {recursive: true})
       // Trust the cwd and /tmp/fakeagent-test so codex skips trust/onboarding prompts.
       // Use realpathSync because macOS resolves /tmp → /private/tmp and codex checks the resolved path.
