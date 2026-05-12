@@ -229,7 +229,7 @@ type StoredChord = {
 const app = document.getElementById("app")!;
 let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
-let renderer: "terminal" | "sdk" | "semantic" = "terminal";
+let renderer: "terminal" | "sdk" = "terminal";
 let dataEditorView: EditorView | null = null;
 let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
 let dataEditorDoc = "";
@@ -617,14 +617,7 @@ async function renderSession(sessionId: string) {
               </div>
               <div class="toolbar" role="group" aria-label="Session controls">
                 <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
-                <details class="menu-details">
-                  <summary class="icon-button menu-details-summary" role="button" aria-label="Debug" aria-expanded="false" data-debug-summary aria-pressed="${renderer === "sdk" || renderer === "semantic"}">Debug</summary>
-                  <div class="menu-details-panel">
-                    <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Snapshot</button>
-                    <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
-                    <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
-                  </div>
-                </details>
+                <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Debug</button>
                 <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
                 <button type="button" class="icon-button" data-action="relayout">Relayout</button>
               </div>
@@ -638,16 +631,6 @@ async function renderSession(sessionId: string) {
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
         </div>
-        <aside id="logs" class="logs" hidden>
-          <section>
-            <h2>stdin</h2>
-            <pre data-testid="stdin-log"></pre>
-          </section>
-          <section>
-            <h2>stdout</h2>
-            <pre data-testid="stdout-log"></pre>
-          </section>
-        </aside>
       </section>
       <section class="composer" aria-label="Session input">
         <div id="attachment-preview" class="attachment-preview" data-testid="attachment-preview" aria-live="polite" hidden></div>
@@ -766,11 +749,6 @@ function bindSessionControls(sessionId: string) {
   document.querySelector<HTMLButtonElement>("[data-action='close-session-menu']")?.addEventListener("click", () => {
     closeSessionMenu();
   });
-  document.querySelectorAll<HTMLDetailsElement>(".menu-details").forEach((details) => {
-    details.addEventListener("toggle", () => {
-      details.querySelector<HTMLElement>("summary")?.setAttribute("aria-expanded", String(details.open));
-    });
-  });
 
   document.querySelectorAll<HTMLButtonElement>("[data-action='cancel-chord']").forEach((button) => button.addEventListener("click", () => {
     setChordFormOpen(chordForm, false);
@@ -804,7 +782,7 @@ function bindSessionControls(sessionId: string) {
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.addEventListener("click", () => {
       const nextRenderer = button.dataset.renderer;
-      renderer = nextRenderer === "sdk" || nextRenderer === "semantic" ? nextRenderer : "terminal";
+      renderer = nextRenderer === "sdk" ? "sdk" : "terminal";
       renderSessionPayload(activeSession);
       if (renderer === "sdk") {
         void refreshSdk(sessionId).catch((error) => {
@@ -813,13 +791,6 @@ function bindSessionControls(sessionId: string) {
       }
       closeSessionMenu();
     });
-  });
-
-  document.querySelector<HTMLButtonElement>("[data-action='logs']")?.addEventListener("click", (event) => {
-    const logs = document.getElementById("logs")!;
-    logs.hidden = !logs.hidden;
-    (event.currentTarget as HTMLButtonElement).setAttribute("aria-expanded", String(!logs.hidden));
-    closeSessionMenu();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
@@ -1365,10 +1336,6 @@ function renderSessionPayload(
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.renderer === renderer));
   });
-  document.querySelector<HTMLElement>("[data-debug-summary]")?.setAttribute(
-    "aria-pressed",
-    String(renderer === "sdk" || renderer === "semantic"),
-  );
   const mainSurface = document.querySelector<HTMLElement>(".main-surface");
   if (mainSurface) {
     mainSurface.dataset.renderer = renderer;
@@ -1382,12 +1349,6 @@ function renderSessionPayload(
     stopTerminalAutoResize();
     destroyXterm();
     renderSdkScreen(screen, payload);
-  } else {
-    stopTerminalAutoResize();
-    destroyXterm();
-    destroyDataEditor();
-    screen.className = "screen semantic-screen";
-    screen.innerHTML = renderSemanticScreen(payload.semantic);
   }
 
   const stdinLog = document.querySelector<HTMLElement>("[data-testid='stdin-log']");
@@ -1844,9 +1805,12 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
           <span>This session is only available through the terminal stream.</span>
         </header>
         ${renderTuishotPreviewMarkup()}
+        ${renderDebugHtmlMarkup()}
+        ${renderDebugLogsMarkup()}
       </section>
     `;
     updateTuishotPreview(screen, payload);
+    updateDebugHtml(screen, payload);
     return;
   }
 
@@ -1883,6 +1847,8 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
             <div id="session-brief-editor" data-testid="session-brief-raw"></div>
           </div>
         </details>
+        ${renderDebugHtmlMarkup()}
+        ${renderDebugLogsMarkup()}
         <details class="sdk-diagnostics">
           <summary>
             <span class="sdk-details-summary-row">
@@ -1924,6 +1890,7 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   updateSdkChrome(screen, payload);
   updateTuishotPreview(screen, payload);
   updateSessionBrief(screen, payload);
+  updateDebugHtml(screen, payload);
 }
 
 function renderTuishotPreviewMarkup() {
@@ -1942,6 +1909,50 @@ function renderTuishotPreviewMarkup() {
       </div>
     </details>
   `;
+}
+
+function renderDebugHtmlMarkup() {
+  return `
+    <details class="debug-html" data-testid="debug-html">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>HTML</strong>
+          <span>semantic</span>
+        </span>
+      </summary>
+      <div class="debug-html-content" data-debug-html-rendered></div>
+    </details>
+  `;
+}
+
+function renderDebugLogsMarkup() {
+  return `
+    <details class="debug-logs" data-testid="debug-logs">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>Logs</strong>
+        </span>
+      </summary>
+      <div class="logs">
+        <section>
+          <h2>stdin</h2>
+          <pre data-testid="stdin-log"></pre>
+        </section>
+        <section>
+          <h2>stdout</h2>
+          <pre data-testid="stdout-log"></pre>
+        </section>
+      </div>
+    </details>
+  `;
+}
+
+function updateDebugHtml(screen: HTMLElement, payload: SessionPayload) {
+  const container = screen.querySelector<HTMLElement>("[data-debug-html-rendered]");
+  if (!container) {
+    return;
+  }
+  container.innerHTML = renderSemanticScreen(payload.semantic);
 }
 
 function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {

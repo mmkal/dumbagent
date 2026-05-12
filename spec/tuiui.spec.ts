@@ -688,12 +688,35 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "TTY" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Debug", exact: true })).toBeVisible();
+  await expect.poll(async () => sessionMenuPlainButtonStyles(page)).toMatchObject({
+    reference: {
+      alignItems: "center",
+      borderTopStyle: "solid",
+      display: "flex",
+      fontWeight: "700",
+      justifyContent: "center",
+    },
+    debug: {
+      alignItems: "center",
+      borderTopStyle: "solid",
+      display: "flex",
+      fontWeight: "700",
+      justifyContent: "center",
+    },
+    matches: true,
+  });
   await expect(page.getByRole("button", { name: "HTML" })).toHaveCount(0);
   await page.getByRole("button", { name: "Debug", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Snapshot" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "HTML" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
+  await expect(page.getByTestId("sdk-debug")).toBeVisible();
+  await expect(page.getByTestId("debug-html")).not.toHaveAttribute("open", "");
+  await expect(page.getByTestId("debug-logs")).not.toHaveAttribute("open", "");
+  await openDebugDetail(page, "debug-html");
+  await expect(page.getByTestId("debug-html")).toContainText("scrollback line");
+  await openDebugDetail(page, "debug-logs");
+  await expect(page.getByTestId("stdout-log")).toContainText("scrollback line");
+  await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "Pause events" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Logs" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Relayout" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
   await page.getByRole("button", { name: "Close session menu" }).click();
@@ -960,18 +983,13 @@ async function fetchRecentAgentSessions(page: Page) {
 async function clickSessionMenuButton(page: Page, name: string) {
   await openSessionMenu(page);
   if (name === "Debug") {
-    const debugDetails = page.locator(".menu-details");
-    if ((await debugDetails.getAttribute("open")) === null) {
-      await page.getByRole("button", { name: "Debug", exact: true }).click();
-    }
-    await page.getByRole("button", { name: "Snapshot" }).click();
+    await page.getByRole("button", { name: "Debug", exact: true }).click();
     return;
   }
   if (name === "HTML" || name === "Logs") {
-    const debugDetails = page.locator(".menu-details");
-    if ((await debugDetails.getAttribute("open")) === null) {
-      await page.getByRole("button", { name: "Debug", exact: true }).click();
-    }
+    await page.getByRole("button", { name: "Debug", exact: true }).click();
+    await openDebugDetail(page, name === "HTML" ? "debug-html" : "debug-logs");
+    return;
   }
   await page.getByRole("button", { name }).click();
 }
@@ -982,6 +1000,52 @@ async function openSessionMenu(page: Page) {
     return;
   }
   await page.getByRole("button", { name: "Session menu" }).click();
+}
+
+async function sessionMenuPlainButtonStyles(page: Page) {
+  return await page.locator(".menu-panel").evaluate((panel) => {
+    const reference = panel.querySelector<HTMLElement>("[data-action='relayout']");
+    const debug = panel.querySelector<HTMLElement>("[data-renderer='sdk']");
+    if (!reference || !debug) {
+      return { matches: false };
+    }
+    const pick = (element: HTMLElement) => {
+      const style = getComputedStyle(element);
+      return {
+        alignItems: style.alignItems,
+        backgroundColor: style.backgroundColor,
+        borderRadius: style.borderRadius,
+        borderTopColor: style.borderTopColor,
+        borderTopStyle: style.borderTopStyle,
+        borderTopWidth: style.borderTopWidth,
+        color: style.color,
+        display: style.display,
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        height: Math.round(element.getBoundingClientRect().height),
+        justifyContent: style.justifyContent,
+        lineHeight: style.lineHeight,
+        paddingBottom: style.paddingBottom,
+        paddingTop: style.paddingTop,
+      };
+    };
+    const referenceStyle = pick(reference);
+    const debugStyle = pick(debug);
+    return {
+      reference: referenceStyle,
+      debug: debugStyle,
+      matches: JSON.stringify(referenceStyle) === JSON.stringify(debugStyle),
+    };
+  });
+}
+
+async function openDebugDetail(page: Page, testId: "debug-html" | "debug-logs") {
+  const detail = page.getByTestId(testId);
+  if ((await detail.getAttribute("open")) !== null) {
+    return;
+  }
+  await detail.locator("summary").first().click();
 }
 
 async function openSdkDiagnostics(page: Page) {

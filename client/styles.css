@@ -645,55 +645,28 @@ textarea:focus {
 }
 
 .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 38px;
+  min-height: 34px;
+  border: 1px solid #3a4350;
+  border-radius: 7px;
   background: #20262e;
   color: #dce5ef;
   border-color: #3a4350;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0 11px;
+  text-align: center;
+  cursor: pointer;
 }
 
 .icon-button[aria-pressed="true"] {
   background: #64d2c8;
   color: #091111;
   border-color: #64d2c8;
-}
-
-.menu-details {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.menu-details[open] {
-  grid-column: 1 / -1;
-}
-
-.menu-details > summary {
-  list-style: none;
-}
-
-.menu-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-.menu-details-summary {
-  min-height: 34px;
-  height: 34px;
-  padding: 0 11px;
-  text-align: center;
-  cursor: pointer;
-  user-select: none;
-}
-
-.menu-details-panel {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  grid-column: 1 / -1;
-  min-width: 0;
-  border: 1px solid #252c35;
-  border-radius: 7px;
-  background: #11161c;
-  padding: 6px;
 }
 
 .voice-talk[aria-pressed="true"] {
@@ -1085,8 +1058,10 @@ pre {
     "error"
     "tuishot"
     "brief"
+    "html"
+    "logs"
     "diagnostics";
-  grid-template-rows: auto auto auto auto auto;
+  grid-template-rows: auto auto auto auto auto auto auto;
   align-content: start;
   gap: 8px;
   height: auto;
@@ -1260,6 +1235,36 @@ pre {
   border: 1px solid #2c333d;
   border-radius: 7px;
   background: #11161c;
+}
+
+.debug-html,
+.debug-logs {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #2c333d;
+  border-radius: 7px;
+  background: #11161c;
+}
+
+.debug-html {
+  grid-area: html;
+}
+
+.debug-logs {
+  grid-area: logs;
+}
+
+.debug-html .sdk-details-summary-row > span {
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.debug-html-content {
+  max-height: min(520px, 54dvh);
+  overflow: auto;
 }
 
 .session-brief .sdk-details-summary-row > span {
@@ -1486,10 +1491,8 @@ pre {
 }
 
 .logs {
-  width: min(480px, 34vw);
+  min-width: 0;
   overflow: auto;
-  border: 1px solid #2c333d;
-  border-radius: 8px;
   background: #151a20;
   padding: 10px;
 }
@@ -2047,16 +2050,6 @@ textarea {
     grid-template-rows: 1fr 1fr;
     gap: 4px;
     min-height: 0;
-  }
-
-  .logs {
-    position: absolute;
-    inset: 6px;
-    z-index: 10;
-    width: auto;
-    max-width: none;
-    overflow: auto;
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
   }
 
   .terminal-xterm-wrap,
