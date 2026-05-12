@@ -13,6 +13,7 @@ import {
   type ChordBinary,
 } from "../src/chords.ts";
 import { stringify as stringifyYaml } from "yaml";
+import { attachmentUploadName, type AttachmentSource } from "./attachments.ts";
 import { showToast } from "./toast.ts";
 import {
   createBrowserVoiceRecognizer,
@@ -720,7 +721,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
   input.addEventListener("change", () => {
     const files = Array.from(input.files || []);
     input.value = "";
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "file");
   });
 
   textarea.addEventListener("paste", (event) => {
@@ -729,7 +730,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
       return;
     }
     event.preventDefault();
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "paste");
   });
 
   composer.addEventListener("dragover", (event) => {
@@ -754,7 +755,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
     }
     event.preventDefault();
     delete composer.dataset.attachmentDragging;
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files);
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "drop");
   });
 }
 
@@ -764,11 +765,12 @@ async function uploadComposerAttachments(
   preview: HTMLElement,
   button: HTMLButtonElement,
   files: File[],
+  source: AttachmentSource,
 ) {
   button.disabled = true;
   try {
     for (const file of files) {
-      const upload = await uploadAttachment(sessionId, file);
+      const upload = await uploadAttachment(sessionId, file, source);
       const attachment: ComposerAttachment = {
         ...upload,
         id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -790,9 +792,9 @@ async function uploadComposerAttachments(
   }
 }
 
-async function uploadAttachment(sessionId: string, file: File) {
+async function uploadAttachment(sessionId: string, file: File, source: AttachmentSource) {
   const body = new FormData();
-  body.append("file", file, attachmentUploadName(file));
+  body.append("file", file, attachmentUploadName(file, source));
   const response = await fetch(`/api/sessions/${sessionId}/attachments`, {
     method: "POST",
     body,
@@ -805,25 +807,6 @@ async function uploadAttachment(sessionId: string, file: File) {
     throw new Error(message);
   }
   return await response.json() as AttachmentUpload;
-}
-
-function attachmentUploadName(file: File) {
-  if (file.name) {
-    return file.name;
-  }
-  if (file.type === "image/png") {
-    return "image.png";
-  }
-  if (file.type === "image/jpeg") {
-    return "image.jpg";
-  }
-  if (file.type === "image/webp") {
-    return "image.webp";
-  }
-  if (file.type === "image/gif") {
-    return "image.gif";
-  }
-  return "attachment";
 }
 
 function renderAttachmentPreview(preview: HTMLElement, attachments: ComposerAttachment[]) {
@@ -1000,6 +983,7 @@ async function sendComposer(sessionId: string) {
     body: JSON.stringify({ text, submit: true }),
   });
   clearComposerAttachments();
+  scheduleTerminalResize(sessionId);
 }
 
 async function sendKey(sessionId: string, key: string) {
@@ -1448,6 +1432,9 @@ function scheduleTerminalResize(sessionId: string) {
 }
 
 async function resizeTerminalToScreen(sessionId: string) {
+  if (composerAttachments.length > 0) {
+    return;
+  }
   const screen = document.getElementById("screen");
   const terminal = screen?.querySelector<HTMLElement>(".terminal-xterm-wrap, .terminal-html");
   if (!screen || !terminal) {

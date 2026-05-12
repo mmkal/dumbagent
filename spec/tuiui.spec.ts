@@ -99,11 +99,13 @@ test("uploads composer attachments to a session temp directory and inserts the s
   await (await fileChooser).setFiles(firstImagePath);
 
   const textarea = page.getByRole("textbox", { name: "Send stdin" });
+  const rowsBeforeAttachment = (await fetchSessionPayload(page)).rows;
   await expect(textarea).toHaveValue(/\/tmp\/tuiui\/tuiui_[a-f0-9]+\/tiny\.png/);
   const firstSavedPath = (await textarea.inputValue()).trim();
   expect(fs.existsSync(firstSavedPath)).toBe(true);
   expect(fs.readFileSync(firstSavedPath).equals(imageBytes)).toBe(true);
   await expect(page.getByTestId("attachment-preview").locator("img")).toBeVisible();
+  await expect.poll(async () => (await fetchSessionPayload(page)).rows).toBe(rowsBeforeAttachment);
 
   await page.locator(".composer").evaluate((composer, base64) => {
     const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
