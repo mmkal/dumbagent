@@ -190,7 +190,6 @@ type LaunchSessionInput = {
   command: string;
   args: string[];
   cwd: string;
-  cols: number;
   fakeAgent: string;
 };
 
@@ -304,6 +303,51 @@ function incrementPageLoadCount() {
   }
 }
 
+function setupPromptboxState(sessionId: string, promptbox: HTMLTextAreaElement) {
+  const state = useLocalStorageState(promptboxStorageKey(sessionId), "");
+  promptbox.value = state.getValue();
+  promptbox.addEventListener("input", () => {
+    state.setValue(promptbox.value);
+  });
+}
+
+function setPromptboxValue(promptbox: HTMLTextAreaElement, value: string) {
+  promptbox.value = value;
+  promptbox.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function useLocalStorageState(key: string, initialValue: string) {
+  let value = initialValue;
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored !== null) {
+      value = stored;
+    }
+  } catch {
+  }
+
+  return {
+    getValue() {
+      return value;
+    },
+    setValue(nextValue: string) {
+      value = nextValue;
+      try {
+        if (nextValue) {
+          localStorage.setItem(key, nextValue);
+        } else {
+          localStorage.removeItem(key);
+        }
+      } catch {
+      }
+    },
+  };
+}
+
+function promptboxStorageKey(sessionId: string) {
+  return `tuiui-promptbox-${encodeURIComponent(sessionId)}`;
+}
+
 async function renderRoute() {
   events?.close();
   events = null;
@@ -355,10 +399,11 @@ async function renderHome() {
     api<RecentAgentSession[]>("/api/agent-sessions/recent"),
   ]);
   const displayHomeDirs = homeDirsForDisplay(cwd);
-  const quickLaunchRows = [
-    { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
-    { label: "Fake", commands: commands.filter((command) => Boolean(command.fakeAgent)) },
-  ].filter((row) => row.commands.length);
+  const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
+  const launchCommandOrder = ["codex", "claude", "opencode"];
+  const quickLaunchCommands = launchCommandOrder
+    .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
+    .filter((command): command is CommandPreset => Boolean(command));
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -368,41 +413,33 @@ async function renderHome() {
       </header>
       <section class="launcher" aria-label="Launch session">
         <form id="launch-form" class="launch-form">
-          <div class="quick-launch" role="group" aria-label="Quick launch">
-            ${quickLaunchRows.map((row) => `
-              <div class="quick-launch-row" role="group" aria-label="${escapeAttr(`${row.label} presets`)}">
-                <span class="quick-launch-label">${escapeHtml(row.label)}</span>
-                <div class="quick-launch-buttons">
-                  ${row.commands.map((command) => `
-                    <button
-                      type="button"
-                      class="preset-button"
-                      data-preset-id="${escapeAttr(command.id)}"
-                      aria-label="${escapeAttr(command.label)}"
-                      title="${escapeAttr([command.command, ...command.args].join(" "))}"
-                    >${escapeHtml(row.label === "Fake" ? command.label.replace(/^Fake /, "") : command.label)}</button>
-                  `).join("")}
-                </div>
-              </div>
-            `).join("")}
+          <div class="launch-command-row">
+            <label class="command-prompt-field">
+              <span class="command-prompt-glyph" aria-hidden="true">&gt;</span>
+              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --foo-bar" />
+            </label>
+            <label class="cwd-field">
+              <span aria-hidden="true">cwd</span>
+              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(launchCwdState.getValue() || cwd.cwd)}" />
+            </label>
           </div>
-          <label>
-            <span>Command</span>
-            <input name="command" aria-label="Command" autocomplete="off" required />
-          </label>
-          <label>
-            <span>Args</span>
-            <input name="args" aria-label="Arguments" autocomplete="off" />
-          </label>
-          <label class="wide">
-            <span>Working directory</span>
-            <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(cwd.cwd)}" />
-          </label>
-          <label>
-            <span>Columns</span>
-            <input name="cols" aria-label="Columns" type="number" min="60" max="220" value="120" required />
-          </label>
-          <button type="submit">Launch</button>
+          <div class="quick-launch-row" role="group" aria-label="Shortcuts">
+            <div class="quick-launch-buttons">
+              ${quickLaunchCommands.map((command) => `
+                <button
+                  type="button"
+                  class="preset-button"
+                  data-preset-id="${escapeAttr(command.id)}"
+                  aria-label="${escapeAttr(command.command)}"
+                  title="${escapeAttr(command.command)}"
+                >${escapeHtml(command.command)}</button>
+              `).join("")}
+            </div>
+            <label class="fakeagent-toggle">
+              <input name="fakeagent" type="checkbox" aria-label="fakeagent" />
+              <span>fakeagent</span>
+            </label>
+          </div>
         </form>
       </section>
       ${recentAgentSessions.length ? `
@@ -442,10 +479,22 @@ async function renderHome() {
   `;
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
-  const commandInput = form.elements.namedItem("command") as HTMLInputElement;
-  const argsInput = form.elements.namedItem("args") as HTMLInputElement;
+  const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
+  const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
+  const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
   const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
+
+  cwdInput.addEventListener("input", () => {
+    launchCwdState.setValue(cwdInput.value);
+  });
+  commandInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    void submitLaunchForm();
+  });
 
   for (const button of form.querySelectorAll<HTMLButtonElement>("[data-preset-id]")) {
     button.addEventListener("click", async () => {
@@ -453,14 +502,12 @@ async function renderHome() {
       if (!preset) {
         return;
       }
-      commandInput.value = preset.command;
-      argsInput.value = preset.args.join(" ");
+      commandInput.value = [preset.command, ...preset.args].join(" ");
       await launchSession({
         command: preset.command,
         args: preset.args,
         cwd: currentLaunchCwd(),
-        cols: currentLaunchCols(),
-        fakeAgent: preset.fakeAgent,
+        fakeAgent: fakeAgentForCommand(preset.command),
       });
     });
   }
@@ -471,13 +518,12 @@ async function renderHome() {
       if (!session) {
         return;
       }
-      commandInput.value = session.command;
-      argsInput.value = session.args.join(" ");
+      commandInput.value = [session.command, ...session.args].join(" ");
+      setLaunchCwd(session.cwd || currentLaunchCwd());
       await launchSession({
         command: session.command,
         args: session.args,
         cwd: session.cwd || currentLaunchCwd(),
-        cols: currentLaunchCols(),
         fakeAgent: "",
       });
     });
@@ -485,23 +531,39 @@ async function renderHome() {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await launchSession({
-      command: commandInput.value,
-      args: parseArgs(argsInput.value),
-      cwd: currentLaunchCwd(),
-      cols: currentLaunchCols(),
-      fakeAgent: "",
-    });
+    await submitLaunchForm();
   });
 
-  function currentLaunchCwd() {
-    const data = new FormData(form);
-    return String(data.get("cwd") || "");
+  async function submitLaunchForm() {
+    const commandLine = parseCommandLine(commandInput.value);
+    if (!commandLine.command) {
+      return;
+    }
+    await launchSession({
+      command: commandLine.command,
+      args: commandLine.args,
+      cwd: currentLaunchCwd(),
+      fakeAgent: fakeAgentForCommand(commandLine.command),
+    });
   }
 
-  function currentLaunchCols() {
-    const data = new FormData(form);
-    return Number(data.get("cols") || 120);
+  function currentLaunchCwd() {
+    launchCwdState.setValue(cwdInput.value);
+    return cwdInput.value;
+  }
+
+  function setLaunchCwd(value: string) {
+    cwdInput.value = value;
+    launchCwdState.setValue(value);
+  }
+
+  function fakeAgentForCommand(command: string) {
+    if (!fakeAgentInput.checked) {
+      return "";
+    }
+    const binary = command.split(/[\\/]/).pop() || command;
+    const fakeCommand = commands.find((candidate) => candidate.fakeAgent && candidate.command === binary);
+    return fakeCommand ? fakeCommand.fakeAgent : "";
   }
 
   async function launchSession(input: LaunchSessionInput) {
@@ -511,7 +573,7 @@ async function renderHome() {
         command: input.command,
         args: input.args,
         cwd: input.cwd,
-        cols: input.cols,
+        cols: 120,
         rows: 42,
         env: {},
         fakeAgent: input.fakeAgent,
@@ -538,18 +600,26 @@ async function renderSession(sessionId: string) {
         <span class="status-pill" data-state="${payload.status}" data-testid="session-status">${payload.status}</span>
         <details class="session-menu">
           <summary class="menu-button" role="button" aria-label="Session menu">☰</summary>
-          <div class="menu-panel">
-            <div class="menu-fact">
-              <span>CWD</span>
-              <code>${escapeHtml(payload.cwd)}</code>
-            </div>
-            <div class="toolbar" role="group" aria-label="Renderer">
-              <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
-              <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Debug</button>
-              <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
-              <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
-              <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
-              <button type="button" class="icon-button danger" data-action="kill">Stop</button>
+          <div class="floating-overlay session-menu-overlay">
+            <button type="button" class="floating-overlay-backdrop" data-action="close-session-menu" aria-label="Close session menu"></button>
+            <div class="floating-overlay-card menu-panel" role="dialog" aria-label="Session menu">
+              <div class="menu-fact">
+                <span>CWD</span>
+                <code>${escapeHtml(payload.cwd)}</code>
+              </div>
+              <div class="toolbar" role="group" aria-label="Session controls">
+                <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
+                <details class="menu-details">
+                  <summary class="icon-button menu-details-summary" role="button" aria-label="Debug" aria-expanded="false" data-debug-summary aria-pressed="${renderer === "sdk" || renderer === "semantic"}">Debug</summary>
+                  <div class="menu-details-panel">
+                    <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Snapshot</button>
+                    <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
+                    <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
+                  </div>
+                </details>
+                <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
+                <button type="button" class="icon-button" data-action="relayout">Relayout</button>
+              </div>
             </div>
           </div>
         </details>
@@ -589,7 +659,7 @@ async function renderSession(sessionId: string) {
           </form>
         </dialog>
         <div class="composer-input-row">
-          <textarea id="stdin" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+          <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
           <input id="attachment-file" class="attachment-file-input" type="file" multiple />
           <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
             <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
@@ -600,17 +670,20 @@ async function renderSession(sessionId: string) {
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
           ${renderChordShortcuts(binary)}
         </div>
-        <form id="chord-form" class="chord-panel" aria-label="Create chord" hidden>
-          <div class="chord-panel-input-row">
-            ${["ctrl+", "shift+", "alt+", "/", "tab", "esc", ";enter", "backspace", "up", "down", "left", "right"].map((insert) => `
-              <button type="button" class="secondary-button" data-chord-insert="${escapeAttr(insert)}">${escapeHtml(formatChordHelper(insert))}</button>
-            `).join("")}
-          </div>
-          <div class="chord-panel-send-row">
-            <input name="label" aria-label="Chord label" autocomplete="off" placeholder="Label" />
-            <input name="sequence" aria-label="Chord sequence" autocomplete="off" placeholder="esc;esc or /model;enter" required />
-            <button type="submit">Save + Send</button>
-            <button type="button" class="secondary-button" data-action="cancel-chord">Cancel</button>
+        <form id="chord-form" class="floating-overlay chord-panel" aria-label="Add chord" role="dialog" aria-modal="true" hidden>
+          <button type="button" class="floating-overlay-backdrop chord-panel-backdrop" data-action="cancel-chord" aria-label="Close add chord"></button>
+          <div class="floating-overlay-card chord-panel-card">
+            <div class="chord-panel-input-row">
+              ${["ctrl+", "shift+", "alt+", "/", "tab", "esc", "backspace", "up", "down", "left", "right"].map((insert) => `
+                <button type="button" class="secondary-button" data-chord-insert="${escapeAttr(insert)}">${escapeHtml(formatChordHelper(insert))}</button>
+              `).join("")}
+            </div>
+            <div class="chord-panel-send-row">
+              <input name="label" aria-label="Chord label" autocomplete="off" placeholder="Label" />
+              <input name="sequence" aria-label="Chord sequence" autocomplete="off" placeholder="esc;esc or /model;enter" required />
+              <button type="submit">Save + Send</button>
+              <button type="button" class="secondary-button" data-action="cancel-chord">Cancel</button>
+            </div>
           </div>
         </form>
         <div class="composer-actions">
@@ -620,9 +693,6 @@ async function renderSession(sessionId: string) {
             <button type="button" id="voice-stop" class="icon-button" aria-label="Cancel speech playback">Audio</button>
             <output id="voice-status" class="voice-status" data-testid="voice-status">Voice ready</output>
           </div>
-          <button type="button" id="send" aria-label="Send" title="Send">
-            <span aria-hidden="true">↵</span>
-          </button>
         </div>
       </section>
     </main>
@@ -652,10 +722,15 @@ function bindSessionControls(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const sendButton = document.getElementById("send") as HTMLButtonElement;
   const chordForm = document.getElementById("chord-form") as HTMLFormElement;
+  setupPromptboxState(sessionId, textarea);
   setupVoiceControls(sessionId, textarea);
   setupAttachmentControls(sessionId, textarea);
 
   sendButton.addEventListener("click", () => {
+    if (!textarea.value) {
+      void sendChordSequence(sessionId, "enter", "common-enter");
+      return;
+    }
     void sendComposer(sessionId);
   });
 
@@ -680,9 +755,18 @@ function bindSessionControls(sessionId: string) {
 
   bindChordShortcutControls(sessionId, chordForm);
 
-  document.querySelector<HTMLButtonElement>("[data-action='cancel-chord']")?.addEventListener("click", () => {
-    setChordFormOpen(chordForm, false);
+  document.querySelector<HTMLButtonElement>("[data-action='close-session-menu']")?.addEventListener("click", () => {
+    closeSessionMenu();
   });
+  document.querySelectorAll<HTMLDetailsElement>(".menu-details").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      details.querySelector<HTMLElement>("summary")?.setAttribute("aria-expanded", String(details.open));
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='cancel-chord']").forEach((button) => button.addEventListener("click", () => {
+    setChordFormOpen(chordForm, false);
+  }));
 
   document.querySelectorAll<HTMLButtonElement>("[data-chord-insert]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -702,7 +786,7 @@ function bindSessionControls(sessionId: string) {
       return;
     }
     const chord = saveStoredChord(binary, labelInput.value, sequence);
-    refreshChordShortcuts(binary);
+    refreshChordShortcuts(binary, false);
     labelInput.value = "";
     sequenceInput.value = "";
     setChordFormOpen(chordForm, false);
@@ -735,8 +819,8 @@ function bindSessionControls(sessionId: string) {
     closeSessionMenu();
   });
 
-  document.querySelector<HTMLButtonElement>("[data-action='kill']")?.addEventListener("click", () => {
-    void api(`/api/sessions/${sessionId}/kill`, { method: "POST" });
+  document.querySelector<HTMLButtonElement>("[data-action='relayout']")?.addEventListener("click", () => {
+    relayoutTerminal(sessionId);
     closeSessionMenu();
   });
 
@@ -961,7 +1045,7 @@ function removeComposerAttachment(id: string, textarea: HTMLTextAreaElement, pre
     URL.revokeObjectURL(attachment.previewUrl);
   }
   composerAttachments = composerAttachments.filter((candidate) => candidate.id !== id);
-  textarea.value = removeAttachmentPathFromText(textarea.value, attachment.path);
+  setPromptboxValue(textarea, removeAttachmentPathFromText(textarea.value, attachment.path));
   renderAttachmentPreview(preview, composerAttachments);
 }
 
@@ -997,7 +1081,7 @@ function insertAttachmentPath(textarea: HTMLTextAreaElement, filePath: string) {
   const prefix = before && !/\s$/.test(before) ? " " : "";
   const suffix = after && !/^\s/.test(after) ? " " : "";
   const insertion = `${prefix}${filePath}${suffix}`;
-  textarea.value = `${before}${insertion}${after}`;
+  setPromptboxValue(textarea, `${before}${insertion}${after}`);
   const cursor = before.length + insertion.length;
   textarea.selectionStart = cursor;
   textarea.selectionEnd = cursor;
@@ -1041,12 +1125,12 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
     now: window.__tuiuiVoiceTest?.now || (() => Date.now()),
     minReadbackDelayMs: Number(window.__tuiuiVoiceTest?.minReadbackDelayMs || 700),
     async sendTranscript(text) {
-      textarea.value = text;
+      setPromptboxValue(textarea, text);
       await api(`/api/sessions/${sessionId}/send`, {
         method: "POST",
         body: JSON.stringify({ text, submit: true }),
       });
-      textarea.value = "";
+      setPromptboxValue(textarea, "");
     },
   });
   unsubscribeVoiceLoop = voiceLoop.subscribe(updateVoiceControls);
@@ -1089,10 +1173,18 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
 }
 
 function updateVoiceControls(state: VoiceLoop["state"]) {
+  const controls = document.querySelector<HTMLElement>(".voice-controls");
   const talk = document.getElementById("voice-talk") as HTMLButtonElement | null;
   const cancel = document.getElementById("voice-cancel") as HTMLButtonElement | null;
   const stop = document.getElementById("voice-stop") as HTMLButtonElement | null;
   const status = document.getElementById("voice-status") as HTMLOutputElement | null;
+  if (controls) {
+    controls.hidden = state.status === "unsupported";
+    const actions = controls.closest<HTMLElement>(".composer-actions");
+    if (actions) {
+      actions.dataset.voiceUnsupported = String(state.status === "unsupported");
+    }
+  }
   if (talk) {
     talk.disabled = state.status === "unsupported";
     talk.dataset.voiceStatus = state.status;
@@ -1117,7 +1209,7 @@ function closeSessionMenu() {
 async function sendComposer(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const text = textarea.value;
-  textarea.value = "";
+  setPromptboxValue(textarea, "");
   await api(`/api/sessions/${sessionId}/send`, {
     method: "POST",
     body: JSON.stringify({ text, submit: true }),
@@ -1146,7 +1238,7 @@ async function sendChordSequence(sessionId: string, sequence: string, chordId: s
   }
 }
 
-function refreshChordShortcuts(binary: ChordBinary) {
+function refreshChordShortcuts(binary: ChordBinary, formOpen: boolean) {
   const container = document.querySelector<HTMLElement>("[aria-label='Shortcut chords']");
   if (!container) {
     return;
@@ -1157,6 +1249,7 @@ function refreshChordShortcuts(binary: ChordBinary) {
     return;
   }
   bindChordShortcutControls(activeSession?.id || "", chordForm);
+  setChordFormOpen(chordForm, formOpen);
 }
 
 function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement) {
@@ -1164,7 +1257,7 @@ function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement
   chordToggle?.addEventListener("click", () => {
     const open = chordForm.hidden;
     setChordFormOpen(chordForm, open);
-    if (open) {
+    if (open && shouldAutoFocusChordInput()) {
       const sequenceInput = chordForm.elements.namedItem("sequence") as HTMLInputElement;
       sequenceInput.focus();
     }
@@ -1176,6 +1269,15 @@ function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement
     });
     button.addEventListener("click", () => {
       document.getElementById("stdin")?.blur();
+      if (!chordForm.hidden && button.dataset.chordUserDefined === "true") {
+        const label = button.dataset.chordLabel || button.textContent || "this chord";
+        if (window.confirm(`Delete chord "${label}"?`)) {
+          deleteStoredChord(button.dataset.chordId || "");
+          const binary = detectChordBinary(activeSession?.command || "", activeSession?.args || [], activeSession?.sdk.provider || "");
+          refreshChordShortcuts(binary, true);
+        }
+        return;
+      }
       void sendChordSequence(sessionId, button.dataset.chordSequence || "", button.dataset.chordId || "");
     });
   });
@@ -1183,7 +1285,19 @@ function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement
 
 function setChordFormOpen(chordForm: HTMLFormElement, open: boolean) {
   chordForm.hidden = !open;
+  if (open) {
+    const composer = document.querySelector<HTMLElement>(".composer");
+    if (composer) {
+      chordForm.style.bottom = `${Math.max(0, Math.round(window.innerHeight - composer.getBoundingClientRect().top))}px`;
+    }
+  } else {
+    chordForm.style.bottom = "";
+  }
   document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']")?.setAttribute("aria-expanded", String(open));
+  const container = document.querySelector<HTMLElement>("[aria-label='Shortcut chords']");
+  if (container) {
+    container.dataset.managingChords = String(open);
+  }
 }
 
 function subscribe(sessionId: string) {
@@ -1243,6 +1357,10 @@ function renderSessionPayload(
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.renderer === renderer));
   });
+  document.querySelector<HTMLElement>("[data-debug-summary]")?.setAttribute(
+    "aria-pressed",
+    String(renderer === "sdk" || renderer === "semantic"),
+  );
   const mainSurface = document.querySelector<HTMLElement>(".main-surface");
   if (mainSurface) {
     mainSurface.dataset.renderer = renderer;
@@ -1368,6 +1486,29 @@ function smoothScrollXterm(totalLines: number) {
   }
 
   terminalScrollAnimationFrame = window.requestAnimationFrame(tick);
+}
+
+function relayoutTerminal(sessionId: string) {
+  if (!activeSession) {
+    return;
+  }
+  renderer = "terminal";
+  lastTerminalResizeKey = "";
+  destroyXterm();
+  renderSessionPayload({
+    ...activeSession,
+    redrawActive: true,
+  });
+  scheduleTerminalResize(sessionId);
+  window.setTimeout(() => {
+    if (activeSession?.id !== sessionId || renderer !== "terminal") {
+      return;
+    }
+    renderSessionPayload({
+      ...activeSession,
+      redrawActive: false,
+    });
+  }, 750);
 }
 
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
@@ -2399,7 +2540,15 @@ function renderChordShortcuts(binary: ChordBinary) {
       userDefined: false,
     })),
   ];
-  return `${buttons.join("")}<span class="chord-divider" aria-hidden="true"></span>${renderChordToggle()}`;
+  return `
+    <div class="chord-scroll" data-chord-scroll>
+      ${buttons.join("")}
+    </div>
+    <div class="chord-fixed">
+      ${renderChordToggle()}
+      ${renderFixedEnterChordButton()}
+    </div>
+  `;
 }
 
 function renderChordButton(input: { id: string; label: string; sequence: string; userDefined: boolean }) {
@@ -2411,6 +2560,8 @@ function renderChordButton(input: { id: string; label: string; sequence: string;
       class="${escapeAttr(classes)}"
       data-chord-id="${escapeAttr(input.id)}"
       data-chord-sequence="${escapeAttr(input.sequence)}"
+      data-chord-label="${escapeAttr(input.label)}"
+      data-chord-user-defined="${input.userDefined ? "true" : "false"}"
       aria-label="${escapeAttr(input.label)}"
       title="${escapeAttr(`${input.label}: ${input.sequence}`)}"
     >${escapeHtml(renderedLabel)}</button>
@@ -2419,6 +2570,22 @@ function renderChordButton(input: { id: string; label: string; sequence: string;
 
 function renderChordToggle() {
   return `<button type="button" class="secondary-button chord-toggle" data-action="toggle-chord" aria-label="Chord" title="Chord" aria-expanded="false">🎹</button>`;
+}
+
+function renderFixedEnterChordButton() {
+  return `
+    <button
+      type="button"
+      id="send"
+      class="chord-button chord-enter"
+      aria-label="Send"
+      title="Enter"
+    >${escapeHtml(formatChordButtonLabel("Enter"))}</button>
+  `;
+}
+
+function shouldAutoFocusChordInput() {
+  return !window.matchMedia("(pointer: coarse), (max-width: 640px)").matches;
 }
 
 function formatChordButtonLabel(label: string) {
@@ -2521,6 +2688,10 @@ function markStoredChordUsed(id: string) {
   writeStoredChords(chords.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt)));
 }
 
+function deleteStoredChord(id: string) {
+  writeStoredChords(readStoredChords().filter((chord) => chord.id !== id));
+}
+
 function isChordBinary(value: unknown): value is ChordBinary {
   return value === "" || value === "codex" || value === "opencode" || value === "claude";
 }
@@ -2582,6 +2753,15 @@ function parseArgs(input: string) {
     args.push(current);
   }
   return args;
+}
+
+function parseCommandLine(input: string) {
+  const parts = parseArgs(input);
+  const command = parts[0] || "";
+  return {
+    command,
+    args: parts.slice(1),
+  };
 }
 
 async function api<T>(path: string, init: RequestInit = {}) {
