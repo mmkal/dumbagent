@@ -1,5 +1,7 @@
 export {createFakeAgent, responses, parseRequest} from './api.ts'
 export {ElizaBot, elizaResponder, formatElizaResponse} from './presets/eliza.ts'
 export {formatSarcasticResponse, sarcasticResponder} from './presets/sarcastic.ts'
+export {extractToolResult, parseSimulatedToolCommand, readFileToolCall, simulateToolCall, withSimulatedToolCalls} from './tools.ts'
 export type {FakeAgent, ParsedRequest, ParsedProtocol, CreateFakeAgentOptions} from './api.ts'
 export type {AgentName, AgentConfig} from './agents.ts'
+export type {FakeAgentFetch, SimulatedToolCall, SimulatedToolCommand} from './tools.ts'

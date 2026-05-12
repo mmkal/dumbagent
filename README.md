@@ -30,6 +30,8 @@ Set `FAKEAGENT_PRESET=eliza` to use the bundled ELIZA responder instead.
 FAKEAGENT_PRESET=eliza npx fakeagent claude
 ```
 
+The default CLI also recognizes `tool:["readFile","<path>"]` and replies with the wrapped agent's read-file tool call shape.
+
 ### In tests
 
 ```ts

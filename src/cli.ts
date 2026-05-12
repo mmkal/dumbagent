@@ -2,6 +2,7 @@
 import {createFakeAgent} from './api.ts'
 import {elizaResponder} from './presets/eliza.ts'
 import {sarcasticResponder} from './presets/sarcastic.ts'
+import {withSimulatedToolCalls} from './tools.ts'
 
 const presets = {
   sarcastic: sarcasticResponder,
@@ -15,5 +16,5 @@ if (!preset) {
   process.exit(1)
 }
 
-const api = await createFakeAgent({fetch: preset})
+const api = await createFakeAgent({fetch: withSimulatedToolCalls(preset)})
 api.createCli().run()
