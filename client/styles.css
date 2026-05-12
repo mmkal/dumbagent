@@ -1141,11 +1141,43 @@ pre {
   color: #dce5ef;
 }
 
+.session-brief-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 9px 0;
+}
+
+.session-brief-tabs button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.session-brief-tabs button[aria-selected="true"] {
+  border-color: #d8f36a;
+  background: #d8f36a;
+  color: #111418;
+}
+
 .session-brief-content pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.session-brief-raw {
+  min-height: 160px;
+  height: min(320px, 36dvh);
+  padding: 9px;
+}
+
+#session-brief-editor {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #242b35;
+  border-radius: 6px;
 }
 
 .brief-grid {

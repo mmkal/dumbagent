@@ -186,6 +186,28 @@ test("readback prefers SDK assistant text and falls back to trailing terminal te
   })).toBe("line two. line three. line four. line five");
 });
 
+test("readback removes OpenCode step markers from provider text", () => {
+  expect(createReadbackText({
+    id: "session-1",
+    status: "idle",
+    updatedAt: "2026-05-11T10:00:00.000Z",
+    renderedText: "",
+    sdk: {
+      provider: "opencode",
+      summary: {
+        latestAssistantText: [
+          "[step-start]",
+          "[reasoning]",
+          "You're right.",
+          "",
+          "Hello. How may I help you today?",
+          "[step-finish]",
+        ].join("\n"),
+      },
+    },
+  })).toBe("You're right. Hello. How may I help you today?");
+});
+
 test("readback rejects provider assistant text that predates the voice prompt", () => {
   expect(createReadbackText({
     id: "session-1",

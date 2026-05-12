@@ -311,7 +311,7 @@ function createSdkReadbackText(
   if (!summary) {
     return "";
   }
-  const summaryText = summary.latestAssistantText.trim();
+  const summaryText = cleanProviderReadbackText(summary.latestAssistantText);
   if (!summaryText) {
     return "";
   }
@@ -320,7 +320,7 @@ function createSdkReadbackText(
   }
 
   const assistant = freshAssistantMessageForPrompt(summary.transcript || [], freshness);
-  return assistant ? shortenForSpeech(assistant.text) : "";
+  return assistant ? shortenForSpeech(cleanProviderReadbackText(assistant.text)) : "";
 }
 
 function freshAssistantMessageForPrompt(
@@ -372,6 +372,15 @@ function messageTimestampMakesSense(
 
 function normalizeFreshnessText(text: string) {
   return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function cleanProviderReadbackText(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => !/^\[(step-start|step-finish|reasoning)\]$/i.test(line))
+    .join("\n")
+    .trim();
 }
 
 function cleanTerminalReadbackLine(line: string) {

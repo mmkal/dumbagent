@@ -55,6 +55,7 @@ import { createSessionId } from "./src/session-id.ts";
 import { resolveNamedKeySequence } from "./src/chords.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
+import { composerSubmitChunks, usesLfCrSubmit } from "./src/terminal-input.ts";
 import {
   createTmuxBackend,
   reconnectTmuxBackend,
@@ -870,9 +871,8 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
     session.title = session.title === path.basename(session.command) ? text.trim().slice(0, 100) : session.title;
   }
 
-  if (submit && usesLfCrSubmit(session.command) && text) {
-    await writeSessionBackend(session, text);
-    await writeLfCrSubmit(session);
+  if (submit) {
+    await writeSessionSubmitChunks(session, composerSubmitChunks(session.command, text));
     publishSession(session);
     return;
   }
@@ -883,8 +883,17 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
     return;
   }
 
-  await writeSessionBackend(session, submit ? normalizeInput(text) : text);
+  await writeSessionBackend(session, text);
   publishSession(session);
+}
+
+async function writeSessionSubmitChunks(session: RuntimeSession, chunks: string[]) {
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (index > 0) {
+      await delay(80);
+    }
+    await writeSessionBackend(session, chunks[index] || "");
+  }
 }
 
 async function writeLfCrSubmit(session: RuntimeSession) {
@@ -892,11 +901,6 @@ async function writeLfCrSubmit(session: RuntimeSession) {
   await writeSessionBackend(session, "\n");
   await delay(80);
   await writeSessionBackend(session, "\r");
-}
-
-function normalizeInput(text: string) {
-  const normalized = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n$/g, "");
-  return `${normalized.replaceAll("\n", "\r")}\r`;
 }
 
 async function resizeSession(session: RuntimeSession, cols: number, rows: number) {
@@ -1265,11 +1269,6 @@ function isCodexCommand(command: string) {
 
 function isClaudeCommand(command: string) {
   return path.basename(command).toLowerCase() === "claude";
-}
-
-function usesLfCrSubmit(command: string) {
-  const name = path.basename(command).toLowerCase();
-  return name === "opencode" || name === "codex";
 }
 
 async function refreshSessionSdk(session: RuntimeSession) {

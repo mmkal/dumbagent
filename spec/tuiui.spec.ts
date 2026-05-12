@@ -60,8 +60,8 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
 
   await expect(page.getByTestId("semantic-screen")).toContainText("what is one plus two");
   await expect(page.getByTestId("semantic-screen")).toContainText("three");
-  await clickSessionMenuButton(page, "Summary");
-  await expect(page.getByTestId("sdk-summary")).toContainText(/ready|connected/i);
+  await clickSessionMenuButton(page, "Debug");
+  await expect(page.getByTestId("sdk-debug")).toContainText(/ready|connected/i);
   await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
   await page.locator(".tuishot-preview > summary").click();
   await expect(page.getByTestId("tuishot-preview").locator("img")).toBeVisible();
@@ -84,8 +84,11 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
   ]);
   expect(tuishotPage.url()).toContain("/tuishot.svg");
   await tuishotPage.close();
-  await clickSessionMenuButton(page, "TTY");
+  const sessionId = (await fetchSessionPayload(page)).id;
+  await page.goto(`${ctx.baseUrl}/sessions/${sessionId}`);
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  await openSessionMenu(page);
+  await expect(page.getByRole("button", { name: "TTY" })).toHaveAttribute("aria-pressed", "true");
   const shot = await fetchTuishot(page);
   expect(shot.contentType).toContain("image/svg+xml");
   expect(shot.disposition).toContain("inline");
@@ -533,7 +536,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
 
   await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "TTY" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Summary" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Debug" })).toBeVisible();
   await expect(page.getByRole("button", { name: "HTML" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Pause events" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Logs" })).toBeVisible();
@@ -592,9 +595,8 @@ test("does not let package-manager bin shims shadow fakeagent-backed Codex", asy
 
 test("can drive OpenCode through fakeagent when OpenCode is installed", async ({ page, ctx }) => {
   await launchFakeOpenCodeWithQuestion(page, ctx);
-  await clickSessionMenuButton(page, "Summary");
-  await page.getByRole("button", { name: "Refresh snapshot" }).click();
-  await expect(page.getByTestId("sdk-summary")).toContainText("connected");
+  await clickSessionMenuButton(page, "Debug");
+  await expect(page.getByTestId("sdk-debug")).toContainText("connected");
   await expect(page.getByTestId("session-brief")).toContainText("No session brief yet.");
   await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
   await expect(page.getByTestId("session-brief")).not.toHaveAttribute("open", "");
@@ -607,6 +609,8 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
   await expect(page.getByTestId("session-brief")).toContainText("current");
   await expect(page.getByTestId("session-brief")).toContainText("Executive summary");
   await expect(page.getByTestId("session-brief")).toContainText("Suggested next actions");
+  await page.getByRole("tab", { name: "Raw" }).click();
+  await expect(page.getByRole("textbox", { name: "Session brief raw text" })).toContainText("<session_brief");
   const payload = await fetchSessionPayload(page);
   expect(payload.sdk.sidecarSummary).toMatchObject({
     method: "opencode.session.fork+prompt",
@@ -633,7 +637,7 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
 
 test("keeps provider diagnostics YAML readable and stable", async ({ page, ctx }) => {
   await launchFakeOpenCodeWithQuestion(page, ctx);
-  await clickSessionMenuButton(page, "Summary");
+  await clickSessionMenuButton(page, "Debug");
   await page.getByRole("button", { name: "Refresh snapshot" }).click();
   await openSdkDiagnostics(page);
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestUserText: what is one plus two");
@@ -693,10 +697,9 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
     updatedOffsetMs: 2_000,
   });
 
-  await clickSessionMenuButton(page, "Summary");
-  await page.getByRole("button", { name: "Refresh snapshot" }).click();
+  await clickSessionMenuButton(page, "Debug");
 
-  await expect(page.getByTestId("sdk-summary")).toContainText("connected");
+  await expect(page.getByTestId("sdk-debug")).toContainText("connected");
   await openSdkDiagnostics(page);
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("provider: codex");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home/state_5.sqlite");
@@ -726,7 +729,7 @@ test("shows a toast instead of an unhandled rejection when session brief fetch f
   await page.goto(ctx.baseUrl);
   await page.getByRole("button", { name: "Fake Codex" }).click();
   await expectReadyFakeCodex(page);
-  await clickSessionMenuButton(page, "Summary");
+  await clickSessionMenuButton(page, "Debug");
   await page.evaluate(() => {
     const realFetch = window.fetch.bind(window);
     (window as any).fetch = (input: any, init: any) => {

@@ -229,10 +229,12 @@ type StoredChord = {
 const app = document.getElementById("app")!;
 let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
-let renderer = readRendererPreference();
+let renderer: "terminal" | "sdk" | "semantic" = "terminal";
 let dataEditorView: EditorView | null = null;
 let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
 let dataEditorDoc = "";
+let briefEditorView: EditorView | null = null;
+let briefEditorDoc = "";
 let eventsPaused = false;
 let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
@@ -343,11 +345,6 @@ function renderMissingSession(message: string) {
       </section>
     </main>
   `;
-}
-
-function readRendererPreference() {
-  const saved = localStorage.getItem("tuiui-renderer") || "";
-  return ["terminal", "sdk", "semantic"].includes(saved) ? saved : "terminal";
 }
 
 async function renderHome() {
@@ -526,6 +523,9 @@ async function renderHome() {
 }
 
 async function renderSession(sessionId: string) {
+  if (activeSession?.id !== sessionId) {
+    renderer = "terminal";
+  }
   const payload = await api<SessionPayload>(`/api/sessions/${sessionId}`);
   activeSession = payload;
   const binary = detectChordBinary(payload.command, payload.args, payload.sdk.provider);
@@ -545,7 +545,7 @@ async function renderSession(sessionId: string) {
             </div>
             <div class="toolbar" role="group" aria-label="Renderer">
               <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
-              <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Summary</button>
+              <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Debug</button>
               <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
               <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
               <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
@@ -681,9 +681,14 @@ function bindSessionControls(sessionId: string) {
 
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.addEventListener("click", () => {
-      renderer = button.dataset.renderer || "semantic";
-      localStorage.setItem("tuiui-renderer", renderer);
+      const nextRenderer = button.dataset.renderer;
+      renderer = nextRenderer === "sdk" || nextRenderer === "semantic" ? nextRenderer : "terminal";
       renderSessionPayload(activeSession);
+      if (renderer === "sdk") {
+        void refreshSdk(sessionId).catch((error) => {
+          showRequestErrorToast("Refresh snapshot failed", error, "sdk-refresh-error-toast");
+        });
+      }
       closeSessionMenu();
     });
   });
@@ -1542,7 +1547,7 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   if (!sdk.provider) {
     destroyDataEditor();
     screen.innerHTML = `
-      <section class="sdk-panel unavailable" data-testid="sdk-summary">
+      <section class="sdk-panel unavailable" data-testid="sdk-debug">
         <header>
           <strong>No SDK adapter</strong>
           <span>This session is only available through the terminal stream.</span>
@@ -1559,7 +1564,7 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   if (!existingEditorHost || dataEditorKind !== "sdk-yaml") {
     destroyDataEditor();
     screen.innerHTML = `
-      <section class="sdk-panel" data-testid="sdk-summary">
+      <section class="sdk-panel" data-testid="sdk-debug">
         <header>
           <div>
             <strong><span data-sdk-provider></span> SDK</strong>
@@ -1578,7 +1583,14 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
               <span data-session-brief-state></span>
             </span>
           </summary>
-          <div class="session-brief-content" data-session-brief-content></div>
+          <div class="session-brief-tabs" role="tablist" aria-label="Session brief view">
+            <button type="button" role="tab" class="secondary-button" data-brief-view="rendered" aria-selected="true">Rendered</button>
+            <button type="button" role="tab" class="secondary-button" data-brief-view="raw" aria-selected="false">Raw</button>
+          </div>
+          <div class="session-brief-content" data-session-brief-rendered></div>
+          <div class="session-brief-raw" data-session-brief-raw hidden>
+            <div id="session-brief-editor" data-testid="session-brief-raw"></div>
+          </div>
         </details>
         <details class="sdk-diagnostics">
           <summary>
@@ -1608,8 +1620,12 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         if (details.classList.contains("sdk-diagnostics")) {
           requestAnimationFrame(() => dataEditorView?.requestMeasure());
         }
+        if (details.classList.contains("session-brief")) {
+          requestAnimationFrame(() => briefEditorView?.requestMeasure());
+        }
       });
     });
+    bindSessionBriefTabs(screen);
     mountYamlEditor("sdk-yaml-editor", yamlDoc);
   } else {
     updateDataEditorDoc(yamlDoc);
@@ -1685,14 +1701,39 @@ function updateSessionBrief(screen: HTMLElement, payload: SessionPayload) {
   const brief = selectSessionBrief(payload.sdk);
   const container = screen.querySelector<HTMLElement>("[data-testid='session-brief']");
   const state = screen.querySelector<HTMLElement>("[data-session-brief-state]");
-  const content = screen.querySelector<HTMLElement>("[data-session-brief-content]");
-  if (!container || !state || !content) {
+  const rendered = screen.querySelector<HTMLElement>("[data-session-brief-rendered]");
+  if (!container || !state || !rendered) {
     return;
   }
 
   container.dataset.briefState = brief.state;
   state.textContent = brief.label;
-  content.innerHTML = renderSessionBriefContent(brief);
+  rendered.innerHTML = renderSessionBriefContent(brief);
+  updateSessionBriefEditor(brief.text);
+}
+
+function bindSessionBriefTabs(screen: HTMLElement) {
+  screen.querySelectorAll<HTMLButtonElement>("[data-brief-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSessionBriefView(screen, button.dataset.briefView === "raw" ? "raw" : "rendered");
+    });
+  });
+}
+
+function setSessionBriefView(screen: HTMLElement, view: "rendered" | "raw") {
+  const rendered = screen.querySelector<HTMLElement>("[data-session-brief-rendered]");
+  const raw = screen.querySelector<HTMLElement>("[data-session-brief-raw]");
+  if (!rendered || !raw) {
+    return;
+  }
+  rendered.hidden = view !== "rendered";
+  raw.hidden = view !== "raw";
+  screen.querySelectorAll<HTMLButtonElement>("[data-brief-view]").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.briefView === view));
+  });
+  if (view === "raw") {
+    requestAnimationFrame(() => briefEditorView?.requestMeasure());
+  }
 }
 
 function buildSdkYamlData(payload: SessionPayload) {
@@ -1838,6 +1879,46 @@ function renderBriefFilesSection(files: StructuredSessionBrief["filesChanged"]) 
       `).join("")}</ul>` : "<p>None.</p>"}
     </section>
   `;
+}
+
+function updateSessionBriefEditor(doc: string) {
+  const host = document.getElementById("session-brief-editor");
+  if (!host) {
+    return;
+  }
+  if (!briefEditorView) {
+    briefEditorView = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          basicSetup,
+          vsCodeDark,
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+          EditorView.contentAttributes.of({ "aria-label": "Session brief raw text" }),
+          editorTheme(),
+        ],
+      }),
+    });
+    briefEditorDoc = doc;
+    return;
+  }
+  if (briefEditorDoc === doc) {
+    return;
+  }
+  const scrollTop = briefEditorView.scrollDOM.scrollTop;
+  const scrollLeft = briefEditorView.scrollDOM.scrollLeft;
+  briefEditorView.dispatch({
+    changes: {
+      from: 0,
+      to: briefEditorView.state.doc.length,
+      insert: doc,
+    },
+  });
+  briefEditorView.scrollDOM.scrollTop = scrollTop;
+  briefEditorView.scrollDOM.scrollLeft = scrollLeft;
+  briefEditorDoc = doc;
 }
 
 function mountYamlEditor(hostId: string, doc: string) {
@@ -2022,6 +2103,9 @@ function destroyDataEditor() {
   dataEditorView = null;
   dataEditorKind = "";
   dataEditorDoc = "";
+  briefEditorView?.destroy();
+  briefEditorView = null;
+  briefEditorDoc = "";
 }
 
 function renderSemanticScreen(screen: SemanticScreen) {
