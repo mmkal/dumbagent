@@ -117,12 +117,24 @@ test("uploads composer attachments to a session temp directory and inserts the s
 
   const textarea = page.getByRole("textbox", { name: "Send stdin" });
   const rowsBeforeAttachment = (await fetchSessionPayload(page)).rows;
-  await expect(textarea).toHaveValue(/\/tmp\/tuiui\/tuiui_[a-f0-9]+\/tiny\.png/);
+  await expect(textarea).toHaveValue(/\/tuiui-attachments-[^/]+\/tuiui_[a-f0-9]+\/tiny\.png/);
   const firstSavedPath = (await textarea.inputValue()).trim();
   expect(fs.existsSync(firstSavedPath)).toBe(true);
   expect(fs.readFileSync(firstSavedPath).equals(imageBytes)).toBe(true);
-  await expect(page.getByTestId("attachment-preview").locator("img")).toBeVisible();
+  const attachmentPreview = page.getByTestId("attachment-preview");
+  await expect(attachmentPreview.locator("img")).toBeVisible();
   await expect.poll(async () => (await fetchSessionPayload(page)).rows).toBe(rowsBeforeAttachment);
+  await attachmentPreview.getByRole("button", { name: "Preview tiny.png" }).click();
+  await expect(page.getByTestId("attachment-dialog")).toBeVisible();
+  await expect(page.getByTestId("attachment-dialog")).toContainText(firstSavedPath);
+  await page.getByRole("button", { name: "Insert path" }).click();
+  await expect(textarea).toHaveValue(firstSavedPath);
+
+  await textarea.fill("");
+  await expect(attachmentPreview.locator("img")).toBeVisible();
+  await attachmentPreview.getByRole("button", { name: /Remove tiny\.png/ }).click();
+  await expect(textarea).toHaveValue("");
+  await expect(attachmentPreview).toBeHidden();
 
   await page.locator(".composer").evaluate((composer, base64) => {
     const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -136,16 +148,16 @@ test("uploads composer attachments to a session temp directory and inserts the s
     composer.dispatchEvent(event);
   }, tinyPngBase64);
 
-  await expect(textarea).toHaveValue(/tiny\.png\s+\/tmp\/tuiui\/tuiui_[a-f0-9]+\/dropped\.png/);
+  await expect(textarea).toHaveValue(/\/tuiui-attachments-[^/]+\/tuiui_[a-f0-9]+\/dropped\.png/);
   const paths = (await textarea.inputValue()).trim().split(/\s+/);
-  expect(paths).toHaveLength(2);
-  expect(fs.existsSync(paths[1]!)).toBe(true);
-  await expect(page.getByTestId("attachment-preview").locator("img")).toHaveCount(2);
+  expect(paths).toHaveLength(1);
+  expect(fs.existsSync(paths[0]!)).toBe(true);
+  await expect(attachmentPreview.locator("img")).toHaveCount(1);
 
   const sentText = await textarea.inputValue();
   await page.getByRole("button", { name: "Send" }).click();
   await expect(textarea).toHaveValue("");
-  await expect(page.getByTestId("attachment-preview")).toBeHidden();
+  await expect(attachmentPreview).toBeHidden();
   await expect.poll(async () => {
     return (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text;
   }).toBe(sentText);
@@ -707,6 +719,8 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestUserText: what is one plus two");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestAssistantText: three");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).not.toContainText("this is the wrong supervising session");
+  await expect(page.getByTestId("session-command")).toContainText("what is one plus two");
+  await expect(page).toHaveTitle(/what is one plus two/);
   await expect.poll(async () => {
     return await page.locator("#sdk-yaml-editor .cm-editor").evaluate((editor) => getComputedStyle(editor).fontSize);
   }).toBe("10px");

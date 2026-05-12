@@ -45,6 +45,8 @@ import {
   openCodeDatabasePathForEnv,
   pickOpenCodeModel,
   readRecentOpenCodeSessionsFromDatabasePath,
+  recentSessionPreviewFromMessages,
+  recentSessionPreviewText,
   resolveOpenCodeSession,
   type AgentProvider,
   type AgentSessionSummary,
@@ -192,7 +194,7 @@ const defaultRows = 42;
 const idleThresholdMs = 1_000;
 const redrawQuietMs = 600;
 const redrawMaxMs = 10_000;
-const attachmentRoot = path.join("/tmp", "tuiui");
+const attachmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-attachments-"));
 const terminalScrollbackSnapshotRows = 500;
 
 const cli = parseCliArgs(process.argv.slice(2));
@@ -976,7 +978,7 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     : null;
   return {
     id: session.id,
-    title: suppressRedrawOutput ? session.title : session.semantic.title || session.title,
+    title: sessionDisplayTitle(session),
     command: session.command,
     args: session.args,
     cwd: session.cwd,
@@ -1002,10 +1004,58 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
   };
 }
 
+function sessionDisplayTitle(session: RuntimeSession) {
+  const snapshotTitle = snapshotTitleForSession(session.sdk.summary);
+  if (snapshotTitle) {
+    return snapshotTitle;
+  }
+  return recentSessionPreviewText(session.title || "") || path.basename(session.command);
+}
+
+function snapshotTitleForSession(summary: AgentSessionSummary | null) {
+  if (!summary) {
+    return "";
+  }
+  const preview = recentSessionPreviewFromMessages(summary.transcript);
+  const initialUserText = preview.initialUserText;
+  const latestUserText = preview.latestUserText || recentSessionPreviewText(summary.latestUserText);
+  const title = recentSessionPreviewText(summary.title);
+  if (title && !isGenericSnapshotTitle(title) && !isInternalSnapshotTitle(title)) {
+    return textIsBasicallySame(title, initialUserText) ? initialUserText : title;
+  }
+  return initialUserText || latestUserText;
+}
+
+function isGenericSnapshotTitle(title: string) {
+  return /^(opencode session|codex thread|claude session)$/i.test(title.trim());
+}
+
+function isInternalSnapshotTitle(title: string) {
+  return title.startsWith("# AGENTS.md instructions") || title.startsWith("<environment_context>");
+}
+
+function textIsBasicallySame(left: string, right: string) {
+  const leftText = normalizeComparableText(left);
+  const rightText = normalizeComparableText(right);
+  if (!leftText || !rightText) {
+    return false;
+  }
+  if (leftText === rightText) {
+    return true;
+  }
+  const shorter = leftText.length < rightText.length ? leftText : rightText;
+  const longer = leftText.length < rightText.length ? rightText : leftText;
+  return shorter.length >= 24 && longer.startsWith(shorter);
+}
+
+function normalizeComparableText(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
 function toSessionListItem(session: RuntimeSession) {
   return {
     id: session.id,
-    title: session.semantic.title || session.title,
+    title: sessionDisplayTitle(session),
     command: session.command,
     args: session.args,
     cwd: session.cwd,
@@ -1017,7 +1067,7 @@ function toSessionListItem(session: RuntimeSession) {
 
 function createTuishotResponse(session: RuntimeSession) {
   const svg = renderTerminalShotSvg(session.terminal, {
-    title: `${session.title || session.command} tuishot`,
+    title: `${sessionDisplayTitle(session) || session.command} tuishot`,
     fontSize: 12,
     cellWidth: 7.25,
     lineHeight: 14.2,
@@ -2201,7 +2251,7 @@ function inferSessionTitle(session: RuntimeSession, chunk: string) {
   if (oscTitle) {
     return oscTitle;
   }
-  return session.semantic.title || session.title;
+  return session.title;
 }
 
 function parseOscTitle(chunk: string) {

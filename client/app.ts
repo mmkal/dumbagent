@@ -13,7 +13,7 @@ import {
   type ChordBinary,
 } from "../src/chords.ts";
 import { stringify as stringifyYaml } from "yaml";
-import { attachmentUploadName, type AttachmentSource } from "./attachments.ts";
+import { attachmentUploadName, dedupeClipboardImageFiles, type AttachmentSource } from "./attachments.ts";
 import { showToast } from "./toast.ts";
 import {
   createBrowserVoiceRecognizer,
@@ -573,6 +573,21 @@ async function renderSession(sessionId: string) {
       </section>
       <section class="composer" aria-label="Session input">
         <div id="attachment-preview" class="attachment-preview" data-testid="attachment-preview" aria-live="polite" hidden></div>
+        <dialog id="attachment-dialog" class="attachment-dialog" data-testid="attachment-dialog">
+          <form method="dialog">
+            <button type="submit" class="icon-button attachment-dialog-close" aria-label="Close attachment preview">×</button>
+            <div class="attachment-dialog-media">
+              <img data-attachment-dialog-image alt="" />
+              <span data-attachment-dialog-file hidden>file</span>
+            </div>
+            <strong data-attachment-dialog-name></strong>
+            <code data-attachment-dialog-path></code>
+            <div class="attachment-dialog-actions">
+              <button type="button" class="secondary-button" data-action="insert-attachment-path">Insert path</button>
+              <button type="submit" class="secondary-button">Close</button>
+            </div>
+          </form>
+        </dialog>
         <div class="composer-input-row">
           <textarea id="stdin" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
           <input id="attachment-file" class="attachment-file-input" type="file" multiple />
@@ -616,6 +631,21 @@ async function renderSession(sessionId: string) {
   bindSessionControls(sessionId);
   renderSessionPayload(payload);
   subscribe(sessionId);
+  refreshSdkForSessionTitle(sessionId, payload);
+}
+
+function refreshSdkForSessionTitle(sessionId: string, payload: SessionPayload) {
+  if (!payload.sdk.provider) {
+    return;
+  }
+  void refreshSdkPayload(sessionId)
+    .then((nextPayload) => {
+      if (activeSession?.id === sessionId) {
+        renderSessionPayload(nextPayload);
+      }
+    })
+    .catch(() => {
+    });
 }
 
 function bindSessionControls(sessionId: string) {
@@ -721,12 +751,14 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
   const input = document.getElementById("attachment-file") as HTMLInputElement | null;
   const button = document.getElementById("attach") as HTMLButtonElement | null;
   const preview = document.getElementById("attachment-preview") as HTMLElement | null;
+  const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
   const composer = document.querySelector<HTMLElement>(".composer");
-  if (!input || !button || !preview || !composer) {
+  if (!input || !button || !preview || !dialog || !composer) {
     return;
   }
 
   clearComposerAttachments(preview);
+  bindAttachmentDialog(dialog, textarea);
 
   button.addEventListener("click", () => {
     input.click();
@@ -745,6 +777,22 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
     }
     event.preventDefault();
     void uploadComposerAttachments(sessionId, textarea, preview, button, files, "paste");
+  });
+
+  preview.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const remove = target.closest<HTMLElement>("[data-attachment-remove]");
+    if (remove) {
+      removeComposerAttachment(remove.dataset.attachmentRemove || "", textarea, preview);
+      return;
+    }
+    const open = target.closest<HTMLElement>("[data-attachment-open]");
+    if (open) {
+      openAttachmentDialog(open.dataset.attachmentOpen || "", dialog);
+    }
   });
 
   composer.addEventListener("dragover", (event) => {
@@ -829,20 +877,92 @@ function renderAttachmentPreview(preview: HTMLElement, attachments: ComposerAtta
     const label = attachment.originalName || attachment.name;
     if (attachment.previewUrl) {
       return `
-        <figure class="attachment-preview-item">
-          <img src="${escapeAttr(attachment.previewUrl)}" alt="${escapeAttr(label)}">
-          <figcaption title="${escapeAttr(attachment.path)}">${escapeHtml(label)}</figcaption>
+        <figure class="attachment-preview-item" data-attachment-id="${escapeAttr(attachment.id)}">
+          <button type="button" class="attachment-preview-open" data-attachment-open="${escapeAttr(attachment.id)}" aria-label="Preview ${escapeAttr(label)}">
+            <img src="${escapeAttr(attachment.previewUrl)}" alt="${escapeAttr(label)}">
+            <figcaption title="${escapeAttr(attachment.path)}">${escapeHtml(label)}</figcaption>
+          </button>
+          <button type="button" class="attachment-preview-remove" data-attachment-remove="${escapeAttr(attachment.id)}" aria-label="Remove ${escapeAttr(label)}">
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
         </figure>
       `;
     }
 
     return `
-      <div class="attachment-preview-item file-preview" title="${escapeAttr(attachment.path)}">
-        <span aria-hidden="true">file</span>
-        <strong>${escapeHtml(label)}</strong>
+      <div class="attachment-preview-item file-preview" title="${escapeAttr(attachment.path)}" data-attachment-id="${escapeAttr(attachment.id)}">
+        <button type="button" class="attachment-preview-open" data-attachment-open="${escapeAttr(attachment.id)}" aria-label="Preview ${escapeAttr(label)}">
+          <span aria-hidden="true">file</span>
+          <strong>${escapeHtml(label)}</strong>
+        </button>
+        <button type="button" class="attachment-preview-remove" data-attachment-remove="${escapeAttr(attachment.id)}" aria-label="Remove ${escapeAttr(label)}">
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <path d="M10 11v6" />
+            <path d="M14 11v6" />
+          </svg>
+        </button>
       </div>
     `;
   }).join("");
+}
+
+function bindAttachmentDialog(dialog: HTMLDialogElement, textarea: HTMLTextAreaElement) {
+  dialog.querySelector<HTMLButtonElement>("[data-action='insert-attachment-path']")?.addEventListener("click", () => {
+    const attachment = composerAttachments.find((candidate) => candidate.id === dialog.dataset.attachmentId);
+    if (!attachment) {
+      return;
+    }
+    insertAttachmentPath(textarea, attachment.path);
+    dialog.close();
+  });
+}
+
+function openAttachmentDialog(attachmentId: string, dialog: HTMLDialogElement) {
+  const attachment = composerAttachments.find((candidate) => candidate.id === attachmentId);
+  if (!attachment) {
+    return;
+  }
+  const label = attachment.originalName || attachment.name;
+  const image = dialog.querySelector<HTMLImageElement>("[data-attachment-dialog-image]");
+  const file = dialog.querySelector<HTMLElement>("[data-attachment-dialog-file]");
+  const name = dialog.querySelector<HTMLElement>("[data-attachment-dialog-name]");
+  const filePath = dialog.querySelector<HTMLElement>("[data-attachment-dialog-path]");
+  if (!image || !file || !name || !filePath) {
+    return;
+  }
+  dialog.dataset.attachmentId = attachment.id;
+  image.hidden = !attachment.previewUrl;
+  image.src = attachment.previewUrl || "";
+  image.alt = attachment.previewUrl ? label : "";
+  file.hidden = Boolean(attachment.previewUrl);
+  name.textContent = label;
+  filePath.textContent = attachment.path;
+  if (dialog.open) {
+    return;
+  }
+  dialog.showModal();
+}
+
+function removeComposerAttachment(id: string, textarea: HTMLTextAreaElement, preview: HTMLElement) {
+  const attachment = composerAttachments.find((candidate) => candidate.id === id);
+  if (!attachment) {
+    return;
+  }
+  if (attachment.previewUrl) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
+  composerAttachments = composerAttachments.filter((candidate) => candidate.id !== id);
+  textarea.value = removeAttachmentPathFromText(textarea.value, attachment.path);
+  renderAttachmentPreview(preview, composerAttachments);
 }
 
 function clearComposerAttachments(preview = document.getElementById("attachment-preview") as HTMLElement | null) {
@@ -856,9 +976,20 @@ function clearComposerAttachments(preview = document.getElementById("attachment-
     preview.hidden = true;
     preview.innerHTML = "";
   }
+  const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
+  if (dialog?.open) {
+    dialog.close();
+  }
+  if (dialog) {
+    delete dialog.dataset.attachmentId;
+  }
 }
 
 function insertAttachmentPath(textarea: HTMLTextAreaElement, filePath: string) {
+  if (textarea.value.includes(filePath)) {
+    textarea.focus();
+    return;
+  }
   const start = textarea.selectionStart;
   const end = textarea.selectionEnd;
   const before = textarea.value.slice(0, start);
@@ -873,6 +1004,13 @@ function insertAttachmentPath(textarea: HTMLTextAreaElement, filePath: string) {
   textarea.focus();
 }
 
+function removeAttachmentPathFromText(text: string, filePath: string) {
+  return text
+    .replaceAll(filePath, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^[ \t]+|[ \t]+$/g, "");
+}
+
 function imageFilesFromClipboard(data: DataTransfer | null) {
   if (!data) {
     return [];
@@ -884,19 +1022,7 @@ function imageFilesFromClipboard(data: DataTransfer | null) {
     .filter((file): file is File => Boolean(file))
     .filter((file) => file.type.startsWith("image/"));
 
-  return uniqueFiles([...files, ...itemFiles]);
-}
-
-function uniqueFiles(files: File[]) {
-  const seen = new Set<string>();
-  return files.filter((file) => {
-    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
+  return dedupeClipboardImageFiles([...files, ...itemFiles]);
 }
 
 function dragEventHasFiles(event: DragEvent) {

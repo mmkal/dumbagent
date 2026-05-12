@@ -21,3 +21,15 @@ export function attachmentUploadName(file: File, source: AttachmentSource, now =
   }
   return "attachment";
 }
+
+export function dedupeClipboardImageFiles(files: File[]) {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = `${file.type}:${file.size}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
