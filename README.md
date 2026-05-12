@@ -24,6 +24,12 @@ npx fakeagent claude
 
 By default the wrapped agent talks to a local fake API that returns the bundled sarcastic responder preset.
 
+Set `FAKEAGENT_PRESET=eliza` to use the bundled ELIZA responder instead.
+
+```sh
+FAKEAGENT_PRESET=eliza npx fakeagent claude
+```
+
 ### In tests
 
 ```ts

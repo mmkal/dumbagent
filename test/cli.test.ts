@@ -55,6 +55,22 @@ test('node src/cli.ts claude serves the sarcastic preset', async () => {
   expect(stdout).toContain('do you hear yourself')
 })
 
+test('FAKEAGENT_PRESET=eliza selects the ELIZA preset', async () => {
+  await using shims = await fakeAgentCommandShims()
+
+  const child = spawn(process.execPath, ['src/cli.ts', 'claude', '-p', 'I need help'], {
+    cwd: repoRoot,
+    env: {...process.env, FAKEAGENT_PRESET: 'eliza', PATH: `${shims.dir}:${process.env.PATH}`},
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
+
+  expect({exitCode, stderr}).toMatchObject({exitCode: 0})
+  expect(stdout).toContain('Why do you need help?')
+  expect(stdout).not.toContain('do you hear yourself')
+})
+
 async function fakeAgentCommandShims() {
   const dir = await mkdtemp(join(tmpdir(), 'fakeagent-cli-shims-'))
   const shimPath = join(dir, 'agent-shim.mjs')
