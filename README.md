@@ -14,6 +14,16 @@ npm install fakeagent
 
 ## Usage
 
+### Directly
+
+```sh
+npx fakeagent codex
+npx fakeagent opencode
+npx fakeagent claude
+```
+
+By default the wrapped agent talks to a local fake API that returns the bundled sarcastic responder preset.
+
 ### In tests
 
 ```ts

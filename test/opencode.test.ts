@@ -3,20 +3,22 @@ import {createFakeAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('opencode run gets fake response', async () => {
+  let capturedLastMessage = ''
   await using api = await createFakeAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
+      capturedLastMessage = parsed.lastMessage
       return parsed.respond.text('three')
     },
   })
 
-  const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'json', '--pure'], {
+  const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'default', '--pure'], {
     cwd: '/tmp/fakeagent-test',
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
   expect(exitCode, `stderr: ${stderr.slice(-500)}`).toBe(0)
-  expect(stdout).toContain('"text":"three"')
+  expect(capturedLastMessage).toContain('what is one plus two')
 }, 10_000)
 
 test('opencode TUI text response', async () => {

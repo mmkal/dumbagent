@@ -10,7 +10,7 @@ test('codex exec gets fake response', async () => {
     },
   })
 
-  const child = api.spawn('codex', ['exec', '--json', 'what is one plus two'], {
+  const child = api.spawn('codex', ['exec', '--skip-git-repo-check', '--json', 'what is one plus two'], {
     cwd: '/tmp/fakeagent-test',
   })
 

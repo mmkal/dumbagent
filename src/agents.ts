@@ -63,6 +63,7 @@ export const agents = {
   codex: {
     command: 'codex',
     args: [],
+    spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
     getEnv(port) {
       const dir = '/tmp/fakeagent-codex-home'
       mkdirSync(dir, {recursive: true})

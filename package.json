@@ -9,6 +9,9 @@
       "default": "./src/index.ts"
     }
   },
+  "bin": {
+    "fakeagent": "./dist/cli.js"
+  },
   "publishConfig": {
     "exports": {
       ".": {
