@@ -1629,7 +1629,9 @@ function renderTuishotPreviewMarkup() {
         </span>
       </summary>
       <div class="tuishot-frame">
-        <img data-tuishot-image alt="Current terminal view" />
+        <a data-tuishot-link target="_blank" rel="noopener noreferrer" aria-label="Open Tuishot in a new tab">
+          <img data-tuishot-image alt="Current terminal view" />
+        </a>
       </div>
     </details>
   `;
@@ -1662,12 +1664,16 @@ function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
 }
 
 function updateTuishotPreview(screen: HTMLElement, payload: SessionPayload) {
+  const link = screen.querySelector<HTMLAnchorElement>("[data-tuishot-link]");
   const image = screen.querySelector<HTMLImageElement>("[data-tuishot-image]");
   const meta = screen.querySelector<HTMLElement>("[data-tuishot-meta]");
-  if (!image || !meta) {
+  if (!link || !image || !meta) {
     return;
   }
   const src = `/api/sessions/${payload.id}/tuishot.svg?updated=${encodeURIComponent(payload.updatedAt)}`;
+  if (link.getAttribute("href") !== src) {
+    link.href = src;
+  }
   if (image.getAttribute("src") !== src) {
     image.src = src;
   }

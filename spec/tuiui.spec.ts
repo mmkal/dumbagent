@@ -70,6 +70,20 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
       return image.complete && image.naturalWidth > 0;
     });
   }).toBe(true);
+  await expect.poll(async () => {
+    return await page.locator(".tuishot-frame").evaluate((frame: HTMLElement) => ({
+      fitsWidth: frame.scrollWidth <= frame.clientWidth + 1,
+      fitsHeight: frame.scrollHeight <= frame.clientHeight + 1,
+    }));
+  }).toMatchObject({ fitsWidth: true, fitsHeight: true });
+  const tuishotLink = page.getByTestId("tuishot-preview").locator("[data-tuishot-link]");
+  await expect(tuishotLink).toHaveAttribute("target", "_blank");
+  const [tuishotPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    tuishotLink.click(),
+  ]);
+  expect(tuishotPage.url()).toContain("/tuishot.svg");
+  await tuishotPage.close();
   await clickSessionMenuButton(page, "TTY");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const shot = await fetchTuishot(page);
