@@ -224,6 +224,48 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
 });
 
 test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
+  const sdkRefreshRequests: string[] = [];
+  let staleSnapshotInjected = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/sdk-refresh")) {
+      sdkRefreshRequests.push(request.url());
+    }
+  });
+  await page.route("**/api/sessions/*/sdk-refresh", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (!staleSnapshotInjected && body.sdk?.summary?.latestAssistantText) {
+      staleSnapshotInjected = true;
+      body.sdk.summary = {
+        ...body.sdk.summary,
+        latestUserText: "previous question",
+        latestAssistantText: "penultimate answer",
+        transcript: [
+          {
+            id: "stale-user",
+            role: "user",
+            createdAt: "2026-05-11T09:59:00.000Z",
+            text: "previous question",
+          },
+          {
+            id: "stale-assistant",
+            role: "assistant",
+            createdAt: "2026-05-11T09:59:01.000Z",
+            text: "penultimate answer",
+          },
+        ],
+      };
+    }
+    await route.fulfill({
+      status: response.status(),
+      headers: {
+        ...response.headers(),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  });
+
   await page.addInitScript(() => {
     const spoken: string[] = [];
     let handlers: any = null;
@@ -269,6 +311,11 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
   }).toEqual(expect.arrayContaining([expect.stringContaining("three")]));
+  expect(staleSnapshotInjected).toBe(true);
+  expect(sdkRefreshRequests.length).toBeGreaterThan(1);
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__voiceSpoken);
+  }).not.toEqual(expect.arrayContaining([expect.stringContaining("penultimate answer")]));
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken[0]);
   }).toContain("Sent: what is one plus two");

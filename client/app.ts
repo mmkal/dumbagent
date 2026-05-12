@@ -1080,7 +1080,10 @@ function updatePauseEventsButton() {
   button.textContent = eventsPaused ? "Resume events" : "Pause events";
 }
 
-function renderSessionPayload(payload: SessionPayload | null) {
+function renderSessionPayload(
+  payload: SessionPayload | null,
+  options: { voiceReadbackSnapshotFresh?: boolean } = {},
+) {
   if (!payload) {
     return;
   }
@@ -1129,8 +1132,23 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (stdoutLog) {
     stdoutLog.textContent = payload.stdoutEvents.map((event) => event.displayText ? `[${formatTime(event.createdAt)}] ${event.displayText}` : "").filter(Boolean).join("\n\n");
   }
-  voiceLoop?.observePayload(payload);
+  if (!shouldDeferVoiceReadbackForProviderRefresh(payload, options)) {
+    voiceLoop?.observePayload(payload);
+  }
   scheduleVoiceReadbackCheck(payload);
+}
+
+function shouldDeferVoiceReadbackForProviderRefresh(
+  payload: SessionPayload,
+  options: { voiceReadbackSnapshotFresh?: boolean },
+) {
+  return Boolean(
+    voiceLoop?.state.awaitingReadback
+      && payload.lifecycle === "running"
+      && payload.status === "idle"
+      && payload.sdk.provider
+      && !options.voiceReadbackSnapshotFresh,
+  );
 }
 
 function scheduleVoiceReadbackCheck(payload: SessionPayload) {
@@ -1143,10 +1161,20 @@ function scheduleVoiceReadbackCheck(payload: SessionPayload) {
   }
   voiceReadbackTimer = window.setTimeout(() => {
     voiceReadbackTimer = null;
-    void api<SessionPayload>(`/api/sessions/${payload.id}`)
-      .then(renderSessionPayload)
+    void refreshVoiceReadbackPayload(payload)
       .catch(() => undefined);
   }, payload.status === "idle" ? 350 : 1_100);
+}
+
+async function refreshVoiceReadbackPayload(payload: SessionPayload) {
+  if (payload.status === "idle" && payload.sdk.provider) {
+    const nextPayload = await refreshSdkPayload(payload.id);
+    renderSessionPayload(nextPayload, { voiceReadbackSnapshotFresh: true });
+    return;
+  }
+
+  const nextPayload = await api<SessionPayload>(`/api/sessions/${payload.id}`);
+  renderSessionPayload(nextPayload);
 }
 
 function clearVoiceReadbackTimer() {
@@ -1840,8 +1868,12 @@ function updateDataEditorDoc(doc: string) {
 }
 
 async function refreshSdk(sessionId: string) {
-  const payload = await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-refresh`, { method: "POST" });
+  const payload = await refreshSdkPayload(sessionId);
   renderSessionPayload(payload);
+}
+
+async function refreshSdkPayload(sessionId: string) {
+  return await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-refresh`, { method: "POST" });
 }
 
 async function summarizeSdk(sessionId: string) {
