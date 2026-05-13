@@ -805,6 +805,28 @@ test("does not inherit NO_COLOR into launched TUIs", async ({ page, ctx }) => {
   });
 });
 
+test("does not force color into launched TUIs", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("json-parser-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("json parsed");
+  await expect(page.getByTestId("rendered-terminal")).not.toContainText("json parse failed");
+});
+
+test("keeps launch command title when terminal output sets a weak title", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("title-noise-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("ready");
+  await expect(page.getByTestId("session-command")).toHaveText("title-noise-ui");
+  await expect(page).toHaveTitle("title-noise-ui · TUI UI");
+  await expect.poll(async () => (await fetchSessionPayload(page)).title).toBe("title-noise-ui");
+});
+
 test("does not let package-manager bin shims shadow fakeagent-backed Codex", async ({ page }) => {
   await using ctx = await createContextWithCodexShimShadow();
 
@@ -909,6 +931,7 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const launchedPayload = await fetchSessionPayload(page);
+  expect(launchedPayload.title).toBe('codex "what is one plus two"');
   writeCodexFixtureState(ctx, launchedPayload.createdAt, {
     codexHomeDir: path.join(ctx.env.HOME || "", ".codex"),
     threadId: "this-tuiui-development-session",
@@ -924,7 +947,8 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   await expect(page.getByTestId("sdk-debug")).toContainText("connected");
   await openSdkDiagnostics(page);
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("provider: codex");
-  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home/state_5.sqlite");
+  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home");
+  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("state_5.sqlite");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("providerSessionId:");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestUserText: what is one plus two");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestAssistantText: three");
@@ -1207,6 +1231,9 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.mkdirSync(fakeBinDir, { recursive: true });
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "json-cli"), jsonCliSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "json-parser-ui"), jsonParserUiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "title-noise-ui"), titleNoiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
@@ -1313,6 +1340,33 @@ if (process.env.NO_COLOR) {
 } else {
   process.stdout.write("\\x1b[31mcolored\\x1b[0m\\n");
 }
+setTimeout(() => {}, 100000);
+`;
+
+const jsonCliSource = `#!/usr/bin/env node
+const json = JSON.stringify({ ok: true });
+if (process.env.FORCE_COLOR || process.env.CLICOLOR_FORCE) {
+  process.stdout.write("\\x1b[32m" + json + "\\x1b[0m\\n");
+} else {
+  process.stdout.write(json + "\\n");
+}
+`;
+
+const jsonParserUiSource = `#!/usr/bin/env node
+const childProcess = require("node:child_process");
+const result = childProcess.spawnSync("json-cli", { encoding: "utf8" });
+try {
+  JSON.parse(result.stdout);
+  process.stdout.write("json parsed\\n");
+} catch {
+  process.stdout.write("json parse failed\\n");
+  process.stdout.write(result.stdout);
+}
+setTimeout(() => {}, 100000);
+`;
+
+const titleNoiseUiSource = `#!/usr/bin/env node
+process.stdout.write("\\x1b]0;not the title\\x07ready\\n");
 setTimeout(() => {}, 100000);
 `;
 

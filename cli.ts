@@ -474,8 +474,6 @@ async function createSession(input: CreateSessionInput) {
     ...input.env,
     TERM: input.env.TERM || "xterm-256color",
     COLORTERM: input.env.COLORTERM || "truecolor",
-    FORCE_COLOR: input.env.FORCE_COLOR || inheritedEnv.FORCE_COLOR || "1",
-    CLICOLOR_FORCE: input.env.CLICOLOR_FORCE || inheritedEnv.CLICOLOR_FORCE || "1",
   };
   let fakeAgent: FakeAgent | null = null;
 
@@ -752,7 +750,6 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
   session.renderedAnsi = renderTerminalAnsi(session);
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(renderedText, { cols: session.cols, rows: session.rows });
-  session.title = inferSessionTitle(session, chunk);
   session.updatedAt = now;
   session.lastOutputAt = now;
   session.stdoutEvents.push({
@@ -869,8 +866,8 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
   });
   state.nextStdinEventId += 1;
   session.updatedAt = now;
-  if (text.trim()) {
-    session.title = session.title === path.basename(session.command) ? text.trim().slice(0, 100) : session.title;
+  if (submit && text.trim()) {
+    updateSessionTitleFromUserPrompt(session, text);
   }
 
   if (submit) {
@@ -1007,9 +1004,9 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
 function sessionDisplayTitle(session: RuntimeSession) {
   const snapshotTitle = snapshotTitleForSession(session.sdk.summary);
   if (snapshotTitle) {
-    return snapshotTitle;
+    return promptTitleForSession(session, snapshotTitle);
   }
-  return recentSessionPreviewText(session.title || "") || path.basename(session.command);
+  return recentSessionPreviewText(session.title || "") || launchCommandTitle(session);
 }
 
 function snapshotTitleForSession(summary: AgentSessionSummary | null) {
@@ -1046,6 +1043,55 @@ function textIsBasicallySame(left: string, right: string) {
   const shorter = leftText.length < rightText.length ? leftText : rightText;
   const longer = leftText.length < rightText.length ? rightText : leftText;
   return shorter.length >= 24 && longer.startsWith(shorter);
+}
+
+function updateSessionTitleFromUserPrompt(session: RuntimeSession, text: string) {
+  if (!usesAgentPromptTitle(session) || !isLaunchCommandTitle(session.title, session.command)) {
+    return;
+  }
+  session.title = promptTitleForSession(session, text);
+}
+
+function promptTitleForSession(session: RuntimeSession, text: string) {
+  const prompt = abbreviatedTitlePrompt(text);
+  if (!prompt) {
+    return launchCommandTitle(session);
+  }
+  return usesAgentPromptTitle(session)
+    ? `${launchCommandTitle(session)} "${prompt}"`
+    : prompt;
+}
+
+function abbreviatedTitlePrompt(text: string) {
+  const prompt = recentSessionPreviewText(stripVTControlCharacters(text))
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/"/g, "'");
+  if (!/[A-Za-z0-9]/.test(prompt)) {
+    return "";
+  }
+  if (prompt.length <= 80) {
+    return prompt;
+  }
+  return `${prompt.slice(0, 77).trimEnd()}...`;
+}
+
+function isLaunchCommandTitle(title: string, command: string) {
+  return recentSessionPreviewText(title || "") === launchCommandTitle({ command });
+}
+
+function launchCommandTitle(session: { command: string }) {
+  return path.basename(session.command);
+}
+
+function usesAgentPromptTitle(session: RuntimeSession) {
+  return (
+    session.sdk.provider === "codex" ||
+    session.sdk.provider === "claude" ||
+    session.sdk.provider === "opencode" ||
+    isCodexCommand(session.command) ||
+    isClaudeCommand(session.command) ||
+    isOpenCodeCommand(session.command)
+  );
 }
 
 function normalizeComparableText(text: string) {
@@ -2252,19 +2298,6 @@ async function getFreePort() {
   });
 }
 
-function inferSessionTitle(session: RuntimeSession, chunk: string) {
-  const oscTitle = parseOscTitle(chunk);
-  if (oscTitle) {
-    return oscTitle;
-  }
-  return session.title;
-}
-
-function parseOscTitle(chunk: string) {
-  const match = chunk.match(/\x1b\][02];([^\x07\x1b]*?)(?:\x07|\x1b\\)/);
-  return match ? match[1]!.trim() : "";
-}
-
 function sanitizeTerminalChunk(chunk: string) {
   const stripped = stripVTControlCharacters(chunk.replace(/\x1b\[(\d+)C/g, (_match, amount) => " ".repeat(Number(amount))))
     .replaceAll("\r\n", "\n")
@@ -2291,6 +2324,12 @@ function terminalBaseEnv(processEnv: NodeJS.ProcessEnv, explicitEnv: Record<stri
   }
   if (!("NO_COLOR" in explicitEnv)) {
     delete env.NO_COLOR;
+  }
+  if (!("FORCE_COLOR" in explicitEnv)) {
+    delete env.FORCE_COLOR;
+  }
+  if (!("CLICOLOR_FORCE" in explicitEnv)) {
+    delete env.CLICOLOR_FORCE;
   }
   return env;
 }
