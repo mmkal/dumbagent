@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import type { AgentSessionSummary, RecentAgentSession } from "./opencode-sdk.ts";
-import { createStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
+import { recentSessionPreviewFromMessages, recentSessionPreviewText, type AgentSessionSummary, type RecentAgentSession } from "./opencode-sdk.ts";
+import { createStructuredSessionBriefPrompt, isStructuredSessionBriefPrompt, parseStructuredSessionBrief } from "./session-brief.ts";
 
 export type CodexThreadRow = {
   id: string;
@@ -117,11 +117,56 @@ export function readRecentCodexSessionsFromDatabasePath(databasePath: string, no
   return recentCodexSessionsFromThreads(readCodexThreadsFromDatabasePath(databasePath), nowMs);
 }
 
+export function discardCodexThreadFromDatabasePath(databasePath: string, threadId: string) {
+  if (!threadId) {
+    return false;
+  }
+  const resolvedPath = resolveStoredCodexStateDatabasePath(databasePath);
+  if (!fs.existsSync(resolvedPath)) {
+    return false;
+  }
+  const database = new Database(resolvedPath, { strict: true });
+  try {
+    database.exec("pragma busy_timeout = 1000");
+    const row = database.query("select rollout_path from threads where id = $threadId").get({ threadId }) as {
+      rollout_path: string;
+    } | null;
+    if (!row) {
+      return false;
+    }
+
+    const columns = new Set((database.query("pragma table_info(threads)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (columns.has("archived")) {
+      if (columns.has("archived_at")) {
+        database.query("update threads set archived = 1, archived_at = $archivedAt where id = $threadId").run({
+          threadId,
+          archivedAt: Date.now(),
+        });
+      } else {
+        database.query("update threads set archived = 1 where id = $threadId").run({ threadId });
+      }
+    } else {
+      database.query("delete from threads where id = $threadId").run({ threadId });
+    }
+
+    if (row.rollout_path) {
+      fs.rmSync(row.rollout_path, { force: true });
+    }
+    return true;
+  } finally {
+    database.close();
+  }
+}
+
 export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs: number) {
   const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
   return threads
     .map((thread): RecentAgentSession | null => {
       const messages = visibleCodexMessages(thread);
+      if (isCodexSessionBriefSidecar(thread, messages)) {
+        return null;
+      }
       const lastMessage = messages
         .slice()
         .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;
@@ -129,6 +174,9 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
       if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
         return null;
       }
+      const preview = recentSessionPreviewFromMessages(messages);
+      const firstUserMessage = String(thread.first_user_message || "");
+      const initialUserText = preview.initialUserText || (isCodexInternalUserText(firstUserMessage) ? "" : recentSessionPreviewText(firstUserMessage));
       return {
         provider: "codex",
         id: thread.id,
@@ -137,7 +185,12 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         updatedAt: new Date(codexUpdatedAt(thread)).toISOString(),
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
+        initialUserText,
+        latestUserText: preview.latestUserText || initialUserText,
+        userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
+        latestAssistantText: preview.latestAssistantText,
         messageCount: messages.length,
+        status: lastMessage.role === "user" ? "busy" : "idle",
         command: "codex",
         args: ["resume", thread.id],
       };
@@ -264,6 +317,11 @@ function visibleCodexMessages(thread: CodexThreadRow) {
       }
       return message.role === "user" && !isCodexInternalUserText(message.text);
     });
+}
+
+function isCodexSessionBriefSidecar(thread: CodexThreadRow, messages: AgentSessionSummary["transcript"]) {
+  return isStructuredSessionBriefPrompt(String(thread.first_user_message || "")) ||
+    messages.some((message) => message.role === "user" && isStructuredSessionBriefPrompt(message.text));
 }
 
 function extractCodexMessageText(content: unknown) {

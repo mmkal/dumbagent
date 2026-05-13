@@ -55,6 +55,17 @@ export function createStructuredSessionBriefPrompt(providerName: string, summary
   ].join("\n");
 }
 
+export function isStructuredSessionBriefPrompt(text: string) {
+  const normalized = text.trimStart();
+  if (!normalized.startsWith("Create a structured Session brief for this ") || !normalized.includes(" TUI session.")) {
+    return false;
+  }
+  return normalized.includes("Return only this XML-style contract") ||
+    normalized.includes("<session_brief format=\"tuiui.sessionBrief.v1\">") ||
+    normalized.includes("Use only the transcript below.") ||
+    normalized.length < 220;
+}
+
 export function parseStructuredSessionBrief(raw: string): StructuredSessionBrief {
   const text = raw.trim();
   const parseErrors: string[] = [];

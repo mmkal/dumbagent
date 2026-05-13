@@ -4,10 +4,19 @@ export type VoiceSessionPayload = {
   updatedAt: string;
   renderedText: string;
   sdk: {
+    provider: "" | "opencode" | "codex" | "claude";
     summary: null | {
+      latestUserText?: string;
       latestAssistantText: string;
+      transcript?: VoiceTranscriptMessage[];
     };
   };
+};
+
+export type VoiceTranscriptMessage = {
+  role: string;
+  createdAt: string;
+  text: string;
 };
 
 export type VoiceRecognitionResult = {
@@ -185,7 +194,10 @@ export function createVoiceLoop(input: {
       if (payload.updatedAt === promptPayloadUpdatedAt && !payload.sdk.summary?.latestAssistantText) {
         return;
       }
-      const text = createReadbackText(payload);
+      const text = createReadbackText(payload, {
+        promptSentAt,
+        promptText: state.transcript,
+      });
       if (!text || readbackSpokenFor === `${payload.updatedAt}:${text}`) {
         return;
       }
@@ -271,10 +283,16 @@ export function createAcknowledgement(transcript: string) {
   return `Sent: ${preview}. I'll read back when the session is idle.`;
 }
 
-export function createReadbackText(payload: VoiceSessionPayload) {
-  const sdkText = payload.sdk.summary?.latestAssistantText.trim();
+export function createReadbackText(
+  payload: VoiceSessionPayload,
+  freshness?: { promptSentAt: number; promptText: string },
+) {
+  const sdkText = createSdkReadbackText(payload, freshness);
   if (sdkText) {
-    return shortenForSpeech(sdkText);
+    return sdkText;
+  }
+  if (payload.sdk.provider) {
+    return "";
   }
   const visible = payload.renderedText
     .split("\n")
@@ -283,6 +301,86 @@ export function createReadbackText(payload: VoiceSessionPayload) {
     .slice(-4)
     .join(". ");
   return shortenForSpeech(visible);
+}
+
+function createSdkReadbackText(
+  payload: VoiceSessionPayload,
+  freshness?: { promptSentAt: number; promptText: string },
+) {
+  const summary = payload.sdk.summary;
+  if (!summary) {
+    return "";
+  }
+  const summaryText = cleanProviderReadbackText(summary.latestAssistantText);
+  if (!summaryText) {
+    return "";
+  }
+  if (!freshness) {
+    return shortenForSpeech(summaryText);
+  }
+
+  const assistant = freshAssistantMessageForPrompt(summary.transcript || [], freshness);
+  return assistant ? shortenForSpeech(cleanProviderReadbackText(assistant.text)) : "";
+}
+
+function freshAssistantMessageForPrompt(
+  transcript: VoiceTranscriptMessage[],
+  freshness: { promptSentAt: number; promptText: string },
+) {
+  const prompt = normalizeFreshnessText(freshness.promptText);
+  if (!prompt) {
+    return null;
+  }
+
+  const latestPromptIndex = transcript.findLastIndex((message) => {
+    return message.role === "user" && normalizeFreshnessText(message.text) === prompt;
+  });
+  if (latestPromptIndex < 0) {
+    return null;
+  }
+
+  const user = transcript[latestPromptIndex]!;
+  const assistantIndex = transcript.findLastIndex((message, index) => {
+    return index > latestPromptIndex && message.role === "assistant" && Boolean(message.text.trim());
+  });
+  if (assistantIndex < 0) {
+    return null;
+  }
+
+  const assistant = transcript[assistantIndex]!;
+  if (!messageTimestampMakesSense(user, assistant, freshness.promptSentAt)) {
+    return null;
+  }
+  return assistant;
+}
+
+function messageTimestampMakesSense(
+  user: VoiceTranscriptMessage,
+  assistant: VoiceTranscriptMessage,
+  promptSentAt: number,
+) {
+  const userMs = Date.parse(user.createdAt);
+  const assistantMs = Date.parse(assistant.createdAt);
+  if (!Number.isFinite(userMs) || !Number.isFinite(assistantMs)) {
+    return false;
+  }
+
+  const timestampToleranceMs = 1_500;
+  return userMs >= promptSentAt - timestampToleranceMs
+    && assistantMs >= userMs - timestampToleranceMs;
+}
+
+function normalizeFreshnessText(text: string) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function cleanProviderReadbackText(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => !/^\[(step-start|step-finish|reasoning)\]$/i.test(line))
+    .join("\n")
+    .trim();
 }
 
 function cleanTerminalReadbackLine(line: string) {

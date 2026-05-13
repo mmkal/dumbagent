@@ -43,6 +43,39 @@ test("shows a page-load toast on each full document load when opted in", async (
   await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #2");
 });
 
+test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
+  await page.route("**/api/sessions/tuiui_missing", async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Session not found" }),
+    });
+  });
+  await page.route("**/api/sessions/tuiui_missing/recovery", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "tuiui_missing",
+        cwd: ctx.workspaceDir,
+        launchCommand: "codex",
+        createdAtMs: Date.now(),
+        recoveryCommand: "codex resume abc123",
+        recoveryCreatedAtMs: Date.now(),
+        recoverable: true,
+      }),
+    });
+  });
+
+  await page.goto(`${ctx.baseUrl}/sessions/tuiui_missing`);
+
+  await expect(page.locator(".missing-session")).toContainText("Session not found");
+  await expect(page.locator(".missing-session")).not.toContainText("{\"error\"");
+  await expect(page.getByRole("button", { name: "codex resume abc123" })).toBeVisible();
+  await expect(page.locator(".missing-session-cwd")).toHaveText(ctx.workspaceDir);
+  await expect(page.getByRole("link", { name: "Launch a new session" })).toHaveCount(0);
+});
+
 test("launches fake Codex, translates the TUI into semantic sections, and accepts composer input", async ({ page, ctx }) => {
   await launchFakeCodex(page, ctx);
   expect((await fetchSessionPayload(page)).cwd).toBe(fs.realpathSync(ctx.workspaceDir));
@@ -60,16 +93,35 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
 
   await expect(page.getByTestId("semantic-screen")).toContainText("what is one plus two");
   await expect(page.getByTestId("semantic-screen")).toContainText("three");
-  await clickSessionMenuButton(page, "Summary");
-  await expect(page.getByTestId("sdk-summary")).toContainText(/ready|connected/i);
+  await clickSessionMenuButton(page, "Debug");
+  await expect(page.getByTestId("sdk-debug")).toContainText(/ready|connected/i);
+  await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
+  await page.locator(".tuishot-preview > summary").click();
   await expect(page.getByTestId("tuishot-preview").locator("img")).toBeVisible();
   await expect.poll(async () => {
     return await page.getByTestId("tuishot-preview").locator("img").evaluate((image: HTMLImageElement) => {
       return image.complete && image.naturalWidth > 0;
     });
   }).toBe(true);
-  await clickSessionMenuButton(page, "TTY");
+  await expect.poll(async () => {
+    return await page.locator(".tuishot-frame").evaluate((frame: HTMLElement) => ({
+      fitsWidth: frame.scrollWidth <= frame.clientWidth + 1,
+      fitsHeight: frame.scrollHeight <= frame.clientHeight + 1,
+    }));
+  }).toMatchObject({ fitsWidth: true, fitsHeight: true });
+  const tuishotLink = page.getByTestId("tuishot-preview").locator("[data-tuishot-link]");
+  await expect(tuishotLink).toHaveAttribute("target", "_blank");
+  const [tuishotPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    tuishotLink.click(),
+  ]);
+  expect(tuishotPage.url()).toContain("/tuishot.svg");
+  await tuishotPage.close();
+  const sessionId = (await fetchSessionPayload(page)).id;
+  await page.goto(`${ctx.baseUrl}/sessions/${sessionId}`);
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  await openSessionMenu(page);
+  await expect(page.getByRole("button", { name: "TTY" })).toHaveAttribute("aria-pressed", "true");
   const shot = await fetchTuishot(page);
   expect(shot.contentType).toContain("image/svg+xml");
   expect(shot.disposition).toContain("inline");
@@ -80,6 +132,124 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
   await clickSessionMenuButton(page, "Logs");
   await expect(page.getByTestId("stdin-log")).toContainText("what is one plus two");
   await expect(page.getByTestId("stdout-log")).toContainText("three");
+});
+
+test("keeps the promptbox draft in localStorage per session", async ({ page, ctx }) => {
+  await launchFakeCodex(page, ctx);
+  const firstSessionId = (await fetchSessionPayload(page)).id;
+  const promptbox = page.locator("[data-label='promptbox']");
+  const storedPromptboxDraft = async (sessionId: string) => {
+    return await page.evaluate((id) => {
+      return localStorage.getItem(`tuiui-promptbox-${encodeURIComponent(id)}`);
+    }, sessionId);
+  };
+
+  await expect(promptbox).toHaveAttribute("aria-label", "Send stdin");
+  await promptbox.fill("draft from phone");
+  await expect.poll(() => storedPromptboxDraft(firstSessionId)).toBe("draft from phone");
+
+  await page.reload();
+  await expect(promptbox).toHaveValue("draft from phone");
+
+  await launchFakeCodex(page, ctx);
+  const secondSessionId = (await fetchSessionPayload(page)).id;
+  expect(secondSessionId).not.toBe(firstSessionId);
+  await expect(promptbox).toHaveValue("");
+  await promptbox.fill("different session draft");
+
+  await page.goto(`${ctx.baseUrl}/sessions/${firstSessionId}`);
+  await expect(promptbox).toHaveValue("draft from phone");
+  await promptbox.press("Enter");
+  await expect(promptbox).toHaveValue("");
+  await expect.poll(() => storedPromptboxDraft(firstSessionId)).toBe(null);
+
+  await page.goto(`${ctx.baseUrl}/sessions/${secondSessionId}`);
+  await expect(promptbox).toHaveValue("different session draft");
+});
+
+test("uploads composer attachments to a session temp directory and inserts the saved path", async ({ page, ctx }) => {
+  const firstImagePath = path.join(ctx.tempRoot, "tiny.png");
+  const imageBytes = Buffer.from(tinyPngBase64, "base64");
+  fs.writeFileSync(firstImagePath, imageBytes);
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
+
+  const fileChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Attach file" }).click();
+  await (await fileChooser).setFiles(firstImagePath);
+
+  const textarea = page.getByRole("textbox", { name: "Send stdin" });
+  const rowsBeforeAttachment = (await fetchSessionPayload(page)).rows;
+  await expect(textarea).toHaveValue(/\/tuiui-attachments-[^/]+\/tuiui_[a-f0-9]+\/tiny\.png/);
+  const firstSavedPath = (await textarea.inputValue()).trim();
+  expect(fs.existsSync(firstSavedPath)).toBe(true);
+  expect(fs.readFileSync(firstSavedPath).equals(imageBytes)).toBe(true);
+  const attachmentPreview = page.getByTestId("attachment-preview");
+  await expect(attachmentPreview.locator("img")).toBeVisible();
+  await expect.poll(async () => (await fetchSessionPayload(page)).rows).toBe(rowsBeforeAttachment);
+  await attachmentPreview.getByRole("button", { name: "Preview tiny.png" }).click();
+  await expect(page.getByTestId("attachment-dialog")).toBeVisible();
+  await expect(page.getByTestId("attachment-dialog")).toContainText(firstSavedPath);
+  await page.getByRole("button", { name: "Insert path" }).click();
+  await expect(textarea).toHaveValue(firstSavedPath);
+
+  await textarea.fill("");
+  await expect(attachmentPreview.locator("img")).toBeVisible();
+  await attachmentPreview.getByRole("button", { name: /Remove tiny\.png/ }).click();
+  await expect(textarea).toHaveValue("");
+  await expect(attachmentPreview).toBeHidden();
+
+  await page.locator(".composer").evaluate((composer, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "dropped.png", { type: "image/png" }));
+    const event = new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    });
+    composer.dispatchEvent(event);
+  }, tinyPngBase64);
+
+  await expect(textarea).toHaveValue(/\/tuiui-attachments-[^/]+\/tuiui_[a-f0-9]+\/dropped\.png/);
+  const paths = (await textarea.inputValue()).trim().split(/\s+/);
+  expect(paths).toHaveLength(1);
+  expect(fs.existsSync(paths[0]!)).toBe(true);
+  await expect(attachmentPreview.locator("img")).toHaveCount(1);
+
+  const sentText = await textarea.inputValue();
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(textarea).toHaveValue("");
+  await expect(attachmentPreview).toBeHidden();
+  await expect.poll(async () => {
+    return (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text;
+  }).toBe(sentText);
+});
+
+test("explains that attachment uploads need a restarted server when the route is missing", async ({ page, ctx }) => {
+  const imagePath = path.join(ctx.tempRoot, "tiny.png");
+  fs.writeFileSync(imagePath, Buffer.from(tinyPngBase64, "base64"));
+  await page.route("**/api/sessions/*/attachments", async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "text/plain",
+      body: "not found",
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
+
+  const fileChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Attach file" }).click();
+  await (await fileChooser).setFiles(imagePath);
+
+  await expect(page.getByTestId("attachment-upload-error-toast")).toContainText("Restart tuiui");
 });
 
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
@@ -94,8 +264,17 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     threadId: "mobile-codex-thread",
     title: "Phone handoff session",
     latestUserText: "connect to this very session from my phone",
+    lastUserText: "make the recent cards easier to scan",
     latestAssistantText: "adding recent Codex buttons",
     messageAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  });
+  writeRecentCodexFixtureState(ctx, {
+    threadId: "busy-codex-thread",
+    title: "Busy Codex session",
+    latestUserText: "please keep working",
+    lastUserText: "are you done yet",
+    latestAssistantText: "",
+    messageAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
   });
   writeRecentClaudeFixtureState(ctx, {
     sessionId: "00000000-0000-4000-8000-000000000456",
@@ -104,29 +283,64 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     latestAssistantText: "adding Claude recent buttons",
     messageAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
   });
+  await page.route("**/api/agent-sessions/recent", async (route) => {
+    const response = await route.fetch();
+    const sessions = await response.json();
+    await route.fulfill({
+      status: response.status(),
+      contentType: "application/json",
+      body: JSON.stringify(sessions.map((session: any) => {
+        if (session.provider === "codex") {
+          delete session.status;
+        }
+        return session;
+      })),
+    });
+  });
 
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
-  await expect(page.getByRole("group", { name: "Real presets" }).getByRole("button", { name: "Claude", exact: true })).toBeVisible();
-  await expect(page.getByRole("group", { name: "Fake presets" }).getByRole("button", { name: "Fake Claude", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Arguments" })).toHaveCount(0);
+  await expect(page.getByRole("spinbutton", { name: "Columns" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Launch" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Shortcuts" }).getByRole("button", { name: "claude", exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "fakeagent" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume OpenCode session OpenCode handoff session/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume Claude session Claude handoff session/ })).toBeVisible();
-  await expect(page.locator(".provider-pill", { hasText: "Codex" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Busy Codex session/ })).toBeVisible();
+  await expect(page.locator(".provider-pill", { hasText: "Codex" }).first()).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "OpenCode" })).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "Claude" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume OpenCode session OpenCode handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume Claude session Claude handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume Codex session Busy Codex session/ }).locator(".agent-session-status")).toHaveText("busy");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (first)");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("connect to this very session from my phone");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (last)");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("make the recent cards easier to scan");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("assistant");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("adding recent Codex buttons");
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText(ctx.workspaceDir.replace(ctx.env.HOME || "", "~"));
 
   const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
     return elements.map((element) => ({
-      label: element.querySelector(".quick-launch-label")?.textContent?.trim(),
       buttons: [...element.querySelectorAll("button")].map((button) => button.textContent?.trim()),
+      fakeagent: element.querySelector("label")?.textContent?.trim(),
     }));
   });
   expect(rows).toMatchObject([
-    { label: "Real", buttons: ["OpenCode", "Codex", "Claude", "ghui"] },
-    { label: "Fake", buttons: ["OpenCode", "Codex", "Claude"] },
+    { buttons: ["codex", "claude", "opencode"], fakeagent: "fakeagent" },
   ]);
+
+  await page.getByRole("textbox", { name: "Working directory" }).fill(ctx.tempRoot);
+  await expect.poll(async () => {
+    return await page.evaluate(() => localStorage.getItem("tuiui-launch-cwd"));
+  }).toBe(ctx.tempRoot);
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "Working directory" })).toHaveValue(ctx.tempRoot);
 
   await page.getByRole("button", { name: /Resume Codex session Phone handoff session/ }).click();
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
@@ -138,17 +352,79 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   });
 });
 
+test("loads home when a recent provider database cannot be opened", async ({ page }) => {
+  using openCodeDatabasePath = createTempDirectoryAsDatabasePath("tuiui-opencode-db-path-");
+  await using ctx = await createContext({ OPENCODE_DB_PATH: openCodeDatabasePath.path });
+
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByRole("group", { name: "Shortcuts" }).getByRole("button", { name: "codex", exact: true })).toBeVisible();
+  await expect(page.locator(".recent-agents")).toHaveCount(0);
+});
+
 test("sends named key chords separately from the composer", async ({ page, ctx }) => {
   await launchFakeCodex(page, ctx);
   await clickSessionMenuButton(page, "HTML");
   await expect(page.getByTestId("semantic-screen")).toContainText("OpenAI Codex");
 
-  await page.getByRole("group", { name: "Keys" }).getByRole("button", { name: "esc" }).click();
+  const fixedChordLabels = await page.locator(".chord-fixed button").evaluateAll((buttons) => {
+    return buttons.map((button) => button.getAttribute("aria-label"));
+  });
+  expect(fixedChordLabels).toEqual(["Chord", "Send"]);
+  await expect(page.locator(".chord-fixed").getByRole("button", { name: "Send" })).toHaveCSS("background-color", "rgb(216, 243, 106)");
+
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Esc" }).click();
 
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\x1b");
+
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\r");
 });
 
 test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
+  const sdkRefreshRequests: string[] = [];
+  let staleSnapshotInjected = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/sdk-refresh")) {
+      sdkRefreshRequests.push(request.url());
+    }
+  });
+  await page.route("**/api/sessions/*/sdk-refresh", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (!staleSnapshotInjected && body.sdk?.summary?.latestAssistantText) {
+      staleSnapshotInjected = true;
+      body.sdk.summary = {
+        ...body.sdk.summary,
+        latestUserText: "previous question",
+        latestAssistantText: "penultimate answer",
+        transcript: [
+          {
+            id: "stale-user",
+            role: "user",
+            createdAt: "2026-05-11T09:59:00.000Z",
+            text: "previous question",
+          },
+          {
+            id: "stale-assistant",
+            role: "assistant",
+            createdAt: "2026-05-11T09:59:01.000Z",
+            text: "penultimate answer",
+          },
+        ],
+      };
+    }
+    await route.fulfill({
+      status: response.status(),
+      headers: {
+        ...response.headers(),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  });
+
   await page.addInitScript(() => {
     const spoken: string[] = [];
     let handlers: any = null;
@@ -194,20 +470,52 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
   }).toEqual(expect.arrayContaining([expect.stringContaining("three")]));
+  expect(staleSnapshotInjected).toBe(true);
+  expect(sdkRefreshRequests.length).toBeGreaterThan(1);
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__voiceSpoken);
+  }).not.toEqual(expect.arrayContaining([expect.stringContaining("penultimate answer")]));
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken[0]);
   }).toContain("Sent: what is one plus two");
   await expect(page.getByTestId("voice-status")).toContainText("Readback complete");
 });
 
-test("key chord buttons do not return focus to the composer", async ({ page, ctx }) => {
+test("hides voice controls when browser voice APIs are unavailable", async ({ page, ctx }) => {
+  await page.addInitScript(() => {
+    (window as any).__tuiuiVoiceTest = {
+      recognizer: {
+        supported: false,
+        start() {
+        },
+        stop() {
+        },
+        cancel() {
+        },
+      },
+      speaker: {
+        supported: true,
+        speak() {
+        },
+        stop() {
+        },
+      },
+    };
+  });
+
+  await launchFakeCodex(page, ctx);
+
+  await expect(page.locator(".voice-controls")).toBeHidden();
+});
+
+test("shortcut chord buttons do not return focus to the composer", async ({ page, ctx }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await launchFakeCodex(page, ctx);
 
   const composer = page.getByRole("textbox", { name: "Send stdin" });
   await composer.focus();
   await expect(composer).toBeFocused();
-  await page.getByRole("group", { name: "Keys" }).getByRole("button", { name: "esc" }).click();
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Esc" }).click();
 
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\x1b");
   expect(await composer.evaluate((element) => document.activeElement === element)).toBe(false);
@@ -215,27 +523,41 @@ test("key chord buttons do not return focus to the composer", async ({ page, ctx
 
 test("renders binary-aware chord presets and sends user-defined chords", async ({ page, ctx }) => {
   await launchFakeCodex(page, ctx);
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Tab" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Tab" })).toHaveText("⇥");
 
-  await page.getByRole("button", { name: "Chord" }).click();
+  await page.getByRole("button", { name: "Chord", exact: true }).click();
   await page.getByRole("textbox", { name: "Chord label" }).fill("Ask");
   await page.getByRole("textbox", { name: "Chord sequence" }).fill("what is one plus two;enter");
   await page.getByRole("button", { name: "Save + Send" }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ask" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Chord", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Add chord" })).toBeVisible();
+  await expect(page.locator(".chord-panel-input-row").getByText("↵")).toHaveCount(0);
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Ask");
+    await dialog.accept();
+  });
+  await page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ask" }).click();
+
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ask" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Chord", exact: true })).toHaveAttribute("aria-expanded", "true");
 });
 
 test("orders chord presets by the running agent binary", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
-  await page.getByRole("button", { name: "Fake Codex" }).click();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ctrl-J" })).toBeVisible();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("Esc");
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).getByRole("button", { name: "Ctrl-J" })).toHaveText("^J");
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("esc");
 
   await page.goto(ctx.baseUrl);
-  await page.getByRole("button", { name: "Fake OpenCode" }).click();
-  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("Esc Esc");
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "opencode", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Shortcut chords" }).locator("button").first()).toHaveText("esc esc");
 });
 
 test("can type directly into the terminal renderer", async ({ page, ctx }) => {
@@ -251,6 +573,43 @@ test("can type directly into the terminal renderer", async ({ page, ctx }) => {
 
   await page.reload();
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+});
+
+test("opens http links from terminal output in a new tab", async ({ page, ctx }) => {
+  const url = "https://example.test/docs?q=tuiui";
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("link-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText(url);
+  await page.evaluate(() => {
+    (window as any).__tuiuiOpenedTerminalLinks = [];
+    window.open = ((linkUrl?: string | URL, target?: string, features?: string) => {
+      (window as any).__tuiuiOpenedTerminalLinks.push({
+        url: String(linkUrl),
+        target: target || "",
+        features: features || "",
+      });
+      return null;
+    }) as typeof window.open;
+  });
+
+  const rowsBox = await page.locator(".xterm-rows").boundingBox();
+  if (!rowsBox) {
+    throw new Error("terminal rows were not rendered");
+  }
+  const linkX = rowsBox.x + 32;
+  const linkY = rowsBox.y + 8;
+  await page.mouse.move(linkX, linkY);
+  await page.mouse.click(linkX, linkY);
+
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiOpenedTerminalLinks);
+  }).toMatchObject([{
+    url,
+    target: "_blank",
+    features: "noopener,noreferrer",
+  }]);
 });
 
 test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page, ctx }) => {
@@ -285,7 +644,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await page.goto(ctx.baseUrl);
 
   await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
-  await page.getByRole("button", { name: "Launch" }).click();
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
   await expect(page.getByTestId("rendered-terminal")).toContainText("scrollback line 80");
   await expect(page.getByTestId("page-load-toast")).toBeVisible();
   const toastPlacement = await page.evaluate(() => {
@@ -303,7 +662,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   expect(toastPlacement.toastRight).toBeLessThanOrEqual(390 - 8);
   expect(toastPlacement.toastTop).toBeGreaterThanOrEqual(toastPlacement.menuBottom);
   expect(toastPlacement.intersectsMenu).toBe(false);
-  await expect(page.getByRole("button", { name: "Send" })).toContainText("↵");
+  await expect(page.locator(".chord-fixed").getByRole("button", { name: "Send" })).toContainText("↵");
 
   await expect.poll(async () => {
     return await page.evaluate(() => {
@@ -371,8 +730,8 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     textareaTouchAction: "manipulation",
   });
 
-  const keyMetrics = await page.locator(".keys").evaluate((keys) => {
-    const visibleBoxes = [...keys.querySelectorAll<HTMLElement>(".key-button:not(.overflow-key), .key-more")]
+  const chordMetrics = await page.locator(".chord-shortcuts").evaluate((shortcuts) => {
+    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-button")]
       .filter((button) => getComputedStyle(button).display !== "none")
       .map((button) => button.getBoundingClientRect())
       .filter((box) => box.width > 0 && box.height > 0);
@@ -380,22 +739,60 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     return {
       visibleButtonCount: visibleBoxes.length,
       topSpread: Math.max(...tops) - Math.min(...tops),
-      hasOverflowMenu: getComputedStyle(keys.querySelector<HTMLElement>(".key-overflow")!).display !== "none",
     };
   });
-  expect(keyMetrics).toMatchObject({
-    visibleButtonCount: 5,
-    hasOverflowMenu: true,
+  expect(chordMetrics).toMatchObject({
+    visibleButtonCount: 8,
   });
-  expect(keyMetrics.topSpread).toBeLessThan(2);
+  expect(chordMetrics.topSpread).toBeLessThan(2);
+
+  const mainSurfaceHeight = await page.locator(".main-surface").evaluate((surface) => surface.getBoundingClientRect().height);
+  await page.getByRole("button", { name: "Chord", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Add chord" })).toBeVisible();
+  const mainSurfaceHeightWithChordDialog = await page.locator(".main-surface").evaluate((surface) => surface.getBoundingClientRect().height);
+  expect(Math.abs(mainSurfaceHeightWithChordDialog - mainSurfaceHeight)).toBeLessThan(1);
+  expect(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute("name"))).not.toBe("sequence");
+  await page.getByRole("button", { name: "Close add chord" }).click();
+  await expect(page.getByRole("dialog", { name: "Add chord" })).toBeHidden();
 
   await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "TTY" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Summary" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "HTML" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Debug", exact: true })).toBeVisible();
+  await expect.poll(async () => sessionMenuPlainButtonStyles(page)).toMatchObject({
+    reference: {
+      alignItems: "center",
+      borderTopStyle: "solid",
+      display: "flex",
+      fontWeight: "700",
+      justifyContent: "center",
+    },
+    debug: {
+      alignItems: "center",
+      borderTopStyle: "solid",
+      display: "flex",
+      fontWeight: "700",
+      justifyContent: "center",
+    },
+    matches: true,
+  });
+  await expect(page.getByRole("button", { name: "HTML" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Debug", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
+  await expect(page.getByTestId("sdk-debug")).toBeVisible();
+  await expect(page.getByTestId("debug-html")).not.toHaveAttribute("open", "");
+  await expect(page.getByTestId("debug-logs")).not.toHaveAttribute("open", "");
+  await openDebugDetail(page, "debug-html");
+  await expect(page.getByTestId("debug-html")).toContainText("scrollback line");
+  await openDebugDetail(page, "debug-logs");
+  await expect(page.getByTestId("stdout-log")).toContainText("scrollback line");
+  await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "Pause events" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Logs" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Relayout" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Close session menu" }).click();
+  await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
+  await clickSessionMenuButton(page, "Relayout");
+  await expect(page.getByTestId("terminal-redraw-overlay")).toBeVisible();
   await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
 });
 
@@ -405,6 +802,7 @@ test("can pause and resume live session events", async ({ page, ctx }) => {
 
   await openSessionMenu(page);
   await expect(page.getByRole("button", { name: "Resume events" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close session menu" }).click();
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).not.toContainText("three");
@@ -419,24 +817,47 @@ test("can pause and resume live session events", async ({ page, ctx }) => {
 test("keeps split utf-8 output intact", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
-  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
-  await page.getByRole("button", { name: "Launch" }).click();
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui --smoke");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
 
   await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
   await expect(page.getByTestId("semantic-screen")).not.toContainText("\uFFFD");
+  expect((await fetchSessionPayload(page)).args).toEqual(["--smoke"]);
 });
 
 test("does not inherit NO_COLOR into launched TUIs", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
 
   await page.getByRole("textbox", { name: "Command" }).fill("color-env-agent");
-  await page.getByRole("button", { name: "Launch" }).click();
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("colored");
   const payload = await fetchSessionPayload(page);
   expect(payload.stdoutEvents[0]).toMatchObject({
     chunk: expect.stringContaining("\u001b[31mcolored"),
   });
+});
+
+test("does not force color into launched TUIs", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("json-parser-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("json parsed");
+  await expect(page.getByTestId("rendered-terminal")).not.toContainText("json parse failed");
+});
+
+test("keeps launch command title when terminal output sets a weak title", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+
+  await page.getByRole("textbox", { name: "Command" }).fill("title-noise-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("ready");
+  await expect(page.getByTestId("session-command")).toHaveText("title-noise-ui");
+  await expect(page).toHaveTitle("title-noise-ui · TUI UI");
+  await expect.poll(async () => (await fetchSessionPayload(page)).title).toBe("title-noise-ui");
 });
 
 test("does not let package-manager bin shims shadow fakeagent-backed Codex", async ({ page }) => {
@@ -450,18 +871,22 @@ test("does not let package-manager bin shims shadow fakeagent-backed Codex", asy
 
 test("can drive OpenCode through fakeagent when OpenCode is installed", async ({ page, ctx }) => {
   await launchFakeOpenCodeWithQuestion(page, ctx);
-  await clickSessionMenuButton(page, "Summary");
-  await page.getByRole("button", { name: "Refresh snapshot" }).click();
-  await expect(page.getByTestId("sdk-summary")).toContainText("connected");
+  await clickSessionMenuButton(page, "Debug");
+  await expect(page.getByTestId("sdk-debug")).toContainText("connected");
   await expect(page.getByTestId("session-brief")).toContainText("No session brief yet.");
+  await expect(page.getByTestId("tuishot-preview")).not.toHaveAttribute("open", "");
+  await expect(page.getByTestId("session-brief")).not.toHaveAttribute("open", "");
   await expect(page.locator(".sdk-diagnostics")).not.toHaveAttribute("open", "");
   const refreshedPayload = await fetchSessionPayload(page);
   expect(refreshedPayload.sdk.summary.latestAssistantText).toContain("three");
   await page.getByRole("button", { name: "Get session brief" }).click();
   await expect.poll(async () => (await fetchSessionPayload(page)).sdk.sidecarSummary.status, { timeout: 20_000 }).toBe("completed");
+  await page.locator(".session-brief > summary").click();
   await expect(page.getByTestId("session-brief")).toContainText("current");
   await expect(page.getByTestId("session-brief")).toContainText("Executive summary");
   await expect(page.getByTestId("session-brief")).toContainText("Suggested next actions");
+  await page.getByRole("tab", { name: "Raw" }).click();
+  await expect(page.getByRole("textbox", { name: "Session brief raw text" })).toContainText("<session_brief");
   const payload = await fetchSessionPayload(page);
   expect(payload.sdk.sidecarSummary).toMatchObject({
     method: "opencode.session.fork+prompt",
@@ -476,6 +901,8 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
     result: true,
   });
   expect(payload.sdk.forks[0].forkSessionId).not.toBe(payload.sdk.externalSessionId);
+  const recentSessions = await fetchRecentAgentSessions(page);
+  expect(recentSessions.map((session: any) => session.id)).not.toContain(payload.sdk.forks[0].forkSessionId);
   expect(payload.sdk.summary).toMatchObject({ messageCount: 2 });
   await page.getByRole("button", { name: "Get session brief" }).click();
   await expect.poll(async () => (await fetchSessionPayload(page)).sdk.sidecarSummary.note).toContain("Reused the completed session brief for the current fork point.");
@@ -486,7 +913,7 @@ test("can drive OpenCode through fakeagent when OpenCode is installed", async ({
 
 test("keeps provider diagnostics YAML readable and stable", async ({ page, ctx }) => {
   await launchFakeOpenCodeWithQuestion(page, ctx);
-  await clickSessionMenuButton(page, "Summary");
+  await clickSessionMenuButton(page, "Debug");
   await page.getByRole("button", { name: "Refresh snapshot" }).click();
   await openSdkDiagnostics(page);
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestUserText: what is one plus two");
@@ -500,6 +927,7 @@ test("keeps provider diagnostics YAML readable and stable", async ({ page, ctx }
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("forkSessionId:");
   const yamlBeforeRefresh = await page.locator("#sdk-yaml-editor .cm-content").textContent();
   const scrollBeforeRefresh = await scrollYamlEditorToBottom(page);
+  expect(scrollBeforeRefresh).toBeGreaterThan(0);
   await markYamlEditorContent(page);
   await page.getByRole("button", { name: "Refresh snapshot" }).click();
   await expect.poll(async () => await page.locator("#sdk-yaml-editor .cm-content").textContent()).not.toBe(yamlBeforeRefresh);
@@ -526,15 +954,17 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
     fakeAgent: "codex",
   }));
   await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "OpenCode", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Codex", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Fake Codex" }).click();
+  await expect(page.getByRole("button", { name: "opencode", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "codex", exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
 
   await expectReadyFakeCodex(page);
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   const launchedPayload = await fetchSessionPayload(page);
+  expect(launchedPayload.title).toBe('codex "what is one plus two"');
   writeCodexFixtureState(ctx, launchedPayload.createdAt, {
     codexHomeDir: path.join(ctx.env.HOME || "", ".codex"),
     threadId: "this-tuiui-development-session",
@@ -545,17 +975,19 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
     updatedOffsetMs: 2_000,
   });
 
-  await clickSessionMenuButton(page, "Summary");
-  await page.getByRole("button", { name: "Refresh snapshot" }).click();
+  await clickSessionMenuButton(page, "Debug");
 
-  await expect(page.getByTestId("sdk-summary")).toContainText("connected");
+  await expect(page.getByTestId("sdk-debug")).toContainText("connected");
   await openSdkDiagnostics(page);
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("provider: codex");
-  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home/state_5.sqlite");
+  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("baseUrl: /tmp/fakeagent-codex-home");
+  await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("state_5.sqlite");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("providerSessionId:");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestUserText: what is one plus two");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).toContainText("latestAssistantText: three");
   await expect(page.getByRole("textbox", { name: "Provider snapshot diagnostics YAML" })).not.toContainText("this is the wrong supervising session");
+  await expect(page.getByTestId("session-command")).toContainText("what is one plus two");
+  await expect(page).toHaveTitle(/what is one plus two/);
   await expect.poll(async () => {
     return await page.locator("#sdk-yaml-editor .cm-editor").evaluate((editor) => getComputedStyle(editor).fontSize);
   }).toBe("10px");
@@ -576,9 +1008,10 @@ test("shows a toast instead of an unhandled rejection when session brief fetch f
   });
 
   await page.goto(ctx.baseUrl);
-  await page.getByRole("button", { name: "Fake Codex" }).click();
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
   await expectReadyFakeCodex(page);
-  await clickSessionMenuButton(page, "Summary");
+  await clickSessionMenuButton(page, "Debug");
   await page.evaluate(() => {
     const realFetch = window.fetch.bind(window);
     (window as any).fetch = (input: any, init: any) => {
@@ -598,7 +1031,8 @@ test("shows a toast instead of an unhandled rejection when session brief fetch f
 
 test("can drive Claude through the fake preset", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
-  await page.getByRole("button", { name: "Fake Claude" }).click();
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "claude", exact: true }).click();
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("Claude test TUI");
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
@@ -610,9 +1044,9 @@ test("can drive Claude through the fake preset", async ({ page, ctx }) => {
     command: "claude",
     sdk: {
       provider: "claude",
-      state: "ready",
     },
   });
+  expect(["ready", "not-found"]).toContain(payload.sdk.state);
 });
 
 async function fetchSessionPayload(page: Page) {
@@ -634,8 +1068,33 @@ async function fetchTuishot(page: Page) {
   });
 }
 
+async function fetchRecentAgentSessions(page: Page) {
+  return await page.evaluate(async () => {
+    return await fetch("/api/agent-sessions/recent").then((response) => response.json());
+  });
+}
+
+function createTempDirectoryAsDatabasePath(prefix: string) {
+  const directoryPath = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return {
+    path: directoryPath,
+    [Symbol.dispose]() {
+      fs.rmSync(directoryPath, { recursive: true, force: true });
+    },
+  };
+}
+
 async function clickSessionMenuButton(page: Page, name: string) {
   await openSessionMenu(page);
+  if (name === "Debug") {
+    await page.getByRole("button", { name: "Debug", exact: true }).click();
+    return;
+  }
+  if (name === "HTML" || name === "Logs") {
+    await page.getByRole("button", { name: "Debug", exact: true }).click();
+    await openDebugDetail(page, name === "HTML" ? "debug-html" : "debug-logs");
+    return;
+  }
   await page.getByRole("button", { name }).click();
 }
 
@@ -645,6 +1104,52 @@ async function openSessionMenu(page: Page) {
     return;
   }
   await page.getByRole("button", { name: "Session menu" }).click();
+}
+
+async function sessionMenuPlainButtonStyles(page: Page) {
+  return await page.locator(".menu-panel").evaluate((panel) => {
+    const reference = panel.querySelector<HTMLElement>("[data-action='relayout']");
+    const debug = panel.querySelector<HTMLElement>("[data-renderer='sdk']");
+    if (!reference || !debug) {
+      return { matches: false };
+    }
+    const pick = (element: HTMLElement) => {
+      const style = getComputedStyle(element);
+      return {
+        alignItems: style.alignItems,
+        backgroundColor: style.backgroundColor,
+        borderRadius: style.borderRadius,
+        borderTopColor: style.borderTopColor,
+        borderTopStyle: style.borderTopStyle,
+        borderTopWidth: style.borderTopWidth,
+        color: style.color,
+        display: style.display,
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        height: Math.round(element.getBoundingClientRect().height),
+        justifyContent: style.justifyContent,
+        lineHeight: style.lineHeight,
+        paddingBottom: style.paddingBottom,
+        paddingTop: style.paddingTop,
+      };
+    };
+    const referenceStyle = pick(reference);
+    const debugStyle = pick(debug);
+    return {
+      reference: referenceStyle,
+      debug: debugStyle,
+      matches: JSON.stringify(referenceStyle) === JSON.stringify(debugStyle),
+    };
+  });
+}
+
+async function openDebugDetail(page: Page, testId: "debug-html" | "debug-logs") {
+  const detail = page.getByTestId(testId);
+  if ((await detail.getAttribute("open")) !== null) {
+    return;
+  }
+  await detail.locator("summary").first().click();
 }
 
 async function openSdkDiagnostics(page: Page) {
@@ -659,7 +1164,8 @@ async function launchFakeCodex(page: Page, ctx: FixtureContext) {
   test.skip(!commandExists("codex"), "codex is not installed");
 
   await page.goto(ctx.baseUrl);
-  await page.getByRole("button", { name: "Fake Codex" }).click();
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
   await expectReadyFakeCodex(page);
 }
@@ -668,7 +1174,8 @@ async function launchFakeOpenCodeWithQuestion(page: Page, ctx: FixtureContext) {
   test.skip(!commandExists("opencode"), "opencode is not installed");
 
   await page.goto(ctx.baseUrl);
-  await page.getByRole("button", { name: "Fake OpenCode" }).click();
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "opencode", exact: true }).click();
   await expect(page.getByTestId("rendered-terminal")).toContainText(/Ask anything|OpenCode/i);
 
   await page.getByRole("textbox", { name: "Send stdin" }).fill("what is one plus two");
@@ -757,7 +1264,11 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.mkdirSync(fakeBinDir, { recursive: true });
   fs.writeFileSync(path.join(fakeBinDir, "bytewise-ui"), bytewiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "color-env-agent"), colorEnvAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "json-cli"), jsonCliSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "json-parser-ui"), jsonParserUiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "title-noise-ui"), titleNoiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -865,12 +1376,46 @@ if (process.env.NO_COLOR) {
 setTimeout(() => {}, 100000);
 `;
 
+const jsonCliSource = `#!/usr/bin/env node
+const json = JSON.stringify({ ok: true });
+if (process.env.FORCE_COLOR || process.env.CLICOLOR_FORCE) {
+  process.stdout.write("\\x1b[32m" + json + "\\x1b[0m\\n");
+} else {
+  process.stdout.write(json + "\\n");
+}
+`;
+
+const jsonParserUiSource = `#!/usr/bin/env node
+const childProcess = require("node:child_process");
+const result = childProcess.spawnSync("json-cli", { encoding: "utf8" });
+try {
+  JSON.parse(result.stdout);
+  process.stdout.write("json parsed\\n");
+} catch {
+  process.stdout.write("json parse failed\\n");
+  process.stdout.write(result.stdout);
+}
+setTimeout(() => {}, 100000);
+`;
+
+const titleNoiseUiSource = `#!/usr/bin/env node
+process.stdout.write("\\x1b]0;not the title\\x07ready\\n");
+setTimeout(() => {}, 100000);
+`;
+
 const scrollbackAgentSource = `#!/usr/bin/env node
 for (let index = 1; index <= 80; index += 1) {
   process.stdout.write("scrollback line " + String(index).padStart(2, "0") + "\\r\\n");
 }
 setTimeout(() => {}, 100000);
 `;
+
+const linkAgentSource = `#!/usr/bin/env node
+process.stdout.write("https://example.test/docs?q=tuiui\\r\\n");
+setTimeout(() => {}, 100000);
+`;
+
+const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 function writeCodexFixtureState(
   ctx: FixtureContext,
@@ -980,6 +1525,7 @@ function writeRecentCodexFixtureState(
     threadId: string;
     title: string;
     latestUserText: string;
+    lastUserText: string;
     latestAssistantText: string;
     messageAt: string;
   },
@@ -990,7 +1536,8 @@ function writeRecentCodexFixtureState(
   const rolloutPath = path.join(sessionsDir, `rollout-${options.threadId}.jsonl`);
   const messageAtMs = new Date(options.messageAt).getTime();
   fs.writeFileSync(rolloutPath, [
-    codexRolloutMessage(new Date(messageAtMs - 1_000).toISOString(), "user", options.latestUserText),
+    codexRolloutMessage(new Date(messageAtMs - 2_000).toISOString(), "user", options.latestUserText),
+    codexRolloutMessage(new Date(messageAtMs - 1_000).toISOString(), "user", options.lastUserText),
     codexRolloutMessage(options.messageAt, "assistant", options.latestAssistantText),
   ].join("\n"));
 

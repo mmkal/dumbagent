@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import { createStructuredSessionBriefPrompt, parseStructuredSessionBrief, type StructuredSessionBrief } from "./session-brief.ts";
+import {
+  createStructuredSessionBriefPrompt,
+  isStructuredSessionBriefPrompt,
+  parseStructuredSessionBrief,
+  type StructuredSessionBrief,
+} from "./session-brief.ts";
 
 export type AgentProvider = "opencode" | "codex" | "claude";
 
@@ -78,7 +83,12 @@ export type RecentAgentSession = {
   updatedAt: string;
   lastMessageAt: string;
   lastMessageText: string;
+  initialUserText: string;
+  latestUserText: string;
+  userMessageCount: number;
+  latestAssistantText: string;
   messageCount: number;
+  status: "busy" | "idle";
   command: string;
   args: string[];
 };
@@ -236,6 +246,9 @@ export function recentOpenCodeSessionsFromRows(
       const visibleMessages = summary.transcript.filter((message) => {
         return (message.role === "user" || message.role === "assistant") && message.text && message.text !== "[compaction]";
       });
+      if (visibleMessages.some((message) => message.role === "user" && isStructuredSessionBriefPrompt(message.text))) {
+        return null;
+      }
       const lastMessage = visibleMessages
         .slice()
         .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] || null;
@@ -243,6 +256,7 @@ export function recentOpenCodeSessionsFromRows(
       if (!lastMessage || !Number.isFinite(lastMessageMs) || lastMessageMs < cutoffMs) {
         return null;
       }
+      const preview = recentSessionPreviewFromMessages(visibleMessages);
       return {
         provider: "opencode",
         id: String(row.session.id || ""),
@@ -251,13 +265,43 @@ export function recentOpenCodeSessionsFromRows(
         updatedAt: new Date(Number(row.session.time_updated || lastMessageMs)).toISOString(),
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
+        initialUserText: preview.initialUserText,
+        latestUserText: preview.latestUserText,
+        userMessageCount: preview.userMessageCount,
+        latestAssistantText: preview.latestAssistantText,
         messageCount: visibleMessages.length,
+        status: lastMessage.role === "user" ? "busy" : "idle",
         command: "opencode",
         args: ["--session", String(row.session.id || "")],
       };
     })
     .filter((session): session is RecentAgentSession => Boolean(session))
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt));
+}
+
+export function recentSessionPreviewFromMessages(messages: AgentSessionSummary["transcript"]) {
+  const ordered = messages
+    .slice()
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  const userMessages = ordered.filter((message) => message.role === "user");
+  return {
+    initialUserText: recentSessionPreviewText(userMessages[0]?.text || ""),
+    latestUserText: recentSessionPreviewText(userMessages.at(-1)?.text || ""),
+    userMessageCount: userMessages.length,
+    latestAssistantText: recentSessionPreviewText([...ordered].reverse().find((message) => message.role === "assistant")?.text || ""),
+  };
+}
+
+export function recentSessionPreviewText(text: string) {
+  const firstParagraph = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n[ \t]*\n/)
+    .map((paragraph) => paragraph.trim())
+    .find(Boolean) || "";
+  return firstParagraph
+    .replace(/[ \t]*\n[ \t]*/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
 }
 
 export function pickOpenCodeModel(messages: any[]) {

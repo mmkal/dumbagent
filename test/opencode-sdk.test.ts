@@ -4,6 +4,7 @@ import {
   buildOpenCodeSummary,
   createOpenCodeSummaryPrompt,
   recentOpenCodeSessionsFromRows,
+  recentSessionPreviewFromMessages,
   resolveOpenCodeSession,
 } from "../src/opencode-sdk.ts";
 
@@ -70,6 +71,25 @@ test("does not treat compaction as the latest user message", () => {
   });
 });
 
+test("formats recent session previews from the first paragraph", () => {
+  const summary = buildOpenCodeSummary(
+    { title: "TUI UI test" },
+    [
+      message("user", "first line\nsecond line\n\nhidden paragraph"),
+      message("assistant", "assistant line\nassistant continuation\n\nextra details"),
+      message("user", "last user line\nlast continuation"),
+    ],
+    [],
+  );
+
+  expect(recentSessionPreviewFromMessages(summary.transcript)).toMatchObject({
+    initialUserText: "first line second line",
+    latestUserText: "last user line last continuation",
+    userMessageCount: 2,
+    latestAssistantText: "assistant line assistant continuation",
+  });
+});
+
 test("asks OpenCode sidecars for the shared XML session brief contract", () => {
   const summary = buildOpenCodeSummary(
     { title: "TUI UI test" },
@@ -112,7 +132,15 @@ test("lists recent OpenCode sessions by latest visible message", () => {
       session: { id: "newest", directory: "/repo", title: "Newest OpenCode", time_updated: Date.parse("2026-05-11T11:59:00.000Z") },
       messages: [
         messageAt("user", "[compaction]", "2026-05-11T11:58:00.000Z"),
+        messageAt("user", "wire recent cards", "2026-05-11T11:58:30.000Z"),
         messageAt("assistant", "opencode is now in the launcher", "2026-05-11T11:59:00.000Z"),
+      ],
+    },
+    {
+      session: { id: "sidecar-summary", directory: "/repo", title: "Sidecar OpenCode", time_updated: Date.parse("2026-05-11T11:59:30.000Z") },
+      messages: [
+        messageAt("user", structuredSessionBriefPrompt("OpenCode"), "2026-05-11T11:59:20.000Z"),
+        messageAt("assistant", structuredBriefXml(), "2026-05-11T11:59:30.000Z"),
       ],
     },
   ], Date.parse("2026-05-11T12:00:00.000Z"));
@@ -123,14 +151,20 @@ test("lists recent OpenCode sessions by latest visible message", () => {
       id: "newest",
       lastMessageAt: "2026-05-11T11:59:00.000Z",
       lastMessageText: "opencode is now in the launcher",
+      initialUserText: "wire recent cards",
+      latestUserText: "wire recent cards",
+      userMessageCount: 1,
+      latestAssistantText: "opencode is now in the launcher",
       command: "opencode",
       args: ["--session", "newest"],
+      status: "idle",
     },
     {
       provider: "opencode",
       id: "older",
       lastMessageAt: "2026-05-11T09:30:00.000Z",
       lastMessageText: "resume opencode on mobile",
+      status: "busy",
     },
   ]);
 });
@@ -179,5 +213,18 @@ function structuredBriefXml() {
     "  <risks_blockers></risks_blockers>",
     "  <suggested_next_actions><item>Run the tests.</item></suggested_next_actions>",
     "</session_brief>",
+  ].join("\n");
+}
+
+function structuredSessionBriefPrompt(provider: string) {
+  return [
+    `Create a structured Session brief for this ${provider} TUI session.`,
+    "",
+    "Return only this XML-style contract, with every tag present even when the value is empty:",
+    "",
+    "<session_brief format=\"tuiui.sessionBrief.v1\">",
+    "</session_brief>",
+    "",
+    "Use only the transcript below.",
   ].join("\n");
 }

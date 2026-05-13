@@ -4,7 +4,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import { FitAddon } from "@xterm/addon-fit";
-import type { Terminal as XtermTerminal } from "@xterm/xterm";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import {
   detectChordBinary,
@@ -12,7 +13,9 @@ import {
   presetsForBinary,
   type ChordBinary,
 } from "../src/chords.ts";
+import { parseCommandLine } from "../src/command-line.ts";
 import { stringify as stringifyYaml } from "yaml";
+import { attachmentUploadName, dedupeClipboardImageFiles, type AttachmentSource } from "./attachments.ts";
 import { showToast } from "./toast.ts";
 import {
   createBrowserVoiceRecognizer,
@@ -38,11 +41,24 @@ type SessionPayload = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi?: string;
+  screenVersion: number;
+  snapshotEventId: number;
+  redrawActive: boolean;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
   stdinEvents: Array<{ id: number; text: string; createdAt: string }>;
   stdoutEvents: Array<{ id: number; chunk: string; displayText: string; createdAt: string }>;
+};
+
+type SessionRecoveryPayload = {
+  id: string;
+  cwd: string;
+  launchCommand: string;
+  createdAtMs: number;
+  recoveryCommand: string | null;
+  recoveryCreatedAtMs: number | null;
+  recoverable: boolean;
 };
 
 type ClientConfig = {
@@ -173,7 +189,12 @@ type RecentAgentSession = {
   updatedAt: string;
   lastMessageAt: string;
   lastMessageText: string;
+  initialUserText: string;
+  latestUserText: string;
+  userMessageCount: number;
+  latestAssistantText: string;
   messageCount: number;
+  status: "busy" | "idle";
   command: string;
   args: string[];
 };
@@ -182,8 +203,20 @@ type LaunchSessionInput = {
   command: string;
   args: string[];
   cwd: string;
-  cols: number;
   fakeAgent: string;
+};
+
+type AttachmentUpload = {
+  path: string;
+  name: string;
+  originalName: string;
+  type: string;
+  size: number;
+};
+
+type ComposerAttachment = AttachmentUpload & {
+  id: string;
+  previewUrl: string;
 };
 
 declare global {
@@ -208,10 +241,12 @@ type StoredChord = {
 const app = document.getElementById("app")!;
 let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
-let renderer = readRendererPreference();
+let renderer: "terminal" | "sdk" = "terminal";
 let dataEditorView: EditorView | null = null;
 let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
 let dataEditorDoc = "";
+let briefEditorView: EditorView | null = null;
+let briefEditorDoc = "";
 let eventsPaused = false;
 let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
@@ -221,12 +256,21 @@ let xtermFit: FitAddon | null = null;
 let xtermReady: Promise<XtermTerminal> | null = null;
 let xtermSessionId = "";
 let xtermLastStdoutEventId = 0;
+let xtermScreenVersion = -1;
 let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
 let voiceReadbackTimer: number | null = null;
+let composerAttachments: ComposerAttachment[] = [];
+
+const terminalHttpLinkHandler: ILinkHandler = {
+  activate(event, uri) {
+    openTerminalHttpLink(event, uri);
+  },
+  allowNonHttpProtocols: false,
+};
 
 void boot();
 
@@ -279,6 +323,51 @@ function incrementPageLoadCount() {
   }
 }
 
+function setupPromptboxState(sessionId: string, promptbox: HTMLTextAreaElement) {
+  const state = useLocalStorageState(promptboxStorageKey(sessionId), "");
+  promptbox.value = state.getValue();
+  promptbox.addEventListener("input", () => {
+    state.setValue(promptbox.value);
+  });
+}
+
+function setPromptboxValue(promptbox: HTMLTextAreaElement, value: string) {
+  promptbox.value = value;
+  promptbox.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function useLocalStorageState(key: string, initialValue: string) {
+  let value = initialValue;
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored !== null) {
+      value = stored;
+    }
+  } catch {
+  }
+
+  return {
+    getValue() {
+      return value;
+    },
+    setValue(nextValue: string) {
+      value = nextValue;
+      try {
+        if (nextValue) {
+          localStorage.setItem(key, nextValue);
+        } else {
+          localStorage.removeItem(key);
+        }
+      } catch {
+      }
+    },
+  };
+}
+
+function promptboxStorageKey(sessionId: string) {
+  return `tuiui-promptbox-${encodeURIComponent(sessionId)}`;
+}
+
 async function renderRoute() {
   events?.close();
   events = null;
@@ -297,7 +386,7 @@ async function renderRoute() {
     try {
       await renderSession(sessionMatch[1]!);
     } catch (error) {
-      renderMissingSession(String(error instanceof Error ? error.message : error));
+      await renderMissingSession(sessionMatch[1]!, String(error instanceof Error ? error.message : error));
     }
     return;
   }
@@ -305,8 +394,9 @@ async function renderRoute() {
   await renderHome();
 }
 
-function renderMissingSession(message: string) {
+async function renderMissingSession(sessionId: string, message: string) {
   destroyDataEditor();
+  const recovery = await fetchSessionRecovery(sessionId);
   app.innerHTML = `
     <main class="layout home-layout">
       <header class="topbar">
@@ -314,30 +404,44 @@ function renderMissingSession(message: string) {
         <span class="muted">session unavailable</span>
       </header>
       <section class="launcher missing-session" aria-label="Missing session">
-        <strong>Session not found</strong>
-        <p>${escapeHtml(message)}</p>
-        <a href="/">Launch a new session</a>
+        <strong>${escapeHtml(message)}</strong>
+        ${recovery?.recoveryCommand ? `
+          <button type="button" class="primary-button recovery-command-button" data-action="recover-session">
+            <code>${escapeHtml(recovery.recoveryCommand)}</code>
+          </button>
+          <code class="missing-session-cwd">${escapeHtml(recovery.cwd)}</code>
+        ` : ""}
       </section>
     </main>
   `;
+  document.querySelector<HTMLButtonElement>("[data-action='recover-session']")?.addEventListener("click", async () => {
+    const result = await api<{ id: string; url: string }>(`/api/sessions/${sessionId}/recover`, { method: "POST" });
+    history.pushState({}, "", `/sessions/${result.id}`);
+    await renderRoute();
+  });
 }
 
-function readRendererPreference() {
-  const saved = localStorage.getItem("tuiui-renderer") || "";
-  return ["terminal", "sdk", "semantic"].includes(saved) ? saved : "terminal";
+async function fetchSessionRecovery(sessionId: string) {
+  try {
+    return await api<SessionRecoveryPayload>(`/api/sessions/${sessionId}/recovery`);
+  } catch {
+    return null;
+  }
 }
 
 async function renderHome() {
   const [cwd, sessions, commands, recentAgentSessions] = await Promise.all([
-    api<{ cwd: string }>("/api/cwd"),
+    api<{ cwd: string; homeDir?: string; homeDirs?: string[] }>("/api/cwd"),
     api<any[]>("/api/sessions"),
     api<CommandPreset[]>("/api/commands"),
     api<RecentAgentSession[]>("/api/agent-sessions/recent"),
   ]);
-  const quickLaunchRows = [
-    { label: "Real", commands: commands.filter((command) => command.id !== "custom" && !command.fakeAgent) },
-    { label: "Fake", commands: commands.filter((command) => Boolean(command.fakeAgent)) },
-  ].filter((row) => row.commands.length);
+  const displayHomeDirs = homeDirsForDisplay(cwd);
+  const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
+  const launchCommandOrder = ["codex", "claude", "opencode"];
+  const quickLaunchCommands = launchCommandOrder
+    .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
+    .filter((command): command is CommandPreset => Boolean(command));
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -347,41 +451,33 @@ async function renderHome() {
       </header>
       <section class="launcher" aria-label="Launch session">
         <form id="launch-form" class="launch-form">
-          <div class="quick-launch" role="group" aria-label="Quick launch">
-            ${quickLaunchRows.map((row) => `
-              <div class="quick-launch-row" role="group" aria-label="${escapeAttr(`${row.label} presets`)}">
-                <span class="quick-launch-label">${escapeHtml(row.label)}</span>
-                <div class="quick-launch-buttons">
-                  ${row.commands.map((command) => `
-                    <button
-                      type="button"
-                      class="preset-button"
-                      data-preset-id="${escapeAttr(command.id)}"
-                      aria-label="${escapeAttr(command.label)}"
-                      title="${escapeAttr([command.command, ...command.args].join(" "))}"
-                    >${escapeHtml(row.label === "Fake" ? command.label.replace(/^Fake /, "") : command.label)}</button>
-                  `).join("")}
-                </div>
-              </div>
-            `).join("")}
+          <div class="launch-command-row">
+            <label class="command-prompt-field">
+              <span class="command-prompt-glyph" aria-hidden="true">&gt;</span>
+              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --foo-bar" />
+            </label>
+            <label class="cwd-field">
+              <span aria-hidden="true">cwd</span>
+              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(launchCwdState.getValue() || cwd.cwd)}" />
+            </label>
           </div>
-          <label>
-            <span>Command</span>
-            <input name="command" aria-label="Command" autocomplete="off" required />
-          </label>
-          <label>
-            <span>Args</span>
-            <input name="args" aria-label="Arguments" autocomplete="off" />
-          </label>
-          <label class="wide">
-            <span>Working directory</span>
-            <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(cwd.cwd)}" />
-          </label>
-          <label>
-            <span>Columns</span>
-            <input name="cols" aria-label="Columns" type="number" min="60" max="220" value="120" required />
-          </label>
-          <button type="submit">Launch</button>
+          <div class="quick-launch-row" role="group" aria-label="Shortcuts">
+            <div class="quick-launch-buttons">
+              ${quickLaunchCommands.map((command) => `
+                <button
+                  type="button"
+                  class="preset-button"
+                  data-preset-id="${escapeAttr(command.id)}"
+                  aria-label="${escapeAttr(command.command)}"
+                  title="${escapeAttr(command.command)}"
+                >${escapeHtml(command.command)}</button>
+              `).join("")}
+            </div>
+            <label class="fakeagent-toggle">
+              <input name="fakeagent" type="checkbox" aria-label="fakeagent" />
+              <span>fakeagent</span>
+            </label>
+          </div>
         </form>
       </section>
       ${recentAgentSessions.length ? `
@@ -399,12 +495,22 @@ async function renderHome() {
                 aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
                 title="${escapeAttr([session.command, ...session.args].join(" "))}"
               >
-                <strong>
-                  <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
-                  <span>${escapeHtml(session.title || session.id)}</span>
-                </strong>
-                <span>${escapeHtml(session.lastMessageText || "No message text")}</span>
-                <code>${escapeHtml(formatAgentSessionMeta(session))}</code>
+                ${renderRecentSessionTitle(session)}
+                ${renderRecentUserPreviewRows(session)}
+                <span class="agent-session-preview">
+                  <span class="agent-session-preview-label">assistant</span>
+                  <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
+                </span>
+                <span class="agent-session-card-footer">
+                  <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
+                  <span class="agent-session-card-badges">
+                    <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
+                      <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
+                      ${escapeHtml(formatRecentSessionStatus(session))}
+                    </span>
+                    <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+                  </span>
+                </span>
               </button>
             `).join("")}
           </div>
@@ -417,10 +523,22 @@ async function renderHome() {
   `;
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
-  const commandInput = form.elements.namedItem("command") as HTMLInputElement;
-  const argsInput = form.elements.namedItem("args") as HTMLInputElement;
+  const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
+  const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
+  const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
   const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
+
+  cwdInput.addEventListener("input", () => {
+    launchCwdState.setValue(cwdInput.value);
+  });
+  commandInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    void submitLaunchForm();
+  });
 
   for (const button of form.querySelectorAll<HTMLButtonElement>("[data-preset-id]")) {
     button.addEventListener("click", async () => {
@@ -428,14 +546,12 @@ async function renderHome() {
       if (!preset) {
         return;
       }
-      commandInput.value = preset.command;
-      argsInput.value = preset.args.join(" ");
+      commandInput.value = [preset.command, ...preset.args].join(" ");
       await launchSession({
         command: preset.command,
         args: preset.args,
         cwd: currentLaunchCwd(),
-        cols: currentLaunchCols(),
-        fakeAgent: preset.fakeAgent,
+        fakeAgent: fakeAgentForCommand(preset.command),
       });
     });
   }
@@ -446,13 +562,12 @@ async function renderHome() {
       if (!session) {
         return;
       }
-      commandInput.value = session.command;
-      argsInput.value = session.args.join(" ");
+      commandInput.value = [session.command, ...session.args].join(" ");
+      setLaunchCwd(session.cwd || currentLaunchCwd());
       await launchSession({
         command: session.command,
         args: session.args,
         cwd: session.cwd || currentLaunchCwd(),
-        cols: currentLaunchCols(),
         fakeAgent: "",
       });
     });
@@ -460,23 +575,39 @@ async function renderHome() {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await launchSession({
-      command: commandInput.value,
-      args: parseArgs(argsInput.value),
-      cwd: currentLaunchCwd(),
-      cols: currentLaunchCols(),
-      fakeAgent: "",
-    });
+    await submitLaunchForm();
   });
 
-  function currentLaunchCwd() {
-    const data = new FormData(form);
-    return String(data.get("cwd") || "");
+  async function submitLaunchForm() {
+    const commandLine = parseCommandLine(commandInput.value);
+    if (!commandLine.command) {
+      return;
+    }
+    await launchSession({
+      command: commandLine.command,
+      args: commandLine.args,
+      cwd: currentLaunchCwd(),
+      fakeAgent: fakeAgentForCommand(commandLine.command),
+    });
   }
 
-  function currentLaunchCols() {
-    const data = new FormData(form);
-    return Number(data.get("cols") || 120);
+  function currentLaunchCwd() {
+    launchCwdState.setValue(cwdInput.value);
+    return cwdInput.value;
+  }
+
+  function setLaunchCwd(value: string) {
+    cwdInput.value = value;
+    launchCwdState.setValue(value);
+  }
+
+  function fakeAgentForCommand(command: string) {
+    if (!fakeAgentInput.checked) {
+      return "";
+    }
+    const binary = command.split(/[\\/]/).pop() || command;
+    const fakeCommand = commands.find((candidate) => candidate.fakeAgent && candidate.command === binary);
+    return fakeCommand ? fakeCommand.fakeAgent : "";
   }
 
   async function launchSession(input: LaunchSessionInput) {
@@ -486,7 +617,7 @@ async function renderHome() {
         command: input.command,
         args: input.args,
         cwd: input.cwd,
-        cols: input.cols,
+        cols: 120,
         rows: 42,
         env: {},
         fakeAgent: input.fakeAgent,
@@ -498,6 +629,9 @@ async function renderHome() {
 }
 
 async function renderSession(sessionId: string) {
+  if (activeSession?.id !== sessionId) {
+    renderer = "terminal";
+  }
   const payload = await api<SessionPayload>(`/api/sessions/${sessionId}`);
   activeSession = payload;
   const binary = detectChordBinary(payload.command, payload.args, payload.sdk.provider);
@@ -510,18 +644,19 @@ async function renderSession(sessionId: string) {
         <span class="status-pill" data-state="${payload.status}" data-testid="session-status">${payload.status}</span>
         <details class="session-menu">
           <summary class="menu-button" role="button" aria-label="Session menu">☰</summary>
-          <div class="menu-panel">
-            <div class="menu-fact">
-              <span>CWD</span>
-              <code>${escapeHtml(payload.cwd)}</code>
-            </div>
-            <div class="toolbar" role="group" aria-label="Renderer">
-              <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
-              <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Summary</button>
-              <button type="button" class="icon-button" data-renderer="semantic" aria-pressed="${renderer === "semantic"}">HTML</button>
-              <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
-              <button type="button" class="icon-button" data-action="logs" aria-expanded="false">Logs</button>
-              <button type="button" class="icon-button danger" data-action="kill">Stop</button>
+          <div class="floating-overlay session-menu-overlay">
+            <button type="button" class="floating-overlay-backdrop" data-action="close-session-menu" aria-label="Close session menu"></button>
+            <div class="floating-overlay-card menu-panel" role="dialog" aria-label="Session menu">
+              <div class="menu-fact">
+                <span>CWD</span>
+                <code>${escapeHtml(payload.cwd)}</code>
+              </div>
+              <div class="toolbar" role="group" aria-label="Session controls">
+                <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
+                <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Debug</button>
+                <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
+                <button type="button" class="icon-button" data-action="relayout">Relayout</button>
+              </div>
             </div>
           </div>
         </details>
@@ -532,64 +667,59 @@ async function renderSession(sessionId: string) {
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
         </div>
-        <aside id="logs" class="logs" hidden>
-          <section>
-            <h2>stdin</h2>
-            <pre data-testid="stdin-log"></pre>
-          </section>
-          <section>
-            <h2>stdout</h2>
-            <pre data-testid="stdout-log"></pre>
-          </section>
-        </aside>
       </section>
       <section class="composer" aria-label="Session input">
-        <textarea id="stdin" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+        <div id="attachment-preview" class="attachment-preview" data-testid="attachment-preview" aria-live="polite" hidden></div>
+        <dialog id="attachment-dialog" class="attachment-dialog" data-testid="attachment-dialog">
+          <form method="dialog">
+            <button type="submit" class="icon-button attachment-dialog-close" aria-label="Close attachment preview">×</button>
+            <div class="attachment-dialog-media">
+              <img data-attachment-dialog-image alt="" />
+              <span data-attachment-dialog-file hidden>file</span>
+            </div>
+            <strong data-attachment-dialog-name></strong>
+            <code data-attachment-dialog-path></code>
+            <div class="attachment-dialog-actions">
+              <button type="button" class="secondary-button" data-action="insert-attachment-path">Insert path</button>
+              <button type="submit" class="secondary-button">Close</button>
+            </div>
+          </form>
+        </dialog>
+        <div class="composer-input-row">
+          <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+          <input id="attachment-file" class="attachment-file-input" type="file" multiple />
+          <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
+            </svg>
+          </button>
+        </div>
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
           ${renderChordShortcuts(binary)}
         </div>
-        <form id="chord-form" class="chord-panel" aria-label="Create chord" hidden>
-          <div class="chord-panel-input-row">
-            ${["ctrl+", "shift+", "alt+", "/", "tab", "esc", ";enter", "backspace", "up", "down", "left", "right"].map((insert) => `
-              <button type="button" class="secondary-button" data-chord-insert="${escapeAttr(insert)}">${escapeHtml(formatChordHelper(insert))}</button>
-            `).join("")}
-          </div>
-          <div class="chord-panel-send-row">
-            <input name="label" aria-label="Chord label" autocomplete="off" placeholder="Label" />
-            <input name="sequence" aria-label="Chord sequence" autocomplete="off" placeholder="esc;esc or /model;enter" required />
-            <button type="submit">Save + Send</button>
-            <button type="button" class="secondary-button" data-action="cancel-chord">Cancel</button>
+        <form id="chord-form" class="floating-overlay chord-panel" aria-label="Add chord" role="dialog" aria-modal="true" hidden>
+          <button type="button" class="floating-overlay-backdrop chord-panel-backdrop" data-action="cancel-chord" aria-label="Close add chord"></button>
+          <div class="floating-overlay-card chord-panel-card">
+            <div class="chord-panel-input-row">
+              ${["ctrl+", "shift+", "alt+", "/", "tab", "esc", "backspace", "up", "down", "left", "right"].map((insert) => `
+                <button type="button" class="secondary-button" data-chord-insert="${escapeAttr(insert)}">${escapeHtml(formatChordHelper(insert))}</button>
+              `).join("")}
+            </div>
+            <div class="chord-panel-send-row">
+              <input name="label" aria-label="Chord label" autocomplete="off" placeholder="Label" />
+              <input name="sequence" aria-label="Chord sequence" autocomplete="off" placeholder="esc;esc or /model;enter" required />
+              <button type="submit">Save + Send</button>
+              <button type="button" class="secondary-button" data-action="cancel-chord">Cancel</button>
+            </div>
           </div>
         </form>
         <div class="composer-actions">
-          <div class="keys" role="group" aria-label="Keys">
-            ${renderKeyButton("esc", "Esc")}
-            ${renderKeyButton("tab", "Tab")}
-            ${renderKeyButton("up", "↑")}
-            ${renderKeyButton("down", "↓")}
-            ${renderKeyButton("left", "←", "overflow-key")}
-            ${renderKeyButton("right", "→", "overflow-key")}
-            ${renderKeyButton("ctrl+c", "^C", "overflow-key")}
-            <details class="key-overflow">
-              <summary class="icon-button key-more" role="button" aria-label="More keys">...</summary>
-              <div class="key-overflow-panel">
-                ${renderKeyButton("left", "←")}
-                ${renderKeyButton("right", "→")}
-                ${renderKeyButton("ctrl+c", "^C")}
-              </div>
-            </details>
-          </div>
-          <div class="voice-controls" role="group" aria-label="Voice mode">
-          <button type="button" class="secondary-button" data-action="toggle-chord" aria-expanded="false">Chord</button>
           <div class="voice-controls" role="group" aria-label="Voice mode">
             <button type="button" id="voice-talk" class="icon-button voice-talk" aria-label="Push to talk" data-voice-status="idle">Talk</button>
             <button type="button" id="voice-cancel" class="icon-button" aria-label="Cancel listening">Cancel</button>
             <button type="button" id="voice-stop" class="icon-button" aria-label="Cancel speech playback">Audio</button>
             <output id="voice-status" class="voice-status" data-testid="voice-status">Voice ready</output>
           </div>
-          <button type="button" id="send" aria-label="Send" title="Send">
-            <span aria-hidden="true">↵</span>
-          </button>
         </div>
       </section>
     </main>
@@ -598,16 +728,36 @@ async function renderSession(sessionId: string) {
   bindSessionControls(sessionId);
   renderSessionPayload(payload);
   subscribe(sessionId);
+  refreshSdkForSessionTitle(sessionId, payload);
+}
+
+function refreshSdkForSessionTitle(sessionId: string, payload: SessionPayload) {
+  if (!payload.sdk.provider) {
+    return;
+  }
+  void refreshSdkPayload(sessionId)
+    .then((nextPayload) => {
+      if (activeSession?.id === sessionId) {
+        renderSessionPayload(nextPayload);
+      }
+    })
+    .catch(() => {
+    });
 }
 
 function bindSessionControls(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const sendButton = document.getElementById("send") as HTMLButtonElement;
   const chordForm = document.getElementById("chord-form") as HTMLFormElement;
-  const chordToggle = document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']")!;
+  setupPromptboxState(sessionId, textarea);
   setupVoiceControls(sessionId, textarea);
+  setupAttachmentControls(sessionId, textarea);
 
   sendButton.addEventListener("click", () => {
+    if (!textarea.value) {
+      void sendChordSequence(sessionId, "enter", "common-enter");
+      return;
+    }
     void sendComposer(sessionId);
   });
 
@@ -630,30 +780,15 @@ function bindSessionControls(sessionId: string) {
     void sendKey(sessionId, key);
   });
 
-  document.querySelectorAll<HTMLButtonElement>("[data-key]").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      textarea.blur();
-      void sendKey(sessionId, button.dataset.key || "");
-    });
+  bindChordShortcutControls(sessionId, chordForm);
+
+  document.querySelector<HTMLButtonElement>("[data-action='close-session-menu']")?.addEventListener("click", () => {
+    closeSessionMenu();
   });
 
-  chordToggle.addEventListener("click", () => {
-    const nextHidden = !chordForm.hidden;
-    chordForm.hidden = nextHidden;
-    chordToggle.setAttribute("aria-expanded", String(!nextHidden));
-    if (!nextHidden) {
-      const sequenceInput = chordForm.elements.namedItem("sequence") as HTMLInputElement;
-      sequenceInput.focus();
-    }
-  });
-
-  document.querySelector<HTMLButtonElement>("[data-action='cancel-chord']")?.addEventListener("click", () => {
-    chordForm.hidden = true;
-    chordToggle.setAttribute("aria-expanded", "false");
-  });
+  document.querySelectorAll<HTMLButtonElement>("[data-action='cancel-chord']").forEach((button) => button.addEventListener("click", () => {
+    setChordFormOpen(chordForm, false);
+  }));
 
   document.querySelectorAll<HTMLButtonElement>("[data-chord-insert]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -673,38 +808,25 @@ function bindSessionControls(sessionId: string) {
       return;
     }
     const chord = saveStoredChord(binary, labelInput.value, sequence);
-    refreshChordShortcuts(binary);
+    refreshChordShortcuts(binary, false);
     labelInput.value = "";
     sequenceInput.value = "";
-    chordForm.hidden = true;
-    chordToggle.setAttribute("aria-expanded", "false");
+    setChordFormOpen(chordForm, false);
     void sendChordSequence(sessionId, chord.sequence, chord.id);
-  });
-
-  document.querySelectorAll<HTMLButtonElement>("[data-chord-sequence]").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      textarea.blur();
-      void sendChordSequence(sessionId, button.dataset.chordSequence || "", button.dataset.chordId || "");
-    });
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
     button.addEventListener("click", () => {
-      renderer = button.dataset.renderer || "semantic";
-      localStorage.setItem("tuiui-renderer", renderer);
+      const nextRenderer = button.dataset.renderer;
+      renderer = nextRenderer === "sdk" ? "sdk" : "terminal";
       renderSessionPayload(activeSession);
+      if (renderer === "sdk") {
+        void refreshSdk(sessionId).catch((error) => {
+          showRequestErrorToast("Refresh snapshot failed", error, "sdk-refresh-error-toast");
+        });
+      }
       closeSessionMenu();
     });
-  });
-
-  document.querySelector<HTMLButtonElement>("[data-action='logs']")?.addEventListener("click", (event) => {
-    const logs = document.getElementById("logs")!;
-    logs.hidden = !logs.hidden;
-    (event.currentTarget as HTMLButtonElement).setAttribute("aria-expanded", String(!logs.hidden));
-    closeSessionMenu();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='pause-events']")?.addEventListener("click", () => {
@@ -712,8 +834,8 @@ function bindSessionControls(sessionId: string) {
     closeSessionMenu();
   });
 
-  document.querySelector<HTMLButtonElement>("[data-action='kill']")?.addEventListener("click", () => {
-    void api(`/api/sessions/${sessionId}/kill`, { method: "POST" });
+  document.querySelector<HTMLButtonElement>("[data-action='relayout']")?.addEventListener("click", () => {
+    relayoutTerminal(sessionId);
     closeSessionMenu();
   });
 
@@ -724,6 +846,292 @@ function bindSessionControls(sessionId: string) {
   });
 }
 
+function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElement) {
+  const input = document.getElementById("attachment-file") as HTMLInputElement | null;
+  const button = document.getElementById("attach") as HTMLButtonElement | null;
+  const preview = document.getElementById("attachment-preview") as HTMLElement | null;
+  const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
+  const composer = document.querySelector<HTMLElement>(".composer");
+  if (!input || !button || !preview || !dialog || !composer) {
+    return;
+  }
+
+  clearComposerAttachments(preview);
+  bindAttachmentDialog(dialog, textarea);
+
+  button.addEventListener("click", () => {
+    input.click();
+  });
+
+  input.addEventListener("change", () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "file");
+  });
+
+  textarea.addEventListener("paste", (event) => {
+    const files = imageFilesFromClipboard(event.clipboardData);
+    if (!files.length) {
+      return;
+    }
+    event.preventDefault();
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "paste");
+  });
+
+  preview.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const remove = target.closest<HTMLElement>("[data-attachment-remove]");
+    if (remove) {
+      removeComposerAttachment(remove.dataset.attachmentRemove || "", textarea, preview);
+      return;
+    }
+    const open = target.closest<HTMLElement>("[data-attachment-open]");
+    if (open) {
+      openAttachmentDialog(open.dataset.attachmentOpen || "", dialog);
+    }
+  });
+
+  composer.addEventListener("dragover", (event) => {
+    if (!dragEventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    composer.dataset.attachmentDragging = "true";
+  });
+
+  composer.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget instanceof Node && composer.contains(event.relatedTarget)) {
+      return;
+    }
+    delete composer.dataset.attachmentDragging;
+  });
+
+  composer.addEventListener("drop", (event) => {
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) {
+      return;
+    }
+    event.preventDefault();
+    delete composer.dataset.attachmentDragging;
+    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "drop");
+  });
+}
+
+async function uploadComposerAttachments(
+  sessionId: string,
+  textarea: HTMLTextAreaElement,
+  preview: HTMLElement,
+  button: HTMLButtonElement,
+  files: File[],
+  source: AttachmentSource,
+) {
+  button.disabled = true;
+  try {
+    for (const file of files) {
+      const upload = await uploadAttachment(sessionId, file, source);
+      const attachment: ComposerAttachment = {
+        ...upload,
+        id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        previewUrl: upload.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+      };
+      composerAttachments.push(attachment);
+      insertAttachmentPath(textarea, attachment.path);
+    }
+    renderAttachmentPreview(preview, composerAttachments);
+  } catch (error) {
+    showToast({
+      title: "Attachment upload failed",
+      message: String(error instanceof Error ? error.message : error),
+      tone: "error",
+      testId: "attachment-upload-error-toast",
+    });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function uploadAttachment(sessionId: string, file: File, source: AttachmentSource) {
+  const body = new FormData();
+  body.append("file", file, attachmentUploadName(file, source));
+  const response = await fetch(`/api/sessions/${sessionId}/attachments`, {
+    method: "POST",
+    body,
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    if (response.status === 404 && message.trim() === "not found") {
+      throw new Error("Attachment endpoint is missing on this server. Restart tuiui so the backend route is loaded.");
+    }
+    throw new Error(message);
+  }
+  return await response.json() as AttachmentUpload;
+}
+
+function renderAttachmentPreview(preview: HTMLElement, attachments: ComposerAttachment[]) {
+  preview.hidden = attachments.length === 0;
+  preview.innerHTML = attachments.map((attachment) => {
+    const label = attachment.originalName || attachment.name;
+    if (attachment.previewUrl) {
+      return `
+        <figure class="attachment-preview-item" data-attachment-id="${escapeAttr(attachment.id)}">
+          <button type="button" class="attachment-preview-open" data-attachment-open="${escapeAttr(attachment.id)}" aria-label="Preview ${escapeAttr(label)}">
+            <img src="${escapeAttr(attachment.previewUrl)}" alt="${escapeAttr(label)}">
+            <figcaption title="${escapeAttr(attachment.path)}">${escapeHtml(label)}</figcaption>
+          </button>
+          <button type="button" class="attachment-preview-remove" data-attachment-remove="${escapeAttr(attachment.id)}" aria-label="Remove ${escapeAttr(label)}">
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
+        </figure>
+      `;
+    }
+
+    return `
+      <div class="attachment-preview-item file-preview" title="${escapeAttr(attachment.path)}" data-attachment-id="${escapeAttr(attachment.id)}">
+        <button type="button" class="attachment-preview-open" data-attachment-open="${escapeAttr(attachment.id)}" aria-label="Preview ${escapeAttr(label)}">
+          <span aria-hidden="true">file</span>
+          <strong>${escapeHtml(label)}</strong>
+        </button>
+        <button type="button" class="attachment-preview-remove" data-attachment-remove="${escapeAttr(attachment.id)}" aria-label="Remove ${escapeAttr(label)}">
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <path d="M10 11v6" />
+            <path d="M14 11v6" />
+          </svg>
+        </button>
+      </div>
+    `;
+  }).join("");
+}
+
+function bindAttachmentDialog(dialog: HTMLDialogElement, textarea: HTMLTextAreaElement) {
+  dialog.querySelector<HTMLButtonElement>("[data-action='insert-attachment-path']")?.addEventListener("click", () => {
+    const attachment = composerAttachments.find((candidate) => candidate.id === dialog.dataset.attachmentId);
+    if (!attachment) {
+      return;
+    }
+    insertAttachmentPath(textarea, attachment.path);
+    dialog.close();
+  });
+}
+
+function openAttachmentDialog(attachmentId: string, dialog: HTMLDialogElement) {
+  const attachment = composerAttachments.find((candidate) => candidate.id === attachmentId);
+  if (!attachment) {
+    return;
+  }
+  const label = attachment.originalName || attachment.name;
+  const image = dialog.querySelector<HTMLImageElement>("[data-attachment-dialog-image]");
+  const file = dialog.querySelector<HTMLElement>("[data-attachment-dialog-file]");
+  const name = dialog.querySelector<HTMLElement>("[data-attachment-dialog-name]");
+  const filePath = dialog.querySelector<HTMLElement>("[data-attachment-dialog-path]");
+  if (!image || !file || !name || !filePath) {
+    return;
+  }
+  dialog.dataset.attachmentId = attachment.id;
+  image.hidden = !attachment.previewUrl;
+  image.src = attachment.previewUrl || "";
+  image.alt = attachment.previewUrl ? label : "";
+  file.hidden = Boolean(attachment.previewUrl);
+  name.textContent = label;
+  filePath.textContent = attachment.path;
+  if (dialog.open) {
+    return;
+  }
+  dialog.showModal();
+}
+
+function removeComposerAttachment(id: string, textarea: HTMLTextAreaElement, preview: HTMLElement) {
+  const attachment = composerAttachments.find((candidate) => candidate.id === id);
+  if (!attachment) {
+    return;
+  }
+  if (attachment.previewUrl) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
+  composerAttachments = composerAttachments.filter((candidate) => candidate.id !== id);
+  setPromptboxValue(textarea, removeAttachmentPathFromText(textarea.value, attachment.path));
+  renderAttachmentPreview(preview, composerAttachments);
+}
+
+function clearComposerAttachments(preview = document.getElementById("attachment-preview") as HTMLElement | null) {
+  for (const attachment of composerAttachments) {
+    if (attachment.previewUrl) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  }
+  composerAttachments = [];
+  if (preview) {
+    preview.hidden = true;
+    preview.innerHTML = "";
+  }
+  const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
+  if (dialog?.open) {
+    dialog.close();
+  }
+  if (dialog) {
+    delete dialog.dataset.attachmentId;
+  }
+}
+
+function insertAttachmentPath(textarea: HTMLTextAreaElement, filePath: string) {
+  if (textarea.value.includes(filePath)) {
+    textarea.focus();
+    return;
+  }
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  const prefix = before && !/\s$/.test(before) ? " " : "";
+  const suffix = after && !/^\s/.test(after) ? " " : "";
+  const insertion = `${prefix}${filePath}${suffix}`;
+  setPromptboxValue(textarea, `${before}${insertion}${after}`);
+  const cursor = before.length + insertion.length;
+  textarea.selectionStart = cursor;
+  textarea.selectionEnd = cursor;
+  textarea.focus();
+}
+
+function removeAttachmentPathFromText(text: string, filePath: string) {
+  return text
+    .replaceAll(filePath, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^[ \t]+|[ \t]+$/g, "");
+}
+
+function imageFilesFromClipboard(data: DataTransfer | null) {
+  if (!data) {
+    return [];
+  }
+
+  const files = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  const itemFiles = Array.from(data.items)
+    .map((item) => item.kind === "file" ? item.getAsFile() : null)
+    .filter((file): file is File => Boolean(file))
+    .filter((file) => file.type.startsWith("image/"));
+
+  return dedupeClipboardImageFiles([...files, ...itemFiles]);
+}
+
+function dragEventHasFiles(event: DragEvent) {
+  const transfer = event.dataTransfer;
+  if (!transfer) {
+    return false;
+  }
+  return Array.from(transfer.types).includes("Files");
+}
+
 function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
   unsubscribeVoiceLoop?.();
   voiceLoop = createVoiceLoop({
@@ -732,12 +1140,12 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
     now: window.__tuiuiVoiceTest?.now || (() => Date.now()),
     minReadbackDelayMs: Number(window.__tuiuiVoiceTest?.minReadbackDelayMs || 700),
     async sendTranscript(text) {
-      textarea.value = text;
+      setPromptboxValue(textarea, text);
       await api(`/api/sessions/${sessionId}/send`, {
         method: "POST",
         body: JSON.stringify({ text, submit: true }),
       });
-      textarea.value = "";
+      setPromptboxValue(textarea, "");
     },
   });
   unsubscribeVoiceLoop = voiceLoop.subscribe(updateVoiceControls);
@@ -780,10 +1188,18 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
 }
 
 function updateVoiceControls(state: VoiceLoop["state"]) {
+  const controls = document.querySelector<HTMLElement>(".voice-controls");
   const talk = document.getElementById("voice-talk") as HTMLButtonElement | null;
   const cancel = document.getElementById("voice-cancel") as HTMLButtonElement | null;
   const stop = document.getElementById("voice-stop") as HTMLButtonElement | null;
   const status = document.getElementById("voice-status") as HTMLOutputElement | null;
+  if (controls) {
+    controls.hidden = state.status === "unsupported";
+    const actions = controls.closest<HTMLElement>(".composer-actions");
+    if (actions) {
+      actions.dataset.voiceUnsupported = String(state.status === "unsupported");
+    }
+  }
   if (talk) {
     talk.disabled = state.status === "unsupported";
     talk.dataset.voiceStatus = state.status;
@@ -808,11 +1224,13 @@ function closeSessionMenu() {
 async function sendComposer(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const text = textarea.value;
-  textarea.value = "";
+  setPromptboxValue(textarea, "");
   await api(`/api/sessions/${sessionId}/send`, {
     method: "POST",
     body: JSON.stringify({ text, submit: true }),
   });
+  clearComposerAttachments();
+  scheduleTerminalResize(sessionId);
 }
 
 async function sendKey(sessionId: string, key: string) {
@@ -835,21 +1253,66 @@ async function sendChordSequence(sessionId: string, sequence: string, chordId: s
   }
 }
 
-function refreshChordShortcuts(binary: ChordBinary) {
+function refreshChordShortcuts(binary: ChordBinary, formOpen: boolean) {
   const container = document.querySelector<HTMLElement>("[aria-label='Shortcut chords']");
   if (!container) {
     return;
   }
   container.innerHTML = renderChordShortcuts(binary);
+  const chordForm = document.getElementById("chord-form") as HTMLFormElement | null;
+  if (!chordForm) {
+    return;
+  }
+  bindChordShortcutControls(activeSession?.id || "", chordForm);
+  setChordFormOpen(chordForm, formOpen);
+}
+
+function bindChordShortcutControls(sessionId: string, chordForm: HTMLFormElement) {
+  const chordToggle = document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']");
+  chordToggle?.addEventListener("click", () => {
+    const open = chordForm.hidden;
+    setChordFormOpen(chordForm, open);
+    if (open && shouldAutoFocusChordInput()) {
+      const sequenceInput = chordForm.elements.namedItem("sequence") as HTMLInputElement;
+      sequenceInput.focus();
+    }
+  });
+
   document.querySelectorAll<HTMLButtonElement>("[data-chord-sequence]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
     });
     button.addEventListener("click", () => {
       document.getElementById("stdin")?.blur();
-      void sendChordSequence(activeSession?.id || "", button.dataset.chordSequence || "", button.dataset.chordId || "");
+      if (!chordForm.hidden && button.dataset.chordUserDefined === "true") {
+        const label = button.dataset.chordLabel || button.textContent || "this chord";
+        if (window.confirm(`Delete chord "${label}"?`)) {
+          deleteStoredChord(button.dataset.chordId || "");
+          const binary = detectChordBinary(activeSession?.command || "", activeSession?.args || [], activeSession?.sdk.provider || "");
+          refreshChordShortcuts(binary, true);
+        }
+        return;
+      }
+      void sendChordSequence(sessionId, button.dataset.chordSequence || "", button.dataset.chordId || "");
     });
   });
+}
+
+function setChordFormOpen(chordForm: HTMLFormElement, open: boolean) {
+  chordForm.hidden = !open;
+  if (open) {
+    const composer = document.querySelector<HTMLElement>(".composer");
+    if (composer) {
+      chordForm.style.bottom = `${Math.max(0, Math.round(window.innerHeight - composer.getBoundingClientRect().top))}px`;
+    }
+  } else {
+    chordForm.style.bottom = "";
+  }
+  document.querySelector<HTMLButtonElement>("[data-action='toggle-chord']")?.setAttribute("aria-expanded", String(open));
+  const container = document.querySelector<HTMLElement>("[aria-label='Shortcut chords']");
+  if (container) {
+    container.dataset.managingChords = String(open);
+  }
 }
 
 function subscribe(sessionId: string) {
@@ -886,7 +1349,10 @@ function updatePauseEventsButton() {
   button.textContent = eventsPaused ? "Resume events" : "Pause events";
 }
 
-function renderSessionPayload(payload: SessionPayload | null) {
+function renderSessionPayload(
+  payload: SessionPayload | null,
+  options: { voiceReadbackSnapshotFresh?: boolean } = {},
+) {
   if (!payload) {
     return;
   }
@@ -919,12 +1385,6 @@ function renderSessionPayload(payload: SessionPayload | null) {
     stopTerminalAutoResize();
     destroyXterm();
     renderSdkScreen(screen, payload);
-  } else {
-    stopTerminalAutoResize();
-    destroyXterm();
-    destroyDataEditor();
-    screen.className = "screen semantic-screen";
-    screen.innerHTML = renderSemanticScreen(payload.semantic);
   }
 
   const stdinLog = document.querySelector<HTMLElement>("[data-testid='stdin-log']");
@@ -935,8 +1395,23 @@ function renderSessionPayload(payload: SessionPayload | null) {
   if (stdoutLog) {
     stdoutLog.textContent = payload.stdoutEvents.map((event) => event.displayText ? `[${formatTime(event.createdAt)}] ${event.displayText}` : "").filter(Boolean).join("\n\n");
   }
-  voiceLoop?.observePayload(payload);
+  if (!shouldDeferVoiceReadbackForProviderRefresh(payload, options)) {
+    voiceLoop?.observePayload(payload);
+  }
   scheduleVoiceReadbackCheck(payload);
+}
+
+function shouldDeferVoiceReadbackForProviderRefresh(
+  payload: SessionPayload,
+  options: { voiceReadbackSnapshotFresh?: boolean },
+) {
+  return Boolean(
+    voiceLoop?.state.awaitingReadback
+      && payload.lifecycle === "running"
+      && payload.status === "idle"
+      && payload.sdk.provider
+      && !options.voiceReadbackSnapshotFresh,
+  );
 }
 
 function scheduleVoiceReadbackCheck(payload: SessionPayload) {
@@ -949,10 +1424,20 @@ function scheduleVoiceReadbackCheck(payload: SessionPayload) {
   }
   voiceReadbackTimer = window.setTimeout(() => {
     voiceReadbackTimer = null;
-    void api<SessionPayload>(`/api/sessions/${payload.id}`)
-      .then(renderSessionPayload)
+    void refreshVoiceReadbackPayload(payload)
       .catch(() => undefined);
   }, payload.status === "idle" ? 350 : 1_100);
+}
+
+async function refreshVoiceReadbackPayload(payload: SessionPayload) {
+  if (payload.status === "idle" && payload.sdk.provider) {
+    const nextPayload = await refreshSdkPayload(payload.id);
+    renderSessionPayload(nextPayload, { voiceReadbackSnapshotFresh: true });
+    return;
+  }
+
+  const nextPayload = await api<SessionPayload>(`/api/sessions/${payload.id}`);
+  renderSessionPayload(nextPayload);
 }
 
 function clearVoiceReadbackTimer() {
@@ -1008,6 +1493,29 @@ function smoothScrollXterm(totalLines: number) {
   terminalScrollAnimationFrame = window.requestAnimationFrame(tick);
 }
 
+function relayoutTerminal(sessionId: string) {
+  if (!activeSession) {
+    return;
+  }
+  renderer = "terminal";
+  lastTerminalResizeKey = "";
+  destroyXterm();
+  renderSessionPayload({
+    ...activeSession,
+    redrawActive: true,
+  });
+  scheduleTerminalResize(sessionId);
+  window.setTimeout(() => {
+    if (activeSession?.id !== sessionId || renderer !== "terminal") {
+      return;
+    }
+    renderSessionPayload({
+      ...activeSession,
+      redrawActive: false,
+    });
+  }, 750);
+}
+
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
   if (payload.renderedAnsi === undefined && payload.renderedHtml) {
@@ -1023,16 +1531,46 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
       <div class="terminal-xterm-wrap" data-testid="rendered-terminal">
         <div id="xterm-terminal" class="terminal-host"></div>
         <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
+        <div class="terminal-redraw-overlay" data-testid="terminal-redraw-overlay" hidden>
+          <div class="terminal-redraw-pill" role="status" aria-live="polite">
+            <span class="terminal-redraw-spinner" aria-hidden="true"></span>
+            <span>Restoring terminal...</span>
+          </div>
+        </div>
       </div>
     `;
   }
 
+  updateTerminalRedrawOverlay(screen, payload.redrawActive);
   const snapshot = screen.querySelector<HTMLElement>(".terminal-text-snapshot");
   if (snapshot) {
     snapshot.textContent = payload.renderedText;
   }
   xtermSyncQueue = xtermSyncQueue.then(() => syncXterm(payload)).catch(() => undefined);
   startTerminalAutoResize(payload.id);
+}
+
+function updateTerminalRedrawOverlay(screen: HTMLElement, active: boolean) {
+  const overlay = screen.querySelector<HTMLElement>(".terminal-redraw-overlay");
+  if (!overlay) {
+    return;
+  }
+  overlay.hidden = !active;
+  overlay.setAttribute("aria-hidden", String(!active));
+}
+
+function openTerminalHttpLink(event: MouseEvent, uri: string) {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
+  event.preventDefault();
+  window.open(url.href, "_blank", "noopener,noreferrer");
 }
 
 async function ensureXterm(payload: SessionPayload) {
@@ -1059,9 +1597,11 @@ async function ensureXterm(payload: SessionPayload) {
       },
       allowTransparency: false,
       scrollback: 5000,
+      linkHandler: terminalHttpLinkHandler,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(openTerminalHttpLink));
     term.open(host);
     xtermFit = fit;
     term.onData((text) => {
@@ -1092,19 +1632,23 @@ async function syncXterm(payload: SessionPayload) {
   term.resize(payload.cols, payload.rows);
   const newestEvent = payload.stdoutEvents[payload.stdoutEvents.length - 1];
   const newestId = newestEvent ? newestEvent.id : 0;
-  if (xtermLastStdoutEventId === 0 || newestId < xtermLastStdoutEventId) {
+  if (payload.screenVersion !== xtermScreenVersion) {
     term.reset();
     if (payload.renderedAnsi) {
       await writeXterm(term, payload.renderedAnsi);
-      xtermLastStdoutEventId = newestId;
-      return;
+    } else {
+      await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
     }
-    await writeXterm(term, payload.renderedText.replaceAll("\n", "\r\n"));
-    xtermLastStdoutEventId = newestId;
+    xtermLastStdoutEventId = payload.snapshotEventId || newestId;
+    xtermScreenVersion = payload.screenVersion;
     return;
   }
 
-  if (newestId === xtermLastStdoutEventId) {
+  if (newestId === 0 || newestId === xtermLastStdoutEventId) {
+    return;
+  }
+
+  if (newestId < xtermLastStdoutEventId) {
     return;
   }
 
@@ -1157,6 +1701,7 @@ function destroyXterm() {
   xtermReady = null;
   xtermSessionId = "";
   xtermLastStdoutEventId = 0;
+  xtermScreenVersion = -1;
   xtermInputQueue = Promise.resolve();
   xtermSyncQueue = Promise.resolve();
 }
@@ -1217,6 +1762,9 @@ function scheduleTerminalResize(sessionId: string) {
 }
 
 async function resizeTerminalToScreen(sessionId: string) {
+  if (composerAttachments.length > 0) {
+    return;
+  }
   const screen = document.getElementById("screen");
   const terminal = screen?.querySelector<HTMLElement>(".terminal-xterm-wrap, .terminal-html");
   if (!screen || !terminal) {
@@ -1287,15 +1835,18 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   if (!sdk.provider) {
     destroyDataEditor();
     screen.innerHTML = `
-      <section class="sdk-panel unavailable" data-testid="sdk-summary">
+      <section class="sdk-panel unavailable" data-testid="sdk-debug">
         <header>
           <strong>No SDK adapter</strong>
           <span>This session is only available through the terminal stream.</span>
         </header>
         ${renderTuishotPreviewMarkup()}
+        ${renderDebugHtmlMarkup()}
+        ${renderDebugLogsMarkup()}
       </section>
     `;
     updateTuishotPreview(screen, payload);
+    updateDebugHtml(screen, payload);
     return;
   }
 
@@ -1304,7 +1855,7 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   if (!existingEditorHost || dataEditorKind !== "sdk-yaml") {
     destroyDataEditor();
     screen.innerHTML = `
-      <section class="sdk-panel" data-testid="sdk-summary">
+      <section class="sdk-panel" data-testid="sdk-debug">
         <header>
           <div>
             <strong><span data-sdk-provider></span> SDK</strong>
@@ -1316,15 +1867,30 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         </header>
         <p class="sdk-error" data-sdk-error hidden></p>
         ${renderTuishotPreviewMarkup()}
-        <section class="session-brief" data-testid="session-brief" data-brief-state="empty">
-          <header>
-            <strong>Session brief</strong>
-            <span data-session-brief-state></span>
-          </header>
-          <div class="session-brief-content" data-session-brief-content></div>
-        </section>
+        <details class="session-brief" data-testid="session-brief" data-brief-state="empty">
+          <summary>
+            <span class="sdk-details-summary-row">
+              <strong>Session brief</strong>
+              <span data-session-brief-state></span>
+            </span>
+          </summary>
+          <div class="session-brief-tabs" role="tablist" aria-label="Session brief view">
+            <button type="button" role="tab" class="secondary-button" data-brief-view="rendered" aria-selected="true">Rendered</button>
+            <button type="button" role="tab" class="secondary-button" data-brief-view="raw" aria-selected="false">Raw</button>
+          </div>
+          <div class="session-brief-content" data-session-brief-rendered></div>
+          <div class="session-brief-raw" data-session-brief-raw hidden>
+            <div id="session-brief-editor" data-testid="session-brief-raw"></div>
+          </div>
+        </details>
+        ${renderDebugHtmlMarkup()}
+        ${renderDebugLogsMarkup()}
         <details class="sdk-diagnostics">
-          <summary>Diagnostics</summary>
+          <summary>
+            <span class="sdk-details-summary-row">
+              <strong>Diagnostics</strong>
+            </span>
+          </summary>
           <section class="sdk-yaml-panel" aria-label="Provider snapshot diagnostics YAML panel">
             <div id="sdk-yaml-editor" data-testid="sdk-yaml"></div>
           </section>
@@ -1342,9 +1908,17 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
         showRequestErrorToast("Get session brief failed", error, "sdk-summarize-error-toast");
       });
     });
-    screen.querySelector<HTMLDetailsElement>(".sdk-diagnostics")?.addEventListener("toggle", () => {
-      dataEditorView?.requestMeasure();
+    screen.querySelectorAll<HTMLDetailsElement>(".sdk-panel details").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        if (details.classList.contains("sdk-diagnostics")) {
+          requestAnimationFrame(() => dataEditorView?.requestMeasure());
+        }
+        if (details.classList.contains("session-brief")) {
+          requestAnimationFrame(() => briefEditorView?.requestMeasure());
+        }
+      });
     });
+    bindSessionBriefTabs(screen);
     mountYamlEditor("sdk-yaml-editor", yamlDoc);
   } else {
     updateDataEditorDoc(yamlDoc);
@@ -1352,20 +1926,69 @@ function renderSdkScreen(screen: HTMLElement, payload: SessionPayload) {
   updateSdkChrome(screen, payload);
   updateTuishotPreview(screen, payload);
   updateSessionBrief(screen, payload);
+  updateDebugHtml(screen, payload);
 }
 
 function renderTuishotPreviewMarkup() {
   return `
-    <section class="tuishot-preview" data-testid="tuishot-preview">
-      <header>
-        <strong>Tuishot</strong>
-        <span data-tuishot-meta></span>
-      </header>
+    <details class="tuishot-preview" data-testid="tuishot-preview">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>Tuishot</strong>
+          <span data-tuishot-meta></span>
+        </span>
+      </summary>
       <div class="tuishot-frame">
-        <img data-tuishot-image alt="Current terminal view" />
+        <a data-tuishot-link target="_blank" rel="noopener noreferrer" aria-label="Open Tuishot in a new tab">
+          <img data-tuishot-image alt="Current terminal view" />
+        </a>
       </div>
-    </section>
+    </details>
   `;
+}
+
+function renderDebugHtmlMarkup() {
+  return `
+    <details class="debug-html" data-testid="debug-html">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>HTML</strong>
+          <span>semantic</span>
+        </span>
+      </summary>
+      <div class="debug-html-content" data-debug-html-rendered></div>
+    </details>
+  `;
+}
+
+function renderDebugLogsMarkup() {
+  return `
+    <details class="debug-logs" data-testid="debug-logs">
+      <summary>
+        <span class="sdk-details-summary-row">
+          <strong>Logs</strong>
+        </span>
+      </summary>
+      <div class="logs">
+        <section>
+          <h2>stdin</h2>
+          <pre data-testid="stdin-log"></pre>
+        </section>
+        <section>
+          <h2>stdout</h2>
+          <pre data-testid="stdout-log"></pre>
+        </section>
+      </div>
+    </details>
+  `;
+}
+
+function updateDebugHtml(screen: HTMLElement, payload: SessionPayload) {
+  const container = screen.querySelector<HTMLElement>("[data-debug-html-rendered]");
+  if (!container) {
+    return;
+  }
+  container.innerHTML = renderSemanticScreen(payload.semantic);
 }
 
 function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
@@ -1395,12 +2018,16 @@ function updateSdkChrome(screen: HTMLElement, payload: SessionPayload) {
 }
 
 function updateTuishotPreview(screen: HTMLElement, payload: SessionPayload) {
+  const link = screen.querySelector<HTMLAnchorElement>("[data-tuishot-link]");
   const image = screen.querySelector<HTMLImageElement>("[data-tuishot-image]");
   const meta = screen.querySelector<HTMLElement>("[data-tuishot-meta]");
-  if (!image || !meta) {
+  if (!link || !image || !meta) {
     return;
   }
   const src = `/api/sessions/${payload.id}/tuishot.svg?updated=${encodeURIComponent(payload.updatedAt)}`;
+  if (link.getAttribute("href") !== src) {
+    link.href = src;
+  }
   if (image.getAttribute("src") !== src) {
     image.src = src;
   }
@@ -1412,14 +2039,39 @@ function updateSessionBrief(screen: HTMLElement, payload: SessionPayload) {
   const brief = selectSessionBrief(payload.sdk);
   const container = screen.querySelector<HTMLElement>("[data-testid='session-brief']");
   const state = screen.querySelector<HTMLElement>("[data-session-brief-state]");
-  const content = screen.querySelector<HTMLElement>("[data-session-brief-content]");
-  if (!container || !state || !content) {
+  const rendered = screen.querySelector<HTMLElement>("[data-session-brief-rendered]");
+  if (!container || !state || !rendered) {
     return;
   }
 
   container.dataset.briefState = brief.state;
   state.textContent = brief.label;
-  content.innerHTML = renderSessionBriefContent(brief);
+  rendered.innerHTML = renderSessionBriefContent(brief);
+  updateSessionBriefEditor(brief.text);
+}
+
+function bindSessionBriefTabs(screen: HTMLElement) {
+  screen.querySelectorAll<HTMLButtonElement>("[data-brief-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSessionBriefView(screen, button.dataset.briefView === "raw" ? "raw" : "rendered");
+    });
+  });
+}
+
+function setSessionBriefView(screen: HTMLElement, view: "rendered" | "raw") {
+  const rendered = screen.querySelector<HTMLElement>("[data-session-brief-rendered]");
+  const raw = screen.querySelector<HTMLElement>("[data-session-brief-raw]");
+  if (!rendered || !raw) {
+    return;
+  }
+  rendered.hidden = view !== "rendered";
+  raw.hidden = view !== "raw";
+  screen.querySelectorAll<HTMLButtonElement>("[data-brief-view]").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.briefView === view));
+  });
+  if (view === "raw") {
+    requestAnimationFrame(() => briefEditorView?.requestMeasure());
+  }
 }
 
 function buildSdkYamlData(payload: SessionPayload) {
@@ -1567,6 +2219,46 @@ function renderBriefFilesSection(files: StructuredSessionBrief["filesChanged"]) 
   `;
 }
 
+function updateSessionBriefEditor(doc: string) {
+  const host = document.getElementById("session-brief-editor");
+  if (!host) {
+    return;
+  }
+  if (!briefEditorView) {
+    briefEditorView = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          basicSetup,
+          vsCodeDark,
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+          EditorView.contentAttributes.of({ "aria-label": "Session brief raw text" }),
+          editorTheme(),
+        ],
+      }),
+    });
+    briefEditorDoc = doc;
+    return;
+  }
+  if (briefEditorDoc === doc) {
+    return;
+  }
+  const scrollTop = briefEditorView.scrollDOM.scrollTop;
+  const scrollLeft = briefEditorView.scrollDOM.scrollLeft;
+  briefEditorView.dispatch({
+    changes: {
+      from: 0,
+      to: briefEditorView.state.doc.length,
+      insert: doc,
+    },
+  });
+  briefEditorView.scrollDOM.scrollTop = scrollTop;
+  briefEditorView.scrollDOM.scrollLeft = scrollLeft;
+  briefEditorDoc = doc;
+}
+
 function mountYamlEditor(hostId: string, doc: string) {
   const host = document.getElementById(hostId);
   if (!host) {
@@ -1610,8 +2302,12 @@ function updateDataEditorDoc(doc: string) {
 }
 
 async function refreshSdk(sessionId: string) {
-  const payload = await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-refresh`, { method: "POST" });
+  const payload = await refreshSdkPayload(sessionId);
   renderSessionPayload(payload);
+}
+
+async function refreshSdkPayload(sessionId: string) {
+  return await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-refresh`, { method: "POST" });
 }
 
 async function summarizeSdk(sessionId: string) {
@@ -1745,6 +2441,9 @@ function destroyDataEditor() {
   dataEditorView = null;
   dataEditorKind = "";
   dataEditorDoc = "";
+  briefEditorView?.destroy();
+  briefEditorView = null;
+  briefEditorDoc = "";
 }
 
 function renderSemanticScreen(screen: SemanticScreen) {
@@ -1767,8 +2466,8 @@ function renderSemanticScreen(screen: SemanticScreen) {
   `;
 }
 
-function formatAgentSessionMeta(session: RecentAgentSession) {
-  const cwd = session.cwd.split("/").filter(Boolean).at(-1) || session.cwd || "/";
+function formatAgentSessionMeta(session: RecentAgentSession, homeDirs: string[]) {
+  const cwd = formatPathForDisplay(session.cwd, homeDirs);
   const time = new Date(session.lastMessageAt).toLocaleString([], {
     month: "short",
     day: "numeric",
@@ -1776,6 +2475,96 @@ function formatAgentSessionMeta(session: RecentAgentSession) {
     minute: "2-digit",
   });
   return `${time} - ${cwd} - ${session.messageCount} messages`;
+}
+
+function homeDirsForDisplay(input: { cwd: string; homeDir?: string; homeDirs?: string[] }) {
+  return [...new Set([
+    ...(Array.isArray(input.homeDirs) ? input.homeDirs : []),
+    input.homeDir || "",
+    inferHomeDir(input.cwd),
+  ].filter(Boolean))];
+}
+
+function inferHomeDir(value: string) {
+  const match = value.match(/^(\/Users\/[^/]+|\/home\/[^/]+)/);
+  return match?.[1] || "";
+}
+
+function formatPathForDisplay(value: string, homeDirs: string[]) {
+  const path = value || "/";
+  for (const candidate of homeDirs) {
+    const home = candidate.replace(/\/+$/g, "");
+    if (path === home) {
+      return "~";
+    }
+    if (path.startsWith(`${home}/`)) {
+      return `~${path.slice(home.length)}`;
+    }
+  }
+  return path;
+}
+
+function renderRecentSessionTitle(session: RecentAgentSession) {
+  const title = session.title || session.id;
+  if (!title || textIsBasicallySame(title, session.initialUserText)) {
+    return "";
+  }
+  return `<strong class="agent-session-title">${escapeHtml(title)}</strong>`;
+}
+
+function renderRecentUserPreviewRows(session: RecentAgentSession) {
+  if (session.userMessageCount > 1 && formatRecentSessionLine(session.latestUserText, "")) {
+    return `
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">user (first)</span>
+        <span>${escapeHtml(formatRecentSessionLine(session.initialUserText, "No user message"))}</span>
+      </span>
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">user (last)</span>
+        <span>${escapeHtml(formatRecentSessionLine(session.latestUserText, "No user message"))}</span>
+      </span>
+    `;
+  }
+  return `
+    <span class="agent-session-preview">
+      <span class="agent-session-preview-label">user</span>
+      <span>${escapeHtml(formatRecentSessionLine(session.initialUserText || session.latestUserText, "No user message"))}</span>
+    </span>
+  `;
+}
+
+function textIsBasicallySame(left: string, right: string) {
+  const leftText = normalizeComparableText(formatRecentSessionLine(left, ""));
+  const rightText = normalizeComparableText(formatRecentSessionLine(right, ""));
+  if (!leftText || !rightText) {
+    return false;
+  }
+  if (leftText === rightText) {
+    return true;
+  }
+  const shorter = leftText.length < rightText.length ? leftText : rightText;
+  const longer = leftText.length < rightText.length ? rightText : leftText;
+  return shorter.length >= 24 && longer.startsWith(shorter);
+}
+
+function normalizeComparableText(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function formatRecentSessionLine(text: string, empty: string) {
+  const firstParagraph = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n[ \t]*\n/)
+    .map((paragraph) => paragraph.trim())
+    .find(Boolean) || "";
+  const previewText = firstParagraph
+    .replace(/[ \t]*\n[ \t]*/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  if (!previewText) {
+    return empty;
+  }
+  return previewText;
 }
 
 function providerLabel(provider: RecentAgentSession["provider"]) {
@@ -1786,6 +2575,16 @@ function providerLabel(provider: RecentAgentSession["provider"]) {
     return "Codex";
   }
   return "Claude";
+}
+
+function formatRecentSessionStatus(session: RecentAgentSession) {
+  if (session.status === "busy" || session.status === "idle") {
+    return session.status;
+  }
+  const latestAssistant = formatRecentSessionLine(session.latestAssistantText, "");
+  const latestUser = formatRecentSessionLine(session.latestUserText, "");
+  const lastMessage = formatRecentSessionLine(session.lastMessageText, "");
+  return !latestAssistant || lastMessage === latestUser ? "busy" : "idle";
 }
 
 function renderSessionLink(session: any) {
@@ -1801,18 +2600,13 @@ function renderSessionLink(session: any) {
   `;
 }
 
-function renderKeyButton(key: string, label: string, className = "") {
-  const classes = ["icon-button", "key-button", className].filter(Boolean).join(" ");
-  return `<button type="button" class="${escapeAttr(classes)}" data-key="${escapeAttr(key)}" aria-label="${escapeAttr(key)}">${escapeHtml(label)}</button>`;
-}
-
 function renderChordShortcuts(binary: ChordBinary) {
   const userChords = readStoredChords()
     .filter((chord) => chord.binary === binary)
     .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt))
     .slice(0, 5);
   const userSequences = new Set(userChords.map((chord) => chord.sequence.toLowerCase()));
-  const presetChords = presetsForBinary(binary).filter((preset) => !userSequences.has(preset.sequence.toLowerCase())).slice(0, 8);
+  const presetChords = presetsForBinary(binary).filter((preset) => !userSequences.has(preset.sequence.toLowerCase())).slice(0, 9);
   const buttons = [
     ...userChords.map((chord) => renderChordButton({
       id: chord.id,
@@ -1827,28 +2621,89 @@ function renderChordShortcuts(binary: ChordBinary) {
       userDefined: false,
     })),
   ];
-  return buttons.join("");
+  return `
+    <div class="chord-scroll" data-chord-scroll>
+      ${buttons.join("")}
+    </div>
+    <div class="chord-fixed">
+      ${renderChordToggle()}
+      ${renderFixedEnterChordButton()}
+    </div>
+  `;
 }
 
 function renderChordButton(input: { id: string; label: string; sequence: string; userDefined: boolean }) {
   const classes = ["secondary-button", "chord-button", input.userDefined ? "user-chord" : "preset-chord"].join(" ");
+  const renderedLabel = formatChordButtonLabel(input.label);
   return `
     <button
       type="button"
       class="${escapeAttr(classes)}"
       data-chord-id="${escapeAttr(input.id)}"
       data-chord-sequence="${escapeAttr(input.sequence)}"
-      title="${escapeAttr(input.sequence)}"
-    >${escapeHtml(input.label)}</button>
+      data-chord-label="${escapeAttr(input.label)}"
+      data-chord-user-defined="${input.userDefined ? "true" : "false"}"
+      aria-label="${escapeAttr(input.label)}"
+      title="${escapeAttr(`${input.label}: ${input.sequence}`)}"
+    >${escapeHtml(renderedLabel)}</button>
   `;
+}
+
+function renderChordToggle() {
+  return `<button type="button" class="secondary-button chord-toggle" data-action="toggle-chord" aria-label="Chord" title="Chord" aria-expanded="false">🎹</button>`;
+}
+
+function renderFixedEnterChordButton() {
+  return `
+    <button
+      type="button"
+      id="send"
+      class="chord-button chord-enter"
+      aria-label="Send"
+      title="Enter"
+    >${escapeHtml(formatChordButtonLabel("Enter"))}</button>
+  `;
+}
+
+function shouldAutoFocusChordInput() {
+  return !window.matchMedia("(pointer: coarse), (max-width: 640px)").matches;
+}
+
+function formatChordButtonLabel(label: string) {
+  return label
+    .replace(/\bCtrl[-+ ]?/gi, "^")
+    .replace(/\bControl[-+ ]?/gi, "^")
+    .replace(/\bShift[-+ ]?/gi, "⇧")
+    .replace(/\bAlt[-+ ]?/gi, "⌥")
+    .replace(/\bOpt[-+ ]?/gi, "⌥")
+    .replace(/\bCmd[-+ ]?/gi, "⌘")
+    .replace(/\bMeta[-+ ]?/gi, "⌘")
+    .replace(/\bEsc(?:ape)?\b/gi, "esc")
+    .replace(/\bTab\b/gi, "⇥")
+    .replace(/\bUp\b/gi, "↑")
+    .replace(/\bDown\b/gi, "↓")
+    .replace(/\bLeft\b/gi, "←")
+    .replace(/\bRight\b/gi, "→")
+    .replace(/\bEnter\b|\bReturn\b/gi, "↵")
+    .replace(/\bBackspace\b|\bBack\b/gi, "⌫");
 }
 
 function formatChordHelper(value: string) {
   switch (value) {
+    case "ctrl+":
+      return "^";
+    case "shift+":
+      return "⇧";
+    case "alt+":
+      return "⌥";
     case ";enter":
-      return "Enter";
+      return "↵";
+    case "tab":
+      return "⇥";
+    case "esc":
+      return "esc";
     case "backspace":
-      return "Back";
+      return "⌫";
     case "up":
       return "↑";
     case "down":
@@ -1914,6 +2769,10 @@ function markStoredChordUsed(id: string) {
   writeStoredChords(chords.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt)));
 }
 
+function deleteStoredChord(id: string) {
+  writeStoredChords(readStoredChords().filter((chord) => chord.id !== id));
+}
+
 function isChordBinary(value: unknown): value is ChordBinary {
   return value === "" || value === "codex" || value === "opencode" || value === "claude";
 }
@@ -1934,49 +2793,6 @@ function keyNameFromKeyboardEvent(event: KeyboardEvent) {
   return "";
 }
 
-function parseArgs(input: string) {
-  const args: string[] = [];
-  let current = "";
-  let quote = "";
-  let escaped = false;
-
-  for (const char of input) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = "";
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) {
-        args.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current) {
-    args.push(current);
-  }
-  return args;
-}
-
 async function api<T>(path: string, init: RequestInit = {}) {
   const response = await fetch(path, {
     ...init,
@@ -1986,9 +2802,22 @@ async function api<T>(path: string, init: RequestInit = {}) {
     },
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    const message = await apiErrorMessage(response);
+    throw new Error(message);
   }
   return await response.json() as T;
+}
+
+async function apiErrorMessage(response: Response) {
+  const text = await response.text();
+  try {
+    const payload = JSON.parse(text) as { error?: unknown };
+    if (typeof payload.error === "string" && payload.error) {
+      return payload.error;
+    }
+  } catch {
+  }
+  return text;
 }
 
 function formatTime(value: string) {

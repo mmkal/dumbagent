@@ -7,6 +7,7 @@ import {
   buildCodexSummary,
   buildCodexSidecarSummary,
   createCodexSummaryPrompt,
+  discardCodexThreadFromDatabasePath,
   readCodexThreadsFromDatabasePath,
   recentCodexSessionsFromThreads,
   resolveCodexStateDatabasePathForEnv,
@@ -120,17 +121,24 @@ test("lists recent Codex sessions by latest visible message", () => {
   const newestRollout = path.join(workspace.path, "newest.jsonl");
   const olderRollout = path.join(workspace.path, "older.jsonl");
   const staleRollout = path.join(workspace.path, "stale.jsonl");
+  const sidecarRollout = path.join(workspace.path, "sidecar.jsonl");
   fs.writeFileSync(newestRollout, [
     rolloutMessage("2026-05-11T11:58:00.000Z", "user", "# AGENTS.md instructions for /repo"),
+    rolloutMessage("2026-05-11T11:58:30.000Z", "user", "build the phone launcher"),
     rolloutMessage("2026-05-11T11:59:00.000Z", "assistant", "working on the phone launcher"),
   ].join("\n"));
   fs.writeFileSync(olderRollout, rolloutMessage("2026-05-11T09:30:00.000Z", "user", "resume this on mobile"));
   fs.writeFileSync(staleRollout, rolloutMessage("2026-05-09T09:30:00.000Z", "user", "too old"));
+  fs.writeFileSync(sidecarRollout, [
+    rolloutMessage("2026-05-11T11:59:20.000Z", "user", structuredSessionBriefPrompt("Codex")),
+    rolloutMessage("2026-05-11T11:59:30.000Z", "assistant", structuredBriefXml()),
+  ].join("\n"));
 
   const sessions = recentCodexSessionsFromThreads([
     codexThread("older", "/repo", "2026-05-11T09:00:00.000Z", "2026-05-11T09:40:00.000Z", olderRollout),
     codexThread("stale", "/repo", "2026-05-09T09:00:00.000Z", "2026-05-11T11:55:00.000Z", staleRollout),
     codexThread("newest", "/repo", "2026-05-11T11:00:00.000Z", "2026-05-11T11:59:00.000Z", newestRollout),
+    codexThread("sidecar-summary", "/repo", "2026-05-11T11:59:15.000Z", "2026-05-11T11:59:30.000Z", sidecarRollout),
   ], nowMs);
 
   expect(sessions).toMatchObject([
@@ -138,15 +146,47 @@ test("lists recent Codex sessions by latest visible message", () => {
       id: "newest",
       lastMessageAt: "2026-05-11T11:59:00.000Z",
       lastMessageText: "working on the phone launcher",
-      messageCount: 1,
+      initialUserText: "build the phone launcher",
+      latestUserText: "build the phone launcher",
+      userMessageCount: 1,
+      latestAssistantText: "working on the phone launcher",
+      messageCount: 2,
+      status: "idle",
     },
     {
       id: "older",
       lastMessageAt: "2026-05-11T09:30:00.000Z",
       lastMessageText: "resume this on mobile",
       messageCount: 1,
+      status: "busy",
     },
   ]);
+});
+
+test("discards Codex sidecar threads by archiving metadata and removing the rollout", () => {
+  using workspace = createTempWorkspace();
+  const databasePath = path.join(workspace.path, "state_5.sqlite");
+  const rolloutPath = path.join(workspace.path, "sidecar.jsonl");
+  fs.writeFileSync(rolloutPath, rolloutMessage("2026-05-11T11:59:20.000Z", "user", structuredSessionBriefPrompt("Codex")));
+  createCodexThreadDatabase(databasePath, codexThread(
+    "sidecar-summary",
+    "/repo",
+    "2026-05-11T11:59:15.000Z",
+    "2026-05-11T11:59:30.000Z",
+    rolloutPath,
+  ));
+
+  expect(discardCodexThreadFromDatabasePath(databasePath, "sidecar-summary")).toBe(true);
+
+  expect(fs.existsSync(rolloutPath)).toBe(false);
+  expect(readCodexThreadsFromDatabasePath(databasePath)).toEqual([]);
+  const database = new Database(databasePath, { readonly: true, strict: true });
+  try {
+    const row = database.query("select archived from threads where id = 'sidecar-summary'").get() as { archived: number };
+    expect(row).toMatchObject({ archived: 1 });
+  } finally {
+    database.close();
+  }
 });
 
 test("builds a Codex summary from rollout messages without treating AGENTS as the latest user message", () => {
@@ -260,6 +300,19 @@ function structuredBriefXml() {
     "  <risks_blockers></risks_blockers>",
     "  <suggested_next_actions><item>Review the PR.</item></suggested_next_actions>",
     "</session_brief>",
+  ].join("\n");
+}
+
+function structuredSessionBriefPrompt(provider: string) {
+  return [
+    `Create a structured Session brief for this ${provider} TUI session.`,
+    "",
+    "Return only this XML-style contract, with every tag present even when the value is empty:",
+    "",
+    "<session_brief format=\"tuiui.sessionBrief.v1\">",
+    "</session_brief>",
+    "",
+    "Use only the transcript below.",
   ].join("\n");
 }
 

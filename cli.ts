@@ -4,6 +4,7 @@
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { stripVTControlCharacters } from "node:util";
@@ -18,6 +19,7 @@ import {
   buildCodexSummary,
   codexHomeDirFromStateDatabasePath,
   createCodexSummaryPrompt,
+  discardCodexThreadFromDatabasePath,
   readRecentCodexSessionsFromDatabasePath,
   readCodexThreadsFromDatabasePath,
   resolveCodexStateDatabasePathForEnv,
@@ -28,6 +30,7 @@ import {
   buildClaudeSummary,
   claudeConfigDirForEnv,
   createClaudeSummaryPrompt,
+  discardClaudeSessionTranscripts,
   readClaudeSessionMessages,
   readClaudeSessions,
   readRecentClaudeSessions,
@@ -42,6 +45,8 @@ import {
   openCodeDatabasePathForEnv,
   pickOpenCodeModel,
   readRecentOpenCodeSessionsFromDatabasePath,
+  recentSessionPreviewFromMessages,
+  recentSessionPreviewText,
   resolveOpenCodeSession,
   type AgentProvider,
   type AgentSessionSummary,
@@ -52,6 +57,8 @@ import { createSessionId } from "./src/session-id.ts";
 import { resolveNamedKeySequence } from "./src/chords.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
+import { composerSubmitChunks, usesLfCrSubmit } from "./src/terminal-input.ts";
+import { formatCommandLine, parseCommandLine } from "./src/command-line.ts";
 import {
   createTmuxBackend,
   reconnectTmuxBackend,
@@ -61,6 +68,7 @@ import {
   type TmuxBackendHandle,
 } from "./src/tmux-backend.ts";
 import { renderTerminalShotSvg } from "./src/tuishot.ts";
+import { createSessionStoreForEnv, type SessionStore } from "./src/session-store.ts";
 
 if (typeof Bun === "undefined") {
   throw new Error("tuiui requires the Bun runtime. Run `bun run cli.ts ...`.");
@@ -99,6 +107,9 @@ type SessionPayload = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi: string;
+  screenVersion: number;
+  snapshotEventId: number;
+  redrawActive: boolean;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
@@ -128,14 +139,24 @@ type RuntimeSession = {
   renderedText: string;
   renderedHtml: string;
   renderedAnsi: string;
+  screenVersion: number;
+  snapshotEventId: number;
   blocks: TerminalBlockModel;
   semantic: SemanticScreen;
   sdk: SessionSdkPayload;
   sdkSummaryJob: Promise<void> | null;
   stdinEvents: StdinEvent[];
   stdoutEvents: StdoutEvent[];
+  redrawGate: RedrawGate;
   subscribers: Set<(payload: SessionPayload) => void>;
   fakeAgent: FakeAgent | null;
+};
+
+type RedrawGate = {
+  active: boolean;
+  startedAfterEventId: number;
+  quietTimer: ReturnType<typeof setTimeout> | null;
+  maxTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type BunPtyBackendHandle = {
@@ -151,6 +172,7 @@ type BunPtyBackendHandle = {
 type SessionBackendHandle = BunPtyBackendHandle | TmuxBackendHandle;
 
 type CreateSessionInput = {
+  id: string;
   command: string;
   args: string[];
   cwd: string;
@@ -159,12 +181,14 @@ type CreateSessionInput = {
   rows: number;
   fakeAgent: AgentName | "";
   backend: SessionBackendName;
+  launchCommand: string;
 };
 
 type ServerState = {
   sessions: Map<string, RuntimeSession>;
   nextStdoutEventId: number;
   nextStdinEventId: number;
+  sessionStore: SessionStore;
 };
 
 const loopbackHost = "127.0.0.1";
@@ -173,12 +197,17 @@ const defaultPort = 7373;
 const defaultCols = 120;
 const defaultRows = 42;
 const idleThresholdMs = 1_000;
+const redrawQuietMs = 600;
+const redrawMaxMs = 10_000;
+const attachmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-attachments-"));
+const terminalScrollbackSnapshotRows = 500;
 
 const cli = parseCliArgs(process.argv.slice(2));
 const state: ServerState = {
   sessions: new Map(),
   nextStdoutEventId: 1,
   nextStdinEventId: 1,
+  sessionStore: createSessionStoreForEnv(process.env),
 };
 const server: ReturnType<typeof Bun.serve> = startServer({ host: cli.host, port: cli.port, state });
 const serverPort = Number(server.port || cli.port);
@@ -188,6 +217,7 @@ const accessBaseUrls = getAccessBaseUrls(serverPort, cli.host, baseUrl);
 if (cli.rest.length > 0) {
   const [command, ...args] = cli.rest;
   const session = await createSession({
+    id: createSessionId(),
     command: command || "",
     args,
     cwd: process.cwd(),
@@ -196,6 +226,7 @@ if (cli.rest.length > 0) {
     rows: defaultRows,
     fakeAgent: cli.fakeAgent,
     backend: cli.backend,
+    launchCommand: formatCommandLine(command || "", args),
   });
   const sessionUrls = accessBaseUrls.map((url) => `${url}/sessions/${session.id}`);
   process.stdout.write(`${sessionUrls.join("\n")}\n`);
@@ -250,7 +281,11 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   if (request.method === "GET" && url.pathname === "/api/cwd") {
-    return Response.json({ cwd: fs.realpathSync(process.cwd()) });
+    return Response.json({
+      cwd: fs.realpathSync(process.cwd()),
+      homeDir: os.homedir(),
+      homeDirs: [os.homedir(), realpathIfPossible(os.homedir())],
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/commands") {
@@ -280,15 +315,19 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
 
   if (request.method === "POST" && url.pathname === "/api/sessions") {
     const body = await request.json() as Partial<CreateSessionInput>;
+    const command = body.command || "";
+    const args = Array.isArray(body.args) ? body.args.map(String) : [];
     const session = await createSession({
-      command: body.command || "",
-      args: Array.isArray(body.args) ? body.args.map(String) : [],
+      id: createSessionId(),
+      command,
+      args,
       cwd: body.cwd || process.cwd(),
       env: body.env || {},
       cols: Number(body.cols || defaultCols),
       rows: Number(body.rows || defaultRows),
       fakeAgent: isAgentName(body.fakeAgent) ? body.fakeAgent : "",
       backend: resolveBackendForLaunch(body.backend),
+      launchCommand: formatCommandLine(command, args),
     });
     return Response.json({ id: session.id, url: `${baseUrl}/sessions/${session.id}` });
   }
@@ -298,12 +337,21 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return new Response("not found", { status: 404 });
   }
 
-  const session = state.sessions.get(match[1] || "") || await reconnectSession(state, match[1] || "");
-  if (!session) {
-    return Response.json({ error: "unknown session" }, { status: 404 });
+  const sessionId = match[1] || "";
+  const action = match[2] || "";
+
+  if (request.method === "GET" && action === "recovery") {
+    return createSessionRecoveryResponse(state, sessionId);
   }
 
-  const action = match[2] || "";
+  if (request.method === "POST" && action === "recover") {
+    return await recoverStoredSession(state, sessionId);
+  }
+
+  const session = state.sessions.get(sessionId) || await reconnectSession(state, sessionId);
+  if (!session) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
 
   if (request.method === "GET" && !action) {
     return Response.json(getSessionPayload(session));
@@ -330,6 +378,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json({ ok: true });
   }
 
+  if (request.method === "POST" && action === "attachments") {
+    return await saveSessionAttachment(session, request, url);
+  }
+
   if (request.method === "POST" && action === "sdk-refresh") {
     await refreshSessionSdk(session);
     return Response.json(getSessionPayload(session));
@@ -349,7 +401,6 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   if (request.method === "POST" && action === "resize") {
     const body = await request.json() as { cols?: number; rows?: number };
     await resizeSession(session, Number(body.cols || session.cols), Number(body.rows || session.rows));
-    publishSession(session);
     return Response.json({ ok: true });
   }
 
@@ -359,6 +410,113 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   return new Response("not found", { status: 404 });
+}
+
+function createSessionRecoveryResponse(state: ServerState, sessionId: string) {
+  const session = state.sessionStore.getSession(sessionId);
+  if (!session) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
+  return Response.json({
+    id: session.id,
+    cwd: session.cwd,
+    launchCommand: session.launchCommand,
+    createdAtMs: session.createdAtMs,
+    recoveryCommand: session.recoveryCommand,
+    recoveryCreatedAtMs: session.recoveryCreatedAtMs,
+    recoverable: Boolean(session.recoveryCommand),
+  });
+}
+
+async function recoverStoredSession(state: ServerState, sessionId: string) {
+  const liveSession = state.sessions.get(sessionId) || await reconnectSession(state, sessionId);
+  if (liveSession) {
+    return Response.json({ id: liveSession.id, url: `${baseUrl}/sessions/${liveSession.id}` });
+  }
+
+  const storedSession = state.sessionStore.getSession(sessionId);
+  if (!storedSession) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
+  if (!storedSession.recoveryCommand) {
+    return Response.json({ error: "session is known, but no recovery command is available yet" }, { status: 409 });
+  }
+
+  const recovery = parseCommandLine(storedSession.recoveryCommand);
+  if (!recovery.command) {
+    return Response.json({ error: "stored recovery command is empty" }, { status: 409 });
+  }
+
+  const session = await createSession({
+    id: storedSession.id,
+    command: recovery.command,
+    args: recovery.args,
+    cwd: storedSession.cwd,
+    env: {},
+    cols: defaultCols,
+    rows: defaultRows,
+    fakeAgent: "",
+    backend: resolveBackendForLaunch(""),
+    launchCommand: storedSession.launchCommand,
+  });
+  return Response.json({ id: session.id, url: `${baseUrl}/sessions/${session.id}` });
+}
+
+async function saveSessionAttachment(session: RuntimeSession, request: Request, url: URL) {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    return Response.json({ error: "missing file" }, { status: 400 });
+  }
+
+  const requestedName = url.searchParams.get("filename") || "";
+  const fallbackName = `attachment-${new Date().toISOString().replaceAll(":", "-")}`;
+  const safeName = safeAttachmentName(requestedName || file.name || fallbackName);
+  const extension = path.extname(file.name || "");
+  const fileName = safeName.includes(".") || !extension ? safeName : `${safeName}${extension}`;
+  const attachmentDir = path.join(attachmentRoot, session.id);
+  fs.mkdirSync(attachmentDir, { recursive: true });
+
+  const filePath = nextAvailableAttachmentPath(attachmentDir, fileName);
+  await Bun.write(filePath, file);
+
+  return Response.json({
+    path: filePath,
+    name: path.basename(filePath),
+    originalName: file.name || "",
+    type: file.type || "",
+    size: file.size,
+  });
+}
+
+function safeAttachmentName(name: string) {
+  const cleaned = path.basename(name)
+    .replaceAll("/", "-")
+    .replaceAll("\\", "-")
+    .replaceAll("\0", "")
+    .trim();
+
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return `attachment-${Date.now()}`;
+  }
+
+  return cleaned;
+}
+
+function nextAvailableAttachmentPath(directory: string, fileName: string) {
+  let candidate = path.join(directory, fileName);
+  if (!fs.existsSync(candidate)) {
+    return candidate;
+  }
+
+  const extension = path.extname(fileName);
+  const stem = path.basename(fileName, extension) || "attachment";
+  for (let index = 2; ; index += 1) {
+    candidate = path.join(directory, `${stem}-${index}${extension}`);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
 }
 
 async function createSession(input: CreateSessionInput) {
@@ -371,8 +529,9 @@ async function createSession(input: CreateSessionInput) {
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
 
-  const id = createSessionId();
-  const now = new Date().toISOString();
+  const id = input.id;
+  const createdAtMs = Date.now();
+  const now = new Date(createdAtMs).toISOString();
   const cols = Math.max(40, Math.min(240, Math.round(input.cols)));
   const rows = Math.max(12, Math.min(80, Math.round(input.rows)));
   const terminal = new HeadlessTerminal({ cols, rows, scrollback: 2_000, allowProposedApi: true });
@@ -387,8 +546,6 @@ async function createSession(input: CreateSessionInput) {
     ...input.env,
     TERM: input.env.TERM || "xterm-256color",
     COLORTERM: input.env.COLORTERM || "truecolor",
-    FORCE_COLOR: input.env.FORCE_COLOR || inheritedEnv.FORCE_COLOR || "1",
-    CLICOLOR_FORCE: input.env.CLICOLOR_FORCE || inheritedEnv.CLICOLOR_FORCE || "1",
   };
   let fakeAgent: FakeAgent | null = null;
 
@@ -438,17 +595,27 @@ async function createSession(input: CreateSessionInput) {
     renderedText: "",
     renderedHtml: "",
     renderedAnsi: "",
+    screenVersion: 0,
+    snapshotEventId: 0,
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
     sdkSummaryJob: null,
     stdinEvents: [],
     stdoutEvents: [],
+    redrawGate: createRedrawGate(true),
     subscribers: new Set(),
     fakeAgent,
   };
 
   state.sessions.set(id, session);
+  state.sessionStore.recordSession({
+    id,
+    cwd,
+    launchCommand: input.launchCommand,
+    createdAtMs,
+  });
+  scheduleRedrawGateFlush(session);
 
   session.backend = await createSessionBackend(input.backend, {
     id,
@@ -472,6 +639,7 @@ async function createSession(input: CreateSessionInput) {
         if (flushed) {
           await appendOutput(state, session, flushed);
         }
+        flushRedrawGate(session);
         session.lifecycle = "exited";
         session.exitCode = exitCode;
         session.updatedAt = new Date().toISOString();
@@ -484,6 +652,7 @@ async function createSession(input: CreateSessionInput) {
   });
 
   publishSession(session);
+  scheduleSessionRecoveryDiscovery(session);
   return session;
 }
 
@@ -535,16 +704,20 @@ async function reconnectSession(state: ServerState, id: string) {
     renderedText: "",
     renderedHtml: "",
     renderedAnsi: "",
+    screenVersion: 0,
+    snapshotEventId: 0,
     blocks: analyzeTerminalBlocks(terminal),
     semantic: analyzeTerminalScreen("", { cols, rows }),
     sdk: sdk.payload,
     sdkSummaryJob: null,
     stdinEvents: [],
     stdoutEvents: [],
+    redrawGate: createRedrawGate(true),
     subscribers: new Set(),
     fakeAgent: null,
   };
   state.sessions.set(id, session);
+  scheduleRedrawGateFlush(session);
   if (reconnected.handle.initialCapture) {
     await appendOutput(state, session, reconnected.handle.initialCapture);
   }
@@ -555,6 +728,7 @@ async function reconnectSession(state: ServerState, id: string) {
         if (flushed) {
           await appendOutput(state, session!, flushed);
         }
+        flushRedrawGate(session!);
         session!.lifecycle = "exited";
         session!.exitCode = exitCode;
         session!.updatedAt = new Date().toISOString();
@@ -652,10 +826,9 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
   const renderedText = renderTerminalText(session);
   session.renderedText = renderedText;
   session.renderedHtml = renderTerminalHtml(session);
-  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
+  session.renderedAnsi = renderTerminalAnsi(session);
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(renderedText, { cols: session.cols, rows: session.rows });
-  session.title = inferSessionTitle(session, chunk);
   session.updatedAt = now;
   session.lastOutputAt = now;
   session.stdoutEvents.push({
@@ -665,7 +838,69 @@ async function appendOutput(state: ServerState, session: RuntimeSession, chunk: 
     createdAt: now,
   });
   state.nextStdoutEventId += 1;
+  if (session.redrawGate.active) {
+    scheduleRedrawGateFlush(session);
+    return;
+  }
   publishSession(session);
+}
+
+function createRedrawGate(active: boolean): RedrawGate {
+  return {
+    active,
+    startedAfterEventId: 0,
+    quietTimer: null,
+    maxTimer: null,
+  };
+}
+
+function beginRedrawGate(session: RuntimeSession) {
+  session.redrawGate.active = true;
+  session.redrawGate.startedAfterEventId = latestStdoutEventId(session);
+  scheduleRedrawGateFlush(session);
+  publishSession(session);
+}
+
+function scheduleRedrawGateFlush(session: RuntimeSession) {
+  const gate = session.redrawGate;
+  if (!gate.active) {
+    return;
+  }
+  if (gate.quietTimer) {
+    clearTimeout(gate.quietTimer);
+  }
+  gate.quietTimer = setTimeout(() => {
+    flushRedrawGate(session);
+  }, redrawQuietMs);
+  if (!gate.maxTimer) {
+    gate.maxTimer = setTimeout(() => {
+      flushRedrawGate(session);
+    }, redrawMaxMs);
+  }
+}
+
+function flushRedrawGate(session: RuntimeSession) {
+  const gate = session.redrawGate;
+  if (!gate.active) {
+    return;
+  }
+  gate.active = false;
+  if (gate.quietTimer) {
+    clearTimeout(gate.quietTimer);
+    gate.quietTimer = null;
+  }
+  if (gate.maxTimer) {
+    clearTimeout(gate.maxTimer);
+    gate.maxTimer = null;
+  }
+  session.screenVersion += 1;
+  session.snapshotEventId = latestStdoutEventId(session);
+  session.renderedAnsi = renderTerminalAnsi(session);
+  publishSession(session);
+}
+
+function latestStdoutEventId(session: RuntimeSession) {
+  return session.stdoutEvents[session.stdoutEvents.length - 1]?.id || 0;
 }
 
 async function writeToTerminal(terminal: HeadlessTerminal, chunk: string) {
@@ -691,10 +926,17 @@ function renderTerminalHtml(session: RuntimeSession) {
   return session.serializer.serializeAsHTML({ includeGlobalBackground: true, scrollback: 0 });
 }
 
+function renderTerminalAnsi(session: RuntimeSession) {
+  return session.serializer.serialize({
+    scrollback: Math.min(terminalScrollbackSnapshotRows, session.terminal.buffer.active.baseY),
+  });
+}
+
 async function sendToSession(state: ServerState, session: RuntimeSession, text: string, submit: boolean) {
   if (session.lifecycle !== "running") {
     throw new Error("session is not running");
   }
+  flushRedrawGate(session);
   const now = new Date().toISOString();
   session.stdinEvents.push({
     id: state.nextStdinEventId,
@@ -703,13 +945,12 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
   });
   state.nextStdinEventId += 1;
   session.updatedAt = now;
-  if (text.trim()) {
-    session.title = session.title === path.basename(session.command) ? text.trim().slice(0, 100) : session.title;
+  if (submit && text.trim()) {
+    updateSessionTitleFromUserPrompt(session, text);
   }
 
-  if (submit && usesLfCrSubmit(session.command) && text) {
-    await writeSessionBackend(session, text);
-    await writeLfCrSubmit(session);
+  if (submit) {
+    await writeSessionSubmitChunks(session, composerSubmitChunks(session.command, text));
     publishSession(session);
     return;
   }
@@ -720,8 +961,17 @@ async function sendToSession(state: ServerState, session: RuntimeSession, text: 
     return;
   }
 
-  await writeSessionBackend(session, submit ? normalizeInput(text) : text);
+  await writeSessionBackend(session, text);
   publishSession(session);
+}
+
+async function writeSessionSubmitChunks(session: RuntimeSession, chunks: string[]) {
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (index > 0) {
+      await delay(80);
+    }
+    await writeSessionBackend(session, chunks[index] || "");
+  }
 }
 
 async function writeLfCrSubmit(session: RuntimeSession) {
@@ -731,19 +981,15 @@ async function writeLfCrSubmit(session: RuntimeSession) {
   await writeSessionBackend(session, "\r");
 }
 
-function normalizeInput(text: string) {
-  const normalized = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n$/g, "");
-  return `${normalized.replaceAll("\n", "\r")}\r`;
-}
-
 async function resizeSession(session: RuntimeSession, cols: number, rows: number) {
+  beginRedrawGate(session);
   session.cols = Math.max(40, Math.min(240, Math.round(cols)));
   session.rows = Math.max(12, Math.min(80, Math.round(rows)));
   session.terminal.resize(session.cols, session.rows);
   await session.backend.resize(session.cols, session.rows);
   session.renderedText = renderTerminalText(session);
   session.renderedHtml = renderTerminalHtml(session);
-  session.renderedAnsi = session.serializer.serialize({ scrollback: 1000 });
+  session.renderedAnsi = renderTerminalAnsi(session);
   session.blocks = analyzeTerminalBlocks(session.terminal);
   session.semantic = analyzeTerminalScreen(session.renderedText, { cols: session.cols, rows: session.rows });
   session.updatedAt = new Date().toISOString();
@@ -801,9 +1047,14 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     : Date.now() - new Date(session.lastOutputAt).getTime() < idleThresholdMs
       ? "busy"
       : "idle";
+  const latestEventId = latestStdoutEventId(session);
+  const suppressRedrawOutput = session.redrawGate.active;
+  const emptyTerminal = suppressRedrawOutput
+    ? new HeadlessTerminal({ cols: session.cols, rows: session.rows, allowProposedApi: true })
+    : null;
   return {
     id: session.id,
-    title: session.semantic.title || session.title,
+    title: sessionDisplayTitle(session),
     command: session.command,
     args: session.args,
     cwd: session.cwd,
@@ -815,21 +1066,121 @@ function getSessionPayload(session: RuntimeSession): SessionPayload {
     exitCode: session.exitCode,
     cols: session.cols,
     rows: session.rows,
-    renderedText: session.renderedText,
-    renderedHtml: session.renderedHtml,
-    renderedAnsi: session.renderedAnsi,
-    blocks: session.blocks,
-    semantic: session.semantic,
+    renderedText: suppressRedrawOutput ? "" : session.renderedText,
+    renderedHtml: suppressRedrawOutput ? "" : session.renderedHtml,
+    renderedAnsi: suppressRedrawOutput ? "" : session.renderedAnsi,
+    screenVersion: session.screenVersion,
+    snapshotEventId: suppressRedrawOutput ? session.snapshotEventId : latestEventId,
+    redrawActive: session.redrawGate.active,
+    blocks: suppressRedrawOutput ? analyzeTerminalBlocks(emptyTerminal!) : session.blocks,
+    semantic: suppressRedrawOutput ? analyzeTerminalScreen("", { cols: session.cols, rows: session.rows }) : session.semantic,
     sdk: session.sdk,
     stdinEvents: session.stdinEvents.slice(-100),
-    stdoutEvents: session.stdoutEvents.slice(-200),
+    stdoutEvents: suppressRedrawOutput ? [] : session.stdoutEvents.slice(-200),
   };
+}
+
+function sessionDisplayTitle(session: RuntimeSession) {
+  const snapshotTitle = snapshotTitleForSession(session.sdk.summary);
+  if (snapshotTitle) {
+    return promptTitleForSession(session, snapshotTitle);
+  }
+  return recentSessionPreviewText(session.title || "") || launchCommandTitle(session);
+}
+
+function snapshotTitleForSession(summary: AgentSessionSummary | null) {
+  if (!summary) {
+    return "";
+  }
+  const preview = recentSessionPreviewFromMessages(summary.transcript);
+  const initialUserText = preview.initialUserText;
+  const latestUserText = preview.latestUserText || recentSessionPreviewText(summary.latestUserText);
+  const title = recentSessionPreviewText(summary.title);
+  if (title && !isGenericSnapshotTitle(title) && !isInternalSnapshotTitle(title)) {
+    return textIsBasicallySame(title, initialUserText) ? initialUserText : title;
+  }
+  return initialUserText || latestUserText;
+}
+
+function isGenericSnapshotTitle(title: string) {
+  return /^(opencode session|codex thread|claude session)$/i.test(title.trim());
+}
+
+function isInternalSnapshotTitle(title: string) {
+  return title.startsWith("# AGENTS.md instructions") || title.startsWith("<environment_context>");
+}
+
+function textIsBasicallySame(left: string, right: string) {
+  const leftText = normalizeComparableText(left);
+  const rightText = normalizeComparableText(right);
+  if (!leftText || !rightText) {
+    return false;
+  }
+  if (leftText === rightText) {
+    return true;
+  }
+  const shorter = leftText.length < rightText.length ? leftText : rightText;
+  const longer = leftText.length < rightText.length ? rightText : leftText;
+  return shorter.length >= 24 && longer.startsWith(shorter);
+}
+
+function updateSessionTitleFromUserPrompt(session: RuntimeSession, text: string) {
+  if (!usesAgentPromptTitle(session) || !isLaunchCommandTitle(session.title, session.command)) {
+    return;
+  }
+  session.title = promptTitleForSession(session, text);
+}
+
+function promptTitleForSession(session: RuntimeSession, text: string) {
+  const prompt = abbreviatedTitlePrompt(text);
+  if (!prompt) {
+    return launchCommandTitle(session);
+  }
+  return usesAgentPromptTitle(session)
+    ? `${launchCommandTitle(session)} "${prompt}"`
+    : prompt;
+}
+
+function abbreviatedTitlePrompt(text: string) {
+  const prompt = recentSessionPreviewText(stripVTControlCharacters(text))
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/"/g, "'");
+  if (!/[A-Za-z0-9]/.test(prompt)) {
+    return "";
+  }
+  if (prompt.length <= 80) {
+    return prompt;
+  }
+  return `${prompt.slice(0, 77).trimEnd()}...`;
+}
+
+function isLaunchCommandTitle(title: string, command: string) {
+  return recentSessionPreviewText(title || "") === launchCommandTitle({ command });
+}
+
+function launchCommandTitle(session: { command: string }) {
+  return path.basename(session.command);
+}
+
+function usesAgentPromptTitle(session: RuntimeSession) {
+  return (
+    session.sdk.provider === "codex" ||
+    session.sdk.provider === "claude" ||
+    session.sdk.provider === "opencode" ||
+    isCodexCommand(session.command) ||
+    isClaudeCommand(session.command) ||
+    isOpenCodeCommand(session.command)
+  );
+}
+
+function normalizeComparableText(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function toSessionListItem(session: RuntimeSession) {
   return {
     id: session.id,
-    title: session.semantic.title || session.title,
+    title: sessionDisplayTitle(session),
     command: session.command,
     args: session.args,
     cwd: session.cwd,
@@ -841,7 +1192,7 @@ function toSessionListItem(session: RuntimeSession) {
 
 function createTuishotResponse(session: RuntimeSession) {
   const svg = renderTerminalShotSvg(session.terminal, {
-    title: `${session.title || session.command} tuishot`,
+    title: `${sessionDisplayTitle(session) || session.command} tuishot`,
     fontSize: 12,
     cellWidth: 7.25,
     lineHeight: 14.2,
@@ -912,7 +1263,7 @@ function readRecentCodexSessions() {
   try {
     return readRecentCodexSessionsFromDatabasePath(databasePath, Date.now());
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Codex state database not found at ")) {
+    if (isUnavailableRecentProviderStoreError(String(error instanceof Error ? error.message : error))) {
       return [];
     }
     throw error;
@@ -932,19 +1283,36 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
     .slice(0, 24);
 }
 
+function realpathIfPossible(value: string) {
+  if (!value) {
+    return "";
+  }
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
 async function readRecentProviderSessions(read: () => RecentAgentSession[] | Promise<RecentAgentSession[]>) {
   try {
     return await read();
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error);
-    if (
-      message.startsWith("Codex state database not found at ") ||
-      message.startsWith("OpenCode database not found at ")
-    ) {
+    if (isUnavailableRecentProviderStoreError(message)) {
       return [];
     }
     throw error;
   }
+}
+
+function isUnavailableRecentProviderStoreError(message: string) {
+  return (
+    message.startsWith("Codex state database not found at ") ||
+    message.startsWith("OpenCode database not found at ") ||
+    message === "unable to open database file" ||
+    message.includes("SQLITE_CANTOPEN")
+  );
 }
 
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {
@@ -1084,11 +1452,6 @@ function isClaudeCommand(command: string) {
   return path.basename(command).toLowerCase() === "claude";
 }
 
-function usesLfCrSubmit(command: string) {
-  const name = path.basename(command).toLowerCase();
-  return name === "opencode" || name === "codex";
-}
-
 async function refreshSessionSdk(session: RuntimeSession) {
   if (session.sdk.provider === "codex") {
     await refreshCodexSessionSdk(session);
@@ -1155,6 +1518,7 @@ async function refreshSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = session.sdk.summary?.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["--session", String(target.id || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -1164,6 +1528,35 @@ async function refreshSessionSdk(session: RuntimeSession) {
     };
   }
   publishSession(session);
+}
+
+function scheduleSessionRecoveryDiscovery(session: RuntimeSession) {
+  if (!session.sdk.provider) {
+    return;
+  }
+  const deadline = Date.now() + 60_000;
+  void (async () => {
+    while (Date.now() < deadline) {
+      if (state.sessionStore.getSession(session.id)?.recoveryCommand) {
+        return;
+      }
+      await refreshSessionSdk(session);
+      if (state.sessionStore.getSession(session.id)?.recoveryCommand) {
+        return;
+      }
+      await delay(1_000);
+    }
+  })().catch((error) => {
+    console.error(error);
+  });
+}
+
+function storeSessionRecoveryCommand(session: RuntimeSession, args: string[]) {
+  state.sessionStore.setSessionRecovery({
+    sessionId: session.id,
+    recoveryCommand: formatCommandLine(session.command, args),
+    createdAtMs: Date.now(),
+  });
 }
 
 async function refreshCodexSessionSdk(session: RuntimeSession) {
@@ -1202,6 +1595,7 @@ async function refreshCodexSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = summary.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["resume", String(target.id || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -1250,6 +1644,7 @@ async function refreshClaudeSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = summary.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["--resume", String(target.sessionId || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -1443,9 +1838,12 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "OpenCode produced the structured brief in a sidecar fork. The live provider session remains the source session.",
+        note: "OpenCode produced the structured brief in a disposable sidecar fork. The live provider session remains the source session.",
       },
     };
+    if (forkSessionId !== sourceSessionId) {
+      await discardOpenCodeSidecarSession(client, forkSessionId);
+    }
     await refreshSessionSdk(session);
   } catch (error) {
     const failedAt = new Date().toISOString();
@@ -1479,6 +1877,9 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (forkSessionId !== sourceSessionId) {
+      await discardOpenCodeSidecarSession(createOpenCodeClient(session), forkSessionId);
+    }
   }
 }
 
@@ -1665,6 +2066,9 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
     }
 
     const summarizedAt = new Date().toISOString();
+    if (sidecarThreadId !== sourceThreadId) {
+      await discardCodexSidecarThread(session.sdk.baseUrl, sidecarThreadId);
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceThreadId,
@@ -1691,7 +2095,7 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "Codex summarized the source transcript in a separate sidecar thread. The live TUI thread remains untouched.",
+        note: "Codex summarized the source transcript in a disposable sidecar thread. The live TUI thread remains untouched.",
       },
     };
     await refreshCodexSessionSdk(session);
@@ -1727,6 +2131,9 @@ async function summarizeCodexSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (sidecarThreadId !== sourceThreadId) {
+      await discardCodexSidecarThread(session.sdk.baseUrl, sidecarThreadId);
+    }
   }
 }
 
@@ -1810,6 +2217,9 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
     });
     forkSessionId = sidecar.forkSessionId;
     const summarizedAt = new Date().toISOString();
+    if (forkSessionId !== sourceSessionId) {
+      await discardClaudeSidecarSession(session.sdk.baseUrl, forkSessionId);
+    }
     session.sdk = {
       ...session.sdk,
       externalSessionId: sourceSessionId,
@@ -1836,7 +2246,7 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
         updatedAt: summarizedAt,
         result: true,
         error: "",
-        note: "Claude summarized the source transcript in a separate fork. The live TUI session remains untouched.",
+        note: "Claude summarized the source transcript in a disposable fork. The live TUI session remains untouched.",
       },
     };
     await refreshClaudeSessionSdk(session);
@@ -1872,6 +2282,9 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
       },
     };
     publishSession(session);
+    if (forkSessionId !== sourceSessionId) {
+      await discardClaudeSidecarSession(session.sdk.baseUrl, forkSessionId);
+    }
   }
 }
 
@@ -1945,6 +2358,31 @@ function createOpenCodeClient(session: RuntimeSession) {
   });
 }
 
+async function discardOpenCodeSidecarSession(client: ReturnType<typeof createOpencodeClient>, sessionId: string) {
+  if (!sessionId) {
+    return;
+  }
+  await client.session.delete({
+    path: { id: sessionId },
+    responseStyle: "data",
+    throwOnError: true,
+  }).catch(() => {});
+}
+
+async function discardCodexSidecarThread(databasePath: string, threadId: string) {
+  if (!threadId) {
+    return;
+  }
+  await Promise.resolve().then(() => discardCodexThreadFromDatabasePath(databasePath, threadId)).catch(() => {});
+}
+
+async function discardClaudeSidecarSession(configDir: string, sessionId: string) {
+  if (!sessionId) {
+    return;
+  }
+  await Promise.resolve().then(() => discardClaudeSessionTranscripts(configDir, sessionId)).catch(() => {});
+}
+
 function responseData<T>(value: any): T {
   return value && typeof value === "object" && "data" in value ? value.data as T : value as T;
 }
@@ -1969,19 +2407,6 @@ async function getFreePort() {
       server.close(() => resolve(port));
     });
   });
-}
-
-function inferSessionTitle(session: RuntimeSession, chunk: string) {
-  const oscTitle = parseOscTitle(chunk);
-  if (oscTitle) {
-    return oscTitle;
-  }
-  return session.semantic.title || session.title;
-}
-
-function parseOscTitle(chunk: string) {
-  const match = chunk.match(/\x1b\][02];([^\x07\x1b]*?)(?:\x07|\x1b\\)/);
-  return match ? match[1]!.trim() : "";
 }
 
 function sanitizeTerminalChunk(chunk: string) {
@@ -2010,6 +2435,12 @@ function terminalBaseEnv(processEnv: NodeJS.ProcessEnv, explicitEnv: Record<stri
   }
   if (!("NO_COLOR" in explicitEnv)) {
     delete env.NO_COLOR;
+  }
+  if (!("FORCE_COLOR" in explicitEnv)) {
+    delete env.FORCE_COLOR;
+  }
+  if (!("CLICOLOR_FORCE" in explicitEnv)) {
+    delete env.CLICOLOR_FORCE;
   }
   return env;
 }
@@ -2136,6 +2567,7 @@ async function shutdown(runningServer: ReturnType<typeof Bun.serve>, state: Serv
       await Promise.resolve(session.fakeAgent[Symbol.asyncDispose]()).catch(() => {});
     }
   }
+  state.sessionStore.close();
   runningServer.stop(true);
   process.exit(0);
 }
