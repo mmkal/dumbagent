@@ -13,6 +13,7 @@ import {
   presetsForBinary,
   type ChordBinary,
 } from "../src/chords.ts";
+import { parseCommandLine } from "../src/command-line.ts";
 import { stringify as stringifyYaml } from "yaml";
 import { attachmentUploadName, dedupeClipboardImageFiles, type AttachmentSource } from "./attachments.ts";
 import { showToast } from "./toast.ts";
@@ -48,6 +49,16 @@ type SessionPayload = {
   sdk: SessionSdkPayload;
   stdinEvents: Array<{ id: number; text: string; createdAt: string }>;
   stdoutEvents: Array<{ id: number; chunk: string; displayText: string; createdAt: string }>;
+};
+
+type SessionRecoveryPayload = {
+  id: string;
+  cwd: string;
+  launchCommand: string;
+  createdAtMs: number;
+  recoveryCommand: string | null;
+  recoveryCreatedAtMs: number | null;
+  recoverable: boolean;
 };
 
 type ClientConfig = {
@@ -375,7 +386,7 @@ async function renderRoute() {
     try {
       await renderSession(sessionMatch[1]!);
     } catch (error) {
-      renderMissingSession(String(error instanceof Error ? error.message : error));
+      await renderMissingSession(sessionMatch[1]!, String(error instanceof Error ? error.message : error));
     }
     return;
   }
@@ -383,8 +394,9 @@ async function renderRoute() {
   await renderHome();
 }
 
-function renderMissingSession(message: string) {
+async function renderMissingSession(sessionId: string, message: string) {
   destroyDataEditor();
+  const recovery = await fetchSessionRecovery(sessionId);
   app.innerHTML = `
     <main class="layout home-layout">
       <header class="topbar">
@@ -392,12 +404,29 @@ function renderMissingSession(message: string) {
         <span class="muted">session unavailable</span>
       </header>
       <section class="launcher missing-session" aria-label="Missing session">
-        <strong>Session not found</strong>
-        <p>${escapeHtml(message)}</p>
-        <a href="/">Launch a new session</a>
+        <strong>${escapeHtml(message)}</strong>
+        ${recovery?.recoveryCommand ? `
+          <button type="button" class="primary-button recovery-command-button" data-action="recover-session">
+            <code>${escapeHtml(recovery.recoveryCommand)}</code>
+          </button>
+          <code class="missing-session-cwd">${escapeHtml(recovery.cwd)}</code>
+        ` : ""}
       </section>
     </main>
   `;
+  document.querySelector<HTMLButtonElement>("[data-action='recover-session']")?.addEventListener("click", async () => {
+    const result = await api<{ id: string; url: string }>(`/api/sessions/${sessionId}/recover`, { method: "POST" });
+    history.pushState({}, "", `/sessions/${result.id}`);
+    await renderRoute();
+  });
+}
+
+async function fetchSessionRecovery(sessionId: string) {
+  try {
+    return await api<SessionRecoveryPayload>(`/api/sessions/${sessionId}/recovery`);
+  } catch {
+    return null;
+  }
 }
 
 async function renderHome() {
@@ -2764,58 +2793,6 @@ function keyNameFromKeyboardEvent(event: KeyboardEvent) {
   return "";
 }
 
-function parseArgs(input: string) {
-  const args: string[] = [];
-  let current = "";
-  let quote = "";
-  let escaped = false;
-
-  for (const char of input) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = "";
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) {
-        args.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current) {
-    args.push(current);
-  }
-  return args;
-}
-
-function parseCommandLine(input: string) {
-  const parts = parseArgs(input);
-  const command = parts[0] || "";
-  return {
-    command,
-    args: parts.slice(1),
-  };
-}
-
 async function api<T>(path: string, init: RequestInit = {}) {
   const response = await fetch(path, {
     ...init,
@@ -2825,9 +2802,22 @@ async function api<T>(path: string, init: RequestInit = {}) {
     },
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    const message = await apiErrorMessage(response);
+    throw new Error(message);
   }
   return await response.json() as T;
+}
+
+async function apiErrorMessage(response: Response) {
+  const text = await response.text();
+  try {
+    const payload = JSON.parse(text) as { error?: unknown };
+    if (typeof payload.error === "string" && payload.error) {
+      return payload.error;
+    }
+  } catch {
+  }
+  return text;
 }
 
 function formatTime(value: string) {

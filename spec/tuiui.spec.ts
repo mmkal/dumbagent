@@ -43,6 +43,39 @@ test("shows a page-load toast on each full document load when opted in", async (
   await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #2");
 });
 
+test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
+  await page.route("**/api/sessions/tuiui_missing", async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Session not found" }),
+    });
+  });
+  await page.route("**/api/sessions/tuiui_missing/recovery", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "tuiui_missing",
+        cwd: ctx.workspaceDir,
+        launchCommand: "codex",
+        createdAtMs: Date.now(),
+        recoveryCommand: "codex resume abc123",
+        recoveryCreatedAtMs: Date.now(),
+        recoverable: true,
+      }),
+    });
+  });
+
+  await page.goto(`${ctx.baseUrl}/sessions/tuiui_missing`);
+
+  await expect(page.locator(".missing-session")).toContainText("Session not found");
+  await expect(page.locator(".missing-session")).not.toContainText("{\"error\"");
+  await expect(page.getByRole("button", { name: "codex resume abc123" })).toBeVisible();
+  await expect(page.locator(".missing-session-cwd")).toHaveText(ctx.workspaceDir);
+  await expect(page.getByRole("link", { name: "Launch a new session" })).toHaveCount(0);
+});
+
 test("launches fake Codex, translates the TUI into semantic sections, and accepts composer input", async ({ page, ctx }) => {
   await launchFakeCodex(page, ctx);
   expect((await fetchSessionPayload(page)).cwd).toBe(fs.realpathSync(ctx.workspaceDir));

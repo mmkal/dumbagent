@@ -58,6 +58,7 @@ import { resolveNamedKeySequence } from "./src/chords.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
 import { composerSubmitChunks, usesLfCrSubmit } from "./src/terminal-input.ts";
+import { formatCommandLine, parseCommandLine } from "./src/command-line.ts";
 import {
   createTmuxBackend,
   reconnectTmuxBackend,
@@ -67,6 +68,7 @@ import {
   type TmuxBackendHandle,
 } from "./src/tmux-backend.ts";
 import { renderTerminalShotSvg } from "./src/tuishot.ts";
+import { createSessionStoreForEnv, type SessionStore } from "./src/session-store.ts";
 
 if (typeof Bun === "undefined") {
   throw new Error("tuiui requires the Bun runtime. Run `bun run cli.ts ...`.");
@@ -170,6 +172,7 @@ type BunPtyBackendHandle = {
 type SessionBackendHandle = BunPtyBackendHandle | TmuxBackendHandle;
 
 type CreateSessionInput = {
+  id: string;
   command: string;
   args: string[];
   cwd: string;
@@ -178,12 +181,14 @@ type CreateSessionInput = {
   rows: number;
   fakeAgent: AgentName | "";
   backend: SessionBackendName;
+  launchCommand: string;
 };
 
 type ServerState = {
   sessions: Map<string, RuntimeSession>;
   nextStdoutEventId: number;
   nextStdinEventId: number;
+  sessionStore: SessionStore;
 };
 
 const loopbackHost = "127.0.0.1";
@@ -202,6 +207,7 @@ const state: ServerState = {
   sessions: new Map(),
   nextStdoutEventId: 1,
   nextStdinEventId: 1,
+  sessionStore: createSessionStoreForEnv(process.env),
 };
 const server: ReturnType<typeof Bun.serve> = startServer({ host: cli.host, port: cli.port, state });
 const serverPort = Number(server.port || cli.port);
@@ -211,6 +217,7 @@ const accessBaseUrls = getAccessBaseUrls(serverPort, cli.host, baseUrl);
 if (cli.rest.length > 0) {
   const [command, ...args] = cli.rest;
   const session = await createSession({
+    id: createSessionId(),
     command: command || "",
     args,
     cwd: process.cwd(),
@@ -219,6 +226,7 @@ if (cli.rest.length > 0) {
     rows: defaultRows,
     fakeAgent: cli.fakeAgent,
     backend: cli.backend,
+    launchCommand: formatCommandLine(command || "", args),
   });
   const sessionUrls = accessBaseUrls.map((url) => `${url}/sessions/${session.id}`);
   process.stdout.write(`${sessionUrls.join("\n")}\n`);
@@ -307,15 +315,19 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
 
   if (request.method === "POST" && url.pathname === "/api/sessions") {
     const body = await request.json() as Partial<CreateSessionInput>;
+    const command = body.command || "";
+    const args = Array.isArray(body.args) ? body.args.map(String) : [];
     const session = await createSession({
-      command: body.command || "",
-      args: Array.isArray(body.args) ? body.args.map(String) : [],
+      id: createSessionId(),
+      command,
+      args,
       cwd: body.cwd || process.cwd(),
       env: body.env || {},
       cols: Number(body.cols || defaultCols),
       rows: Number(body.rows || defaultRows),
       fakeAgent: isAgentName(body.fakeAgent) ? body.fakeAgent : "",
       backend: resolveBackendForLaunch(body.backend),
+      launchCommand: formatCommandLine(command, args),
     });
     return Response.json({ id: session.id, url: `${baseUrl}/sessions/${session.id}` });
   }
@@ -325,12 +337,21 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return new Response("not found", { status: 404 });
   }
 
-  const session = state.sessions.get(match[1] || "") || await reconnectSession(state, match[1] || "");
-  if (!session) {
-    return Response.json({ error: "unknown session" }, { status: 404 });
+  const sessionId = match[1] || "";
+  const action = match[2] || "";
+
+  if (request.method === "GET" && action === "recovery") {
+    return createSessionRecoveryResponse(state, sessionId);
   }
 
-  const action = match[2] || "";
+  if (request.method === "POST" && action === "recover") {
+    return await recoverStoredSession(state, sessionId);
+  }
+
+  const session = state.sessions.get(sessionId) || await reconnectSession(state, sessionId);
+  if (!session) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
 
   if (request.method === "GET" && !action) {
     return Response.json(getSessionPayload(session));
@@ -389,6 +410,56 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   return new Response("not found", { status: 404 });
+}
+
+function createSessionRecoveryResponse(state: ServerState, sessionId: string) {
+  const session = state.sessionStore.getSession(sessionId);
+  if (!session) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
+  return Response.json({
+    id: session.id,
+    cwd: session.cwd,
+    launchCommand: session.launchCommand,
+    createdAtMs: session.createdAtMs,
+    recoveryCommand: session.recoveryCommand,
+    recoveryCreatedAtMs: session.recoveryCreatedAtMs,
+    recoverable: Boolean(session.recoveryCommand),
+  });
+}
+
+async function recoverStoredSession(state: ServerState, sessionId: string) {
+  const liveSession = state.sessions.get(sessionId) || await reconnectSession(state, sessionId);
+  if (liveSession) {
+    return Response.json({ id: liveSession.id, url: `${baseUrl}/sessions/${liveSession.id}` });
+  }
+
+  const storedSession = state.sessionStore.getSession(sessionId);
+  if (!storedSession) {
+    return Response.json({ error: "Session not found" }, { status: 404 });
+  }
+  if (!storedSession.recoveryCommand) {
+    return Response.json({ error: "session is known, but no recovery command is available yet" }, { status: 409 });
+  }
+
+  const recovery = parseCommandLine(storedSession.recoveryCommand);
+  if (!recovery.command) {
+    return Response.json({ error: "stored recovery command is empty" }, { status: 409 });
+  }
+
+  const session = await createSession({
+    id: storedSession.id,
+    command: recovery.command,
+    args: recovery.args,
+    cwd: storedSession.cwd,
+    env: {},
+    cols: defaultCols,
+    rows: defaultRows,
+    fakeAgent: "",
+    backend: resolveBackendForLaunch(""),
+    launchCommand: storedSession.launchCommand,
+  });
+  return Response.json({ id: session.id, url: `${baseUrl}/sessions/${session.id}` });
 }
 
 async function saveSessionAttachment(session: RuntimeSession, request: Request, url: URL) {
@@ -458,8 +529,9 @@ async function createSession(input: CreateSessionInput) {
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
 
-  const id = createSessionId();
-  const now = new Date().toISOString();
+  const id = input.id;
+  const createdAtMs = Date.now();
+  const now = new Date(createdAtMs).toISOString();
   const cols = Math.max(40, Math.min(240, Math.round(input.cols)));
   const rows = Math.max(12, Math.min(80, Math.round(input.rows)));
   const terminal = new HeadlessTerminal({ cols, rows, scrollback: 2_000, allowProposedApi: true });
@@ -537,6 +609,12 @@ async function createSession(input: CreateSessionInput) {
   };
 
   state.sessions.set(id, session);
+  state.sessionStore.recordSession({
+    id,
+    cwd,
+    launchCommand: input.launchCommand,
+    createdAtMs,
+  });
   scheduleRedrawGateFlush(session);
 
   session.backend = await createSessionBackend(input.backend, {
@@ -574,6 +652,7 @@ async function createSession(input: CreateSessionInput) {
   });
 
   publishSession(session);
+  scheduleSessionRecoveryDiscovery(session);
   return session;
 }
 
@@ -1439,6 +1518,7 @@ async function refreshSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = session.sdk.summary?.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["--session", String(target.id || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -1448,6 +1528,35 @@ async function refreshSessionSdk(session: RuntimeSession) {
     };
   }
   publishSession(session);
+}
+
+function scheduleSessionRecoveryDiscovery(session: RuntimeSession) {
+  if (!session.sdk.provider) {
+    return;
+  }
+  const deadline = Date.now() + 60_000;
+  void (async () => {
+    while (Date.now() < deadline) {
+      if (state.sessionStore.getSession(session.id)?.recoveryCommand) {
+        return;
+      }
+      await refreshSessionSdk(session);
+      if (state.sessionStore.getSession(session.id)?.recoveryCommand) {
+        return;
+      }
+      await delay(1_000);
+    }
+  })().catch((error) => {
+    console.error(error);
+  });
+}
+
+function storeSessionRecoveryCommand(session: RuntimeSession, args: string[]) {
+  state.sessionStore.setSessionRecovery({
+    sessionId: session.id,
+    recoveryCommand: formatCommandLine(session.command, args),
+    createdAtMs: Date.now(),
+  });
 }
 
 async function refreshCodexSessionSdk(session: RuntimeSession) {
@@ -1486,6 +1595,7 @@ async function refreshCodexSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = summary.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["resume", String(target.id || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -1534,6 +1644,7 @@ async function refreshClaudeSessionSdk(session: RuntimeSession) {
     if (!session.title || session.title === path.basename(session.command)) {
       session.title = summary.title || session.title;
     }
+    storeSessionRecoveryCommand(session, ["--resume", String(target.sessionId || "")]);
   } catch (error) {
     session.sdk = {
       ...session.sdk,
@@ -2456,6 +2567,7 @@ async function shutdown(runningServer: ReturnType<typeof Bun.serve>, state: Serv
       await Promise.resolve(session.fakeAgent[Symbol.asyncDispose]()).catch(() => {});
     }
   }
+  state.sessionStore.close();
   runningServer.stop(true);
   process.exit(0);
 }

@@ -146,8 +146,18 @@ button:disabled {
   font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.missing-session a {
-  color: #d8f36a;
+.recovery-command-button {
+  justify-self: start;
+}
+
+.recovery-command-button code {
+  font: inherit;
+}
+
+.missing-session-cwd {
+  color: #6f7b88;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
 }
 
 .launch-form {
