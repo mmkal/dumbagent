@@ -124,6 +124,7 @@ test("lists recent Claude sessions from the SDK transcript store", async () => {
       latestUserText: "resume claude on mobile",
       userMessageCount: 1,
       latestAssistantText: "claude is in recent sessions",
+      status: "idle",
       command: "claude",
       args: ["--resume", "00000000-0000-4000-8000-000000000123"],
     },

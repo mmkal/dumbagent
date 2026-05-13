@@ -1138,7 +1138,7 @@ function readRecentCodexSessions() {
   try {
     return readRecentCodexSessionsFromDatabasePath(databasePath, Date.now());
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Codex state database not found at ")) {
+    if (isUnavailableRecentProviderStoreError(String(error instanceof Error ? error.message : error))) {
       return [];
     }
     throw error;
@@ -1174,14 +1174,20 @@ async function readRecentProviderSessions(read: () => RecentAgentSession[] | Pro
     return await read();
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error);
-    if (
-      message.startsWith("Codex state database not found at ") ||
-      message.startsWith("OpenCode database not found at ")
-    ) {
+    if (isUnavailableRecentProviderStoreError(message)) {
       return [];
     }
     throw error;
   }
+}
+
+function isUnavailableRecentProviderStoreError(message: string) {
+  return (
+    message.startsWith("Codex state database not found at ") ||
+    message.startsWith("OpenCode database not found at ") ||
+    message === "unable to open database file" ||
+    message.includes("SQLITE_CANTOPEN")
+  );
 }
 
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {

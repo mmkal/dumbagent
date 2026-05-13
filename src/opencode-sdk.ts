@@ -88,6 +88,7 @@ export type RecentAgentSession = {
   userMessageCount: number;
   latestAssistantText: string;
   messageCount: number;
+  status: "busy" | "idle";
   command: string;
   args: string[];
 };
@@ -269,6 +270,7 @@ export function recentOpenCodeSessionsFromRows(
         userMessageCount: preview.userMessageCount,
         latestAssistantText: preview.latestAssistantText,
         messageCount: visibleMessages.length,
+        status: lastMessage.role === "user" ? "busy" : "idle",
         command: "opencode",
         args: ["--session", String(row.session.id || "")],
       };

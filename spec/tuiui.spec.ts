@@ -235,12 +235,34 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     latestAssistantText: "adding recent Codex buttons",
     messageAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
   });
+  writeRecentCodexFixtureState(ctx, {
+    threadId: "busy-codex-thread",
+    title: "Busy Codex session",
+    latestUserText: "please keep working",
+    lastUserText: "are you done yet",
+    latestAssistantText: "",
+    messageAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+  });
   writeRecentClaudeFixtureState(ctx, {
     sessionId: "00000000-0000-4000-8000-000000000456",
     title: "Claude handoff session",
     latestUserText: "resume claude from phone",
     latestAssistantText: "adding Claude recent buttons",
     messageAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+  });
+  await page.route("**/api/agent-sessions/recent", async (route) => {
+    const response = await route.fetch();
+    const sessions = await response.json();
+    await route.fulfill({
+      status: response.status(),
+      contentType: "application/json",
+      body: JSON.stringify(sessions.map((session: any) => {
+        if (session.provider === "codex") {
+          delete session.status;
+        }
+        return session;
+      })),
+    });
   });
 
   await page.goto(ctx.baseUrl);
@@ -254,9 +276,14 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume OpenCode session OpenCode handoff session/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume Claude session Claude handoff session/ })).toBeVisible();
-  await expect(page.locator(".provider-pill", { hasText: "Codex" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Busy Codex session/ })).toBeVisible();
+  await expect(page.locator(".provider-pill", { hasText: "Codex" }).first()).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "OpenCode" })).toBeVisible();
   await expect(page.locator(".provider-pill", { hasText: "Claude" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume OpenCode session OpenCode handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume Claude session Claude handoff session/ }).locator(".agent-session-status")).toHaveText("idle");
+  await expect(page.getByRole("button", { name: /Resume Codex session Busy Codex session/ }).locator(".agent-session-status")).toHaveText("busy");
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (first)");
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("connect to this very session from my phone");
   await expect(page.getByRole("button", { name: /Resume Codex session Phone handoff session/ })).toContainText("user (last)");
@@ -290,6 +317,16 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     args: ["resume", "mobile-codex-thread"],
     cwd: ctx.workspaceDir,
   });
+});
+
+test("loads home when a recent provider database cannot be opened", async ({ page }) => {
+  using openCodeDatabasePath = createTempDirectoryAsDatabasePath("tuiui-opencode-db-path-");
+  await using ctx = await createContext({ OPENCODE_DB_PATH: openCodeDatabasePath.path });
+
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByRole("group", { name: "Shortcuts" }).getByRole("button", { name: "codex", exact: true })).toBeVisible();
+  await expect(page.locator(".recent-agents")).toHaveCount(0);
 });
 
 test("sends named key chords separately from the composer", async ({ page, ctx }) => {
@@ -978,6 +1015,16 @@ async function fetchRecentAgentSessions(page: Page) {
   return await page.evaluate(async () => {
     return await fetch("/api/agent-sessions/recent").then((response) => response.json());
   });
+}
+
+function createTempDirectoryAsDatabasePath(prefix: string) {
+  const directoryPath = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return {
+    path: directoryPath,
+    [Symbol.dispose]() {
+      fs.rmSync(directoryPath, { recursive: true, force: true });
+    },
+  };
 }
 
 async function clickSessionMenuButton(page: Page, name: string) {

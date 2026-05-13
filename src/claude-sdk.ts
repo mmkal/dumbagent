@@ -86,6 +86,7 @@ export async function recentClaudeSessionsFromSdkSessions(
       userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
       latestAssistantText: preview.latestAssistantText,
       messageCount: visibleMessages.length,
+      status: lastMessage.role === "user" ? "busy" : "idle",
       command: "claude",
       args: ["--resume", session.sessionId],
     };

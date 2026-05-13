@@ -183,6 +183,7 @@ type RecentAgentSession = {
   userMessageCount: number;
   latestAssistantText: string;
   messageCount: number;
+  status: "busy" | "idle";
   command: string;
   args: string[];
 };
@@ -473,7 +474,13 @@ async function renderHome() {
                 </span>
                 <span class="agent-session-card-footer">
                   <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
-                  <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+                  <span class="agent-session-card-badges">
+                    <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
+                      <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
+                      ${escapeHtml(formatRecentSessionStatus(session))}
+                    </span>
+                    <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+                  </span>
                 </span>
               </button>
             `).join("")}
@@ -2539,6 +2546,16 @@ function providerLabel(provider: RecentAgentSession["provider"]) {
     return "Codex";
   }
   return "Claude";
+}
+
+function formatRecentSessionStatus(session: RecentAgentSession) {
+  if (session.status === "busy" || session.status === "idle") {
+    return session.status;
+  }
+  const latestAssistant = formatRecentSessionLine(session.latestAssistantText, "");
+  const latestUser = formatRecentSessionLine(session.latestUserText, "");
+  const lastMessage = formatRecentSessionLine(session.lastMessageText, "");
+  return !latestAssistant || lastMessage === latestUser ? "busy" : "idle";
 }
 
 function renderSessionLink(session: any) {

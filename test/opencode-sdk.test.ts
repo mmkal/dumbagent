@@ -157,12 +157,14 @@ test("lists recent OpenCode sessions by latest visible message", () => {
       latestAssistantText: "opencode is now in the launcher",
       command: "opencode",
       args: ["--session", "newest"],
+      status: "idle",
     },
     {
       provider: "opencode",
       id: "older",
       lastMessageAt: "2026-05-11T09:30:00.000Z",
       lastMessageText: "resume opencode on mobile",
+      status: "busy",
     },
   ]);
 });

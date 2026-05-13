@@ -151,12 +151,14 @@ test("lists recent Codex sessions by latest visible message", () => {
       userMessageCount: 1,
       latestAssistantText: "working on the phone launcher",
       messageCount: 2,
+      status: "idle",
     },
     {
       id: "older",
       lastMessageAt: "2026-05-11T09:30:00.000Z",
       lastMessageText: "resume this on mobile",
       messageCount: 1,
+      status: "busy",
     },
   ]);
 });

@@ -190,6 +190,7 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
         latestAssistantText: preview.latestAssistantText,
         messageCount: messages.length,
+        status: lastMessage.role === "user" ? "busy" : "idle",
         command: "codex",
         args: ["resume", thread.id],
       };

@@ -395,6 +395,33 @@ textarea:focus {
   font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.agent-session-card-badges {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.agent-session-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid #3a4350;
+  border-radius: 999px;
+  color: #b9c5d4;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.agent-session-status .status-dot {
+  width: 6px;
+  height: 6px;
+}
+
 .provider-pill {
   display: inline-flex;
   align-items: center;
