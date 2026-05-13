@@ -43,7 +43,98 @@ test("shows a page-load toast on each full document load when opted in", async (
   await expect(page.getByTestId("page-load-toast")).toContainText("Page loaded #2");
 });
 
+test("requests idle notification permission only after the explicit control is clicked", async ({ page, ctx }) => {
+  await page.addInitScript(() => {
+    const notificationState = { requests: 0 };
+    class TestNotification {
+      static permission: NotificationPermission = "default";
+      onclick: ((event: Event) => void) | null = null;
+
+      constructor(_title: string, _options: NotificationOptions) {
+      }
+
+      static async requestPermission() {
+        notificationState.requests += 1;
+        TestNotification.permission = "granted";
+        return TestNotification.permission;
+      }
+
+      close() {
+      }
+    }
+
+    Object.defineProperty(window, "__tuiuiNotificationTest", {
+      configurable: true,
+      value: notificationState,
+    });
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      value: TestNotification,
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: off");
+  expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(0);
+
+  await page.getByTestId("idle-notification-toggle").click();
+
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: browser");
+  expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(1);
+  expect(await page.evaluate(() => localStorage.getItem("tuiui-browser-idle-notifications-enabled"))).toBe("1");
+});
+
+test("does not poll home idle notification snapshots before opt in", async ({ page, ctx }) => {
+  let jsonApiRequests = 0;
+  await page.route("**/*", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.startsWith("/api/") || pathname.startsWith("/rpc")) {
+      jsonApiRequests += 1;
+    }
+    await route.continue();
+  });
+
+  await page.goto(ctx.baseUrl);
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: off");
+  const requestsAfterInitialLoad = jsonApiRequests;
+  expect(requestsAfterInitialLoad).toBeGreaterThan(0);
+
+  await page.waitForTimeout(5_300);
+
+  expect(jsonApiRequests).toBe(requestsAfterInitialLoad);
+});
+
+test("does not refresh busy session idle status before opt in", async ({ page, ctx }) => {
+  const sessionId = "tuiui_idle_polling";
+  let sessionRequests = 0;
+  await page.route(`**/api/sessions/${sessionId}`, async (route) => {
+    sessionRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(fakeSessionPayload({ id: sessionId, status: "busy" })),
+    });
+  });
+  await page.route(`**/api/sessions/${sessionId}/events`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: "",
+    });
+  });
+
+  await page.goto(`${ctx.baseUrl}/sessions/${sessionId}`);
+  await expect(page.getByTestId("session-status")).toHaveText("busy");
+  expect(sessionRequests).toBe(1);
+
+  await page.waitForTimeout(1_600);
+
+  expect(sessionRequests).toBe(1);
+});
+
 test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
+  await useLegacyApi(page);
   await page.route("**/api/sessions/tuiui_missing", async (route) => {
     await route.fulfill({
       status: 404,
@@ -253,6 +344,7 @@ test("explains that attachment uploads need a restarted server when the route is
 });
 
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
+  await useLegacyApi(page);
   writeRecentOpenCodeFixtureState(ctx, {
     sessionId: "mobile-opencode-session",
     title: "OpenCode handoff session",
@@ -383,6 +475,7 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
 });
 
 test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
+  await useLegacyApi(page);
   const sdkRefreshRequests: string[] = [];
   let staleSnapshotInjected = false;
   page.on("request", (request) => {
@@ -465,7 +558,9 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
     (window as any).__voiceEmit("what is one plus two");
   });
 
-  await expect(page.getByTestId("stdin-log")).toContainText("what is one plus two");
+  await expect.poll(async () => {
+    return (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text;
+  }).toBe("what is one plus two");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
@@ -643,6 +738,23 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(ctx.baseUrl);
 
+  const homeInputs = await page.evaluate(() => {
+    const commandInput = document.querySelector<HTMLInputElement>("input[name='commandLine']")!;
+    const cwdInput = document.querySelector<HTMLInputElement>("input[name='cwd']")!;
+    return {
+      commandFontSize: getComputedStyle(commandInput).fontSize,
+      cwdFontSize: getComputedStyle(cwdInput).fontSize,
+      commandTouchAction: getComputedStyle(commandInput).touchAction,
+      cwdTouchAction: getComputedStyle(cwdInput).touchAction,
+    };
+  });
+  expect(homeInputs).toMatchObject({
+    commandFontSize: "16px",
+    cwdFontSize: "16px",
+    commandTouchAction: "manipulation",
+    cwdTouchAction: "manipulation",
+  });
+
   await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
   await page.getByRole("textbox", { name: "Command" }).press("Enter");
   await expect(page.getByTestId("rendered-terminal")).toContainText("scrollback line 80");
@@ -794,6 +906,29 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await clickSessionMenuButton(page, "Relayout");
   await expect(page.getByTestId("terminal-redraw-overlay")).toBeVisible();
   await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
+});
+
+test("archives a session from the hamburger menu and hides it from Home", async ({ page, ctx }) => {
+  await launchFakeCodex(page, ctx);
+  const sessionId = (await fetchSessionPayload(page)).id;
+
+  await openSessionMenu(page);
+  await page.getByRole("button", { name: "Archive" }).click();
+
+  await expect(page).toHaveURL(ctx.baseUrl + "/");
+  await expect(page.getByTestId("session-count")).toHaveText("0 sessions");
+  await expect(page.locator(".sessions")).toContainText("No sessions");
+  await expect.poll(async () => {
+    return await page.evaluate(async () => await fetch("/api/sessions").then((response) => response.json()));
+  }).toEqual([]);
+  const archivedSession = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/sessions/${id}`);
+    return { status: response.status, body: await response.json().catch(() => null) };
+  }, sessionId);
+  expect(archivedSession).toMatchObject({
+    status: 404,
+    body: { error: "Session not found" },
+  });
 });
 
 test("can pause and resume live session events", async ({ page, ctx }) => {
@@ -1056,6 +1191,71 @@ async function fetchSessionPayload(page: Page) {
   });
 }
 
+function fakeSessionPayload(input: { id: string; status: "busy" | "idle" }) {
+  const now = new Date().toISOString();
+  return {
+    id: input.id,
+    title: "Busy Codex session",
+    command: "codex",
+    args: [],
+    cwd: process.cwd(),
+    createdAt: now,
+    updatedAt: now,
+    lastOutputAt: now,
+    lifecycle: "running",
+    status: input.status,
+    exitCode: null,
+    cols: 80,
+    rows: 24,
+    renderedText: "working",
+    renderedHtml: "<div><span>working</span></div>",
+    renderedAnsi: "working",
+    screenVersion: 1,
+    snapshotEventId: 1,
+    redrawActive: false,
+    blocks: {
+      coordinateSystem: { origin: "top-left", x1: "exclusive", y1: "exclusive" },
+      cols: 80,
+      rows: 24,
+      cursor: { x: 0, y: 0, visible: false },
+      rawText: "working",
+      blocks: [],
+    },
+    semantic: {
+      title: "Busy Codex session",
+      status: input.status,
+      prompt: "finish the task",
+      rawText: "working",
+      sections: [],
+    },
+    sdk: {
+      provider: "codex",
+      state: "ready",
+      baseUrl: "",
+      externalSessionId: "",
+      status: "",
+      updatedAt: now,
+      error: "",
+      sidecarSummary: {
+        implemented: false,
+        status: "idle",
+        method: "",
+        sourceSessionId: "",
+        forkSessionId: "",
+        forkPoint: "",
+        updatedAt: "",
+        result: null,
+        error: "",
+        note: "",
+      },
+      forks: [],
+      summary: null,
+    },
+    stdinEvents: [],
+    stdoutEvents: [],
+  };
+}
+
 async function fetchTuishot(page: Page) {
   return await page.evaluate(async () => {
     const id = location.pathname.split("/").at(-1);
@@ -1071,6 +1271,12 @@ async function fetchTuishot(page: Page) {
 async function fetchRecentAgentSessions(page: Page) {
   return await page.evaluate(async () => {
     return await fetch("/api/agent-sessions/recent").then((response) => response.json());
+  });
+}
+
+async function useLegacyApi(page: Page) {
+  await page.addInitScript(() => {
+    (globalThis as any).__tuiuiForceLegacyApi = true;
   });
 }
 
