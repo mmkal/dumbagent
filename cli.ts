@@ -153,6 +153,7 @@ type RuntimeSession = {
   stdinEvents: StdinEvent[];
   stdoutEvents: StdoutEvent[];
   redrawGate: RedrawGate;
+  idleStatusTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(payload: SessionPayload) => void>;
   fakeAgent: FakeAgent | null;
 };
@@ -576,6 +577,7 @@ async function archiveSessionPayload(state: ServerState, sessionId: string) {
   state.sessionStore.archiveSession({ sessionId, archivedAtMs });
   if (session) {
     session.archivedAtMs = archivedAtMs;
+    clearIdleStatusTimer(session);
     publishSession(session);
     state.sessions.delete(session.id);
     await killSession(session);
@@ -796,6 +798,7 @@ async function createSession(input: CreateSessionInput) {
     stdinEvents: [],
     stdoutEvents: [],
     redrawGate: createRedrawGate(true),
+    idleStatusTimer: null,
     subscribers: new Set(),
     fakeAgent,
   };
@@ -910,6 +913,7 @@ async function reconnectSession(state: ServerState, id: string) {
     stdinEvents: [],
     stdoutEvents: [],
     redrawGate: createRedrawGate(true),
+    idleStatusTimer: null,
     subscribers: new Set(),
     fakeAgent: null,
   };
@@ -1209,9 +1213,42 @@ async function killSession(session: RuntimeSession) {
 
 function publishSession(session: RuntimeSession) {
   const payload = getSessionPayload(session);
+  scheduleIdleStatusPublish(session, payload);
   for (const subscriber of session.subscribers) {
     subscriber(payload);
   }
+}
+
+function scheduleIdleStatusPublish(session: RuntimeSession, payload: SessionPayload) {
+  clearIdleStatusTimer(session);
+  if (payload.archivedAtMs || payload.lifecycle !== "running" || payload.status !== "busy") {
+    return;
+  }
+  scheduleIdleStatusTimer(session);
+}
+
+function scheduleIdleStatusTimer(session: RuntimeSession) {
+  const lastOutputAtMs = new Date(session.lastOutputAt).getTime();
+  const delayMs = Math.max(0, lastOutputAtMs + idleThresholdMs - Date.now()) + 25;
+  session.idleStatusTimer = setTimeout(() => {
+    session.idleStatusTimer = null;
+    if (session.archivedAtMs || session.lifecycle !== "running") {
+      return;
+    }
+    if (Date.now() - new Date(session.lastOutputAt).getTime() < idleThresholdMs) {
+      scheduleIdleStatusTimer(session);
+      return;
+    }
+    publishSession(session);
+  }, delayMs);
+}
+
+function clearIdleStatusTimer(session: RuntimeSession) {
+  if (!session.idleStatusTimer) {
+    return;
+  }
+  clearTimeout(session.idleStatusTimer);
+  session.idleStatusTimer = null;
 }
 
 function streamSessionEvents(session: RuntimeSession) {

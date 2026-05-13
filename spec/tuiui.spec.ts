@@ -106,6 +106,7 @@ test("does not poll home idle notification snapshots before opt in", async ({ pa
 });
 
 test("does not refresh busy session idle status before opt in", async ({ page, ctx }) => {
+  await useLegacyApi(page);
   const sessionId = "tuiui_idle_polling";
   let sessionRequests = 0;
   await page.route(`**/api/sessions/${sessionId}`, async (route) => {
@@ -131,6 +132,15 @@ test("does not refresh busy session idle status before opt in", async ({ page, c
   await page.waitForTimeout(1_600);
 
   expect(sessionRequests).toBe(1);
+});
+
+test("updates the session status indicator to idle without a page refresh", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("color-env-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("rendered-terminal")).toContainText("colored");
+  await expect(page.getByTestId("session-status")).toHaveText("idle", { timeout: 3_000 });
 });
 
 test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
@@ -1137,6 +1147,7 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
 });
 
 test("shows a toast instead of an unhandled rejection when session brief fetch fails", async ({ page, ctx }) => {
+  await useLegacyApi(page);
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
