@@ -16,7 +16,7 @@ import {
 import { parseCommandLine } from "../src/command-line.ts";
 import { stringify as stringifyYaml } from "yaml";
 import { attachmentUploadName, dedupeClipboardImageFiles, type AttachmentSource } from "./attachments.ts";
-import { callOrpcJsonApi } from "./orpc-client.ts";
+import { clientApi } from "./orpc-client.ts";
 import {
   BrowserIdleNotifications,
   type IdleNotificationNativeApi,
@@ -317,7 +317,7 @@ async function boot() {
 
 async function loadClientConfig(): Promise<ClientConfig> {
   try {
-    return await api<ClientConfig>("/api/config");
+    return await clientApi.config();
   } catch {
     return { pageLoadToasts: false };
   }
@@ -481,8 +481,8 @@ async function pollHomeIdleNotificationSessions(displayHomeDirs: string[]) {
   }
   try {
     const [sessions, recentAgentSessions] = await Promise.all([
-      api<SessionListItem[]>("/api/sessions"),
-      api<RecentAgentSession[]>("/api/agent-sessions/recent"),
+      clientApi.sessions.list(),
+      clientApi.agentSessions.recent(),
     ]);
     observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
   } catch {
@@ -499,7 +499,7 @@ function scheduleSessionIdleRefresh(payload: SessionPayload) {
     if (!idleNotifications.isEnabled() || activeSession?.id !== payload.id) {
       return;
     }
-    void api<SessionPayload>(`/api/sessions/${payload.id}`)
+    void clientApi.sessions.get({ sessionId: payload.id })
       .then((nextPayload) => {
         if (eventsPaused) {
           idleNotifications.observeOne(sessionPayloadIdleNotification(nextPayload));
@@ -522,8 +522,8 @@ async function primeIdleNotificationSnapshotForCurrentRoute() {
   }
   try {
     const [sessions, recentAgentSessions] = await Promise.all([
-      api<SessionListItem[]>("/api/sessions"),
-      api<RecentAgentSession[]>("/api/agent-sessions/recent"),
+      clientApi.sessions.list(),
+      clientApi.agentSessions.recent(),
     ]);
     idleNotifications.prime([
       ...sessions.map((session) => sessionListItemIdleNotification(session, homeIdleNotificationDisplayDirs)),
@@ -702,7 +702,7 @@ async function renderMissingSession(sessionId: string, message: string) {
     </main>
   `;
   document.querySelector<HTMLButtonElement>("[data-action='recover-session']")?.addEventListener("click", async () => {
-    const result = await api<{ id: string; url: string }>(`/api/sessions/${sessionId}/recover`, { method: "POST" });
+    const result = await clientApi.sessions.recover({ sessionId });
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
   });
@@ -710,7 +710,7 @@ async function renderMissingSession(sessionId: string, message: string) {
 
 async function fetchSessionRecovery(sessionId: string) {
   try {
-    return await api<SessionRecoveryPayload>(`/api/sessions/${sessionId}/recovery`);
+    return await clientApi.sessions.recovery({ sessionId });
   } catch {
     return null;
   }
@@ -718,10 +718,10 @@ async function fetchSessionRecovery(sessionId: string) {
 
 async function renderHome() {
   const [cwd, sessions, commands, recentAgentSessions] = await Promise.all([
-    api<{ cwd: string; homeDir?: string; homeDirs?: string[] }>("/api/cwd"),
-    api<SessionListItem[]>("/api/sessions"),
-    api<CommandPreset[]>("/api/commands"),
-    api<RecentAgentSession[]>("/api/agent-sessions/recent"),
+    clientApi.cwd(),
+    clientApi.sessions.list(),
+    clientApi.commands(),
+    clientApi.agentSessions.recent(),
   ]);
   const displayHomeDirs = homeDirsForDisplay(cwd);
   homeIdleNotificationDisplayDirs = displayHomeDirs;
@@ -903,17 +903,14 @@ async function renderHome() {
   }
 
   async function launchSession(input: LaunchSessionInput) {
-    const result = await api<{ id: string; url: string }>("/api/sessions", {
-      method: "POST",
-      body: JSON.stringify({
-        command: input.command,
-        args: input.args,
-        cwd: input.cwd,
-        cols: 120,
-        rows: 42,
-        env: {},
-        fakeAgent: input.fakeAgent,
-      }),
+    const result = await clientApi.sessions.create({
+      command: input.command,
+      args: input.args,
+      cwd: input.cwd,
+      cols: 120,
+      rows: 42,
+      env: {},
+      fakeAgent: input.fakeAgent,
     });
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
@@ -924,7 +921,7 @@ async function renderSession(sessionId: string) {
   if (activeSession?.id !== sessionId) {
     renderer = "terminal";
   }
-  const payload = await api<SessionPayload>(`/api/sessions/${sessionId}`);
+  const payload = await clientApi.sessions.get({ sessionId });
   activeSession = payload;
   const binary = detectChordBinary(payload.command, payload.args, payload.sdk.provider);
 
@@ -1440,10 +1437,7 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
     minReadbackDelayMs: Number(window.__tuiuiVoiceTest?.minReadbackDelayMs || 700),
     async sendTranscript(text) {
       setPromptboxValue(textarea, text);
-      await api(`/api/sessions/${sessionId}/send`, {
-        method: "POST",
-        body: JSON.stringify({ text, submit: true }),
-      });
+      await clientApi.sessions.send({ sessionId, text, submit: true });
       setPromptboxValue(textarea, "");
     },
   });
@@ -1524,17 +1518,14 @@ async function sendComposer(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const text = textarea.value;
   setPromptboxValue(textarea, "");
-  await api(`/api/sessions/${sessionId}/send`, {
-    method: "POST",
-    body: JSON.stringify({ text, submit: true }),
-  });
+  await clientApi.sessions.send({ sessionId, text, submit: true });
   clearComposerAttachments();
   scheduleTerminalResize(sessionId);
 }
 
 async function archiveSession(sessionId: string) {
   try {
-    await api(`/api/sessions/${sessionId}/archive`, { method: "POST" });
+    await clientApi.sessions.archive({ sessionId });
     closeSessionMenu();
     history.pushState({}, "", "/");
     await renderRoute();
@@ -1544,19 +1535,13 @@ async function archiveSession(sessionId: string) {
 }
 
 async function sendKey(sessionId: string, key: string) {
-  await api(`/api/sessions/${sessionId}/key`, {
-    method: "POST",
-    body: JSON.stringify({ key }),
-  });
+  await clientApi.sessions.key({ sessionId, key });
 }
 
 async function sendChordSequence(sessionId: string, sequence: string, chordId: string) {
   const steps = parseChordSteps(sequence);
   for (const step of steps) {
-    await api(`/api/sessions/${sessionId}/send`, {
-      method: "POST",
-      body: JSON.stringify({ text: step.text, submit: step.submit }),
-    });
+    await clientApi.sessions.send({ sessionId, text: step.text, submit: step.submit });
   }
   if (chordId.startsWith("user-")) {
     markStoredChordUsed(chordId);
@@ -1748,7 +1733,7 @@ async function refreshVoiceReadbackPayload(payload: SessionPayload) {
     return;
   }
 
-  const nextPayload = await api<SessionPayload>(`/api/sessions/${payload.id}`);
+  const nextPayload = await clientApi.sessions.get({ sessionId: payload.id });
   renderSessionPayload(nextPayload);
 }
 
@@ -1922,10 +1907,7 @@ async function ensureXterm(payload: SessionPayload) {
       }
       const sessionId = xtermSessionId;
       xtermInputQueue = xtermInputQueue
-        .then(() => api(`/api/sessions/${sessionId}/send`, {
-          method: "POST",
-          body: JSON.stringify({ text, submit: false }),
-        }))
+        .then(() => clientApi.sessions.send({ sessionId, text, submit: false }))
         .then(() => undefined)
         .catch(() => undefined);
     });
@@ -1984,7 +1966,7 @@ async function writeXterm(term: XtermTerminal, text: string) {
 }
 
 async function fetchStdoutEvents(sessionId: string, after: number) {
-  return await api<{ events: SessionPayload["stdoutEvents"] }>(`/api/sessions/${sessionId}/stdout?after=${after}`);
+  return await clientApi.sessions.stdout({ sessionId, after });
 }
 
 function trimTerminalHtmlToRows(html: string, rows: number) {
@@ -2091,10 +2073,7 @@ async function resizeTerminalToScreen(sessionId: string) {
     return;
   }
   lastTerminalResizeKey = resizeKey;
-  await api(`/api/sessions/${sessionId}/resize`, {
-    method: "POST",
-    body: JSON.stringify(grid),
-  });
+  await clientApi.sessions.resize({ sessionId, ...grid });
 }
 
 function measureTerminalGrid(screen: HTMLElement, terminal: HTMLElement) {
@@ -2619,11 +2598,11 @@ async function refreshSdk(sessionId: string) {
 }
 
 async function refreshSdkPayload(sessionId: string) {
-  return await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-refresh`, { method: "POST" });
+  return await clientApi.sessions.sdkRefresh({ sessionId });
 }
 
 async function summarizeSdk(sessionId: string) {
-  const payload = await api<SessionPayload>(`/api/sessions/${sessionId}/sdk-summarize`, { method: "POST" });
+  const payload = await clientApi.sessions.sdkSummarize({ sessionId });
   renderSessionPayload(payload);
 }
 
@@ -3103,39 +3082,6 @@ function keyNameFromKeyboardEvent(event: KeyboardEvent) {
   if (event.key === "Backspace") return "backspace";
   if (event.ctrlKey && event.key.toLowerCase() === "c") return "ctrl+c";
   return "";
-}
-
-async function api<T>(path: string, init: RequestInit = {}) {
-  const orpcResult = await callOrpcJsonApi<T>(path, init);
-  if (orpcResult.handled) {
-    return orpcResult.value;
-  }
-
-  // SSE, stdout polling, uploads, and SVG responses stay on the legacy handlers for now.
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-  });
-  if (!response.ok) {
-    const message = await apiErrorMessage(response);
-    throw new Error(message);
-  }
-  return await response.json() as T;
-}
-
-async function apiErrorMessage(response: Response) {
-  const text = await response.text();
-  try {
-    const payload = JSON.parse(text) as { error?: unknown };
-    if (typeof payload.error === "string" && payload.error) {
-      return payload.error;
-    }
-  } catch {
-  }
-  return text;
 }
 
 function formatTime(value: string) {

@@ -228,12 +228,22 @@ const resizeSessionInputSchema = sessionIdInputSchema.extend({
   cols: z.number().optional(),
   rows: z.number().optional(),
 });
+const stdoutSessionInputSchema = sessionIdInputSchema.extend({ after: z.number().optional() });
 
 type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
 type SessionIdInput = z.infer<typeof sessionIdInputSchema>;
 type SendSessionInput = z.infer<typeof sendSessionInputSchema>;
 type KeySessionInput = z.infer<typeof keySessionInputSchema>;
 type ResizeSessionInput = z.infer<typeof resizeSessionInputSchema>;
+type StdoutSessionInput = z.infer<typeof stdoutSessionInputSchema>;
+
+type CommandPresetPayload = {
+  id: string;
+  label: string;
+  command: string;
+  args: string[];
+  fakeAgent: string;
+};
 
 const cli = parseCliArgs(process.argv.slice(2));
 const state: ServerState = {
@@ -329,6 +339,7 @@ function createAppRouter(state: ServerState) {
       list: orpc.handler(() => sessionsListPayload(state)),
       create: orpc.input(createSessionBodySchema).handler(({ input }) => createSessionPayload(input)),
       get: orpc.input(sessionIdInputSchema).handler(({ input }) => sessionPayloadById(state, input.sessionId)),
+      stdout: orpc.input(stdoutSessionInputSchema).handler(({ input }) => stdoutSessionPayload(state, input)),
       recovery: orpc.input(sessionIdInputSchema).handler(({ input }) => sessionRecoveryPayload(state, input.sessionId)),
       recover: orpc.input(sessionIdInputSchema).handler(({ input }) => recoverStoredSessionPayload(state, input.sessionId)),
       archive: orpc.input(sessionIdInputSchema).handler(({ input }) => archiveSessionPayload(state, input.sessionId)),
@@ -408,9 +419,7 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
 
   if (request.method === "GET" && action === "stdout") {
     const after = Number(url.searchParams.get("after") || 0);
-    return Response.json({
-      events: session.stdoutEvents.filter((event) => event.id > after),
-    });
+    return Response.json(await stdoutSessionPayload(state, { sessionId, after }));
   }
 
   if (request.method === "GET" && (action === "tuishot" || action === "tuishot.svg")) {
@@ -471,7 +480,7 @@ function cwdPayload() {
   };
 }
 
-function commandPresetsPayload() {
+function commandPresetsPayload(): CommandPresetPayload[] {
   return [
     { id: "custom", label: "Custom", command: "", args: [], fakeAgent: "" },
     { id: "opencode", label: "OpenCode", command: "opencode", args: [], fakeAgent: "" },
@@ -510,6 +519,14 @@ async function createSessionPayload(body: CreateSessionBody) {
 
 async function sessionPayloadById(state: ServerState, sessionId: string) {
   return getSessionPayload(await liveSessionById(state, sessionId));
+}
+
+async function stdoutSessionPayload(state: ServerState, input: StdoutSessionInput) {
+  const session = await liveSessionById(state, input.sessionId);
+  const after = Number(input.after || 0);
+  return {
+    events: session.stdoutEvents.filter((event) => event.id > after),
+  };
 }
 
 function sessionRecoveryPayload(state: ServerState, sessionId: string) {

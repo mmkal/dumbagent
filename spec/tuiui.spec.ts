@@ -106,32 +106,22 @@ test("does not poll home idle notification snapshots before opt in", async ({ pa
 });
 
 test("does not refresh busy session idle status before opt in", async ({ page, ctx }) => {
-  await useLegacyApi(page);
-  const sessionId = "tuiui_idle_polling";
-  let sessionRequests = 0;
-  await page.route(`**/api/sessions/${sessionId}`, async (route) => {
-    sessionRequests += 1;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(fakeSessionPayload({ id: sessionId, status: "busy" })),
-    });
-  });
-  await page.route(`**/api/sessions/${sessionId}/events`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "text/event-stream",
-      body: "",
-    });
+  let sessionReads = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/rpc") && request.postData()?.includes('"get"')) {
+      sessionReads += 1;
+    }
   });
 
-  await page.goto(`${ctx.baseUrl}/sessions/${sessionId}`);
-  await expect(page.getByTestId("session-status")).toHaveText("busy");
-  expect(sessionRequests).toBe(1);
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("color-env-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("colored");
+  const readsAfterLaunch = sessionReads;
 
   await page.waitForTimeout(1_600);
 
-  expect(sessionRequests).toBe(1);
+  expect(sessionReads).toBe(readsAfterLaunch);
 });
 
 test("updates the session status indicator to idle without a page refresh", async ({ page, ctx }) => {
@@ -144,26 +134,35 @@ test("updates the session status indicator to idle without a page refresh", asyn
 });
 
 test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
-  await useLegacyApi(page);
-  await page.route("**/api/sessions/tuiui_missing", async (route) => {
+  await page.route("**/rpc/sessions/get", async (route) => {
     await route.fulfill({
       status: 404,
       contentType: "application/json",
-      body: JSON.stringify({ error: "Session not found" }),
+      body: JSON.stringify({
+        json: {
+          defined: false,
+          code: "NOT_FOUND",
+          status: 404,
+          message: "Session not found",
+        },
+      }),
     });
   });
-  await page.route("**/api/sessions/tuiui_missing/recovery", async (route) => {
+  await page.route("**/rpc/sessions/recovery", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        id: "tuiui_missing",
-        cwd: ctx.workspaceDir,
-        launchCommand: "codex",
-        createdAtMs: Date.now(),
-        recoveryCommand: "codex resume abc123",
-        recoveryCreatedAtMs: Date.now(),
-        recoverable: true,
+        json: {
+          id: "tuiui_missing",
+          cwd: ctx.workspaceDir,
+          launchCommand: "codex",
+          createdAtMs: Date.now(),
+          archivedAtMs: null,
+          recoveryCommand: "codex resume abc123",
+          recoveryCreatedAtMs: Date.now(),
+          recoverable: true,
+        },
       }),
     });
   });
@@ -354,7 +353,6 @@ test("explains that attachment uploads need a restarted server when the route is
 });
 
 test("exposes real and fake launcher presets as one-click button rows", async ({ page, ctx }) => {
-  await useLegacyApi(page);
   writeRecentOpenCodeFixtureState(ctx, {
     sessionId: "mobile-opencode-session",
     title: "OpenCode handoff session",
@@ -385,21 +383,6 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
     latestAssistantText: "adding Claude recent buttons",
     messageAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
   });
-  await page.route("**/api/agent-sessions/recent", async (route) => {
-    const response = await route.fetch();
-    const sessions = await response.json();
-    await route.fulfill({
-      status: response.status(),
-      contentType: "application/json",
-      body: JSON.stringify(sessions.map((session: any) => {
-        if (session.provider === "codex") {
-          delete session.status;
-        }
-        return session;
-      })),
-    });
-  });
-
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByRole("combobox", { name: "Preset" })).toHaveCount(0);
@@ -485,47 +468,11 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
 });
 
 test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
-  await useLegacyApi(page);
   const sdkRefreshRequests: string[] = [];
-  let staleSnapshotInjected = false;
   page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().includes("/sdk-refresh")) {
+    if (request.method() === "POST" && request.url().includes("/rpc/sessions/sdkRefresh")) {
       sdkRefreshRequests.push(request.url());
     }
-  });
-  await page.route("**/api/sessions/*/sdk-refresh", async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    if (!staleSnapshotInjected && body.sdk?.summary?.latestAssistantText) {
-      staleSnapshotInjected = true;
-      body.sdk.summary = {
-        ...body.sdk.summary,
-        latestUserText: "previous question",
-        latestAssistantText: "penultimate answer",
-        transcript: [
-          {
-            id: "stale-user",
-            role: "user",
-            createdAt: "2026-05-11T09:59:00.000Z",
-            text: "previous question",
-          },
-          {
-            id: "stale-assistant",
-            role: "assistant",
-            createdAt: "2026-05-11T09:59:01.000Z",
-            text: "penultimate answer",
-          },
-        ],
-      };
-    }
-    await route.fulfill({
-      status: response.status(),
-      headers: {
-        ...response.headers(),
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
   });
 
   await page.addInitScript(() => {
@@ -575,7 +522,6 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
   }).toEqual(expect.arrayContaining([expect.stringContaining("three")]));
-  expect(staleSnapshotInjected).toBe(true);
   expect(sdkRefreshRequests.length).toBeGreaterThan(1);
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
@@ -1147,7 +1093,6 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
 });
 
 test("shows a toast instead of an unhandled rejection when session brief fetch fails", async ({ page, ctx }) => {
-  await useLegacyApi(page);
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
@@ -1158,15 +1103,8 @@ test("shows a toast instead of an unhandled rejection when session brief fetch f
   await page.getByRole("button", { name: "codex", exact: true }).click();
   await expectReadyFakeCodex(page);
   await clickSessionMenuButton(page, "Debug");
-  await page.evaluate(() => {
-    const realFetch = window.fetch.bind(window);
-    (window as any).fetch = (input: any, init: any) => {
-      const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
-      if (url.includes("/sdk-summarize")) {
-        return Promise.reject(new TypeError("Failed to fetch"));
-      }
-      return realFetch(input, init);
-    };
+  await page.route("**/rpc/sessions/sdkSummarize", async (route) => {
+    await route.abort("failed");
   });
 
   await page.getByRole("button", { name: "Get session brief" }).click();
@@ -1282,12 +1220,6 @@ async function fetchTuishot(page: Page) {
 async function fetchRecentAgentSessions(page: Page) {
   return await page.evaluate(async () => {
     return await fetch("/api/agent-sessions/recent").then((response) => response.json());
-  });
-}
-
-async function useLegacyApi(page: Page) {
-  await page.addInitScript(() => {
-    (globalThis as any).__tuiuiForceLegacyApi = true;
   });
 }
 
