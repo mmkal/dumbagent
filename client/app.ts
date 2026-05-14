@@ -187,6 +187,7 @@ type CommandPreset = {
   command: string;
   args: string[];
   fakeAgent: string;
+  coordinator?: boolean;
 };
 
 type RecentAgentSession = {
@@ -223,6 +224,7 @@ type LaunchSessionInput = {
   args: string[];
   cwd: string;
   fakeAgent: string;
+  coordinator?: boolean;
 };
 
 type AttachmentUpload = {
@@ -726,7 +728,7 @@ async function renderHome() {
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
-  const launchCommandOrder = ["codex", "claude", "opencode"];
+  const launchCommandOrder = ["coordinator", "codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
@@ -757,9 +759,9 @@ async function renderHome() {
                   type="button"
                   class="preset-button"
                   data-preset-id="${escapeAttr(command.id)}"
-                  aria-label="${escapeAttr(command.command)}"
+                  aria-label="${escapeAttr(command.coordinator ? "coordinator" : command.command)}"
                   title="${escapeAttr(command.command)}"
-                >${escapeHtml(command.command)}</button>
+                >${escapeHtml(command.label || command.command)}</button>
               `).join("")}
             </div>
             <label class="fakeagent-toggle">
@@ -815,6 +817,7 @@ async function renderHome() {
         args: preset.args,
         cwd: currentLaunchCwd(),
         fakeAgent: fakeAgentForCommand(preset.command),
+        coordinator: Boolean(preset.coordinator),
       });
     });
   }
@@ -877,6 +880,7 @@ async function renderHome() {
           args: session.args,
           cwd: session.cwd || currentLaunchCwd(),
           fakeAgent: "",
+          coordinator: false,
         });
       });
     }
@@ -892,6 +896,7 @@ async function renderHome() {
       args: commandLine.args,
       cwd: currentLaunchCwd(),
       fakeAgent: fakeAgentForCommand(commandLine.command),
+      coordinator: false,
     });
   }
 
@@ -923,6 +928,7 @@ async function renderHome() {
       rows: 42,
       env: {},
       fakeAgent: input.fakeAgent,
+      coordinator: Boolean(input.coordinator),
     });
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
