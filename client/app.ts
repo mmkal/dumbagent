@@ -773,6 +773,7 @@ async function renderHome() {
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
+  const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
   const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "cwd");
   const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
@@ -792,11 +793,11 @@ async function renderHome() {
           <div class="launch-command-row">
             <label class="command-prompt-field">
               <span class="command-prompt-glyph" aria-hidden="true">&gt;</span>
-              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --foo-bar" />
+              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --yolo" />
             </label>
             <label class="cwd-field">
               <span aria-hidden="true">cwd</span>
-              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(launchCwdState.getValue() || cwd.cwd)}" />
+              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(formatPathForDisplay(launchCwdValue, displayHomeDirs))}" />
             </label>
           </div>
           <div class="quick-launch-row" role="group" aria-label="Shortcuts">
@@ -863,7 +864,7 @@ async function renderHome() {
   });
 
   cwdInput.addEventListener("input", () => {
-    launchCwdState.setValue(cwdInput.value);
+    launchCwdState.setValue(resolveLaunchCwd(cwdInput.value));
   });
   commandInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
@@ -972,13 +973,19 @@ async function renderHome() {
   }
 
   function currentLaunchCwd() {
-    launchCwdState.setValue(cwdInput.value);
-    return cwdInput.value;
+    const value = resolveLaunchCwd(cwdInput.value);
+    launchCwdState.setValue(value);
+    return value;
   }
 
   function setLaunchCwd(value: string) {
-    cwdInput.value = value;
-    launchCwdState.setValue(value);
+    const resolved = resolveLaunchCwd(value);
+    cwdInput.value = formatPathForDisplay(resolved, displayHomeDirs);
+    launchCwdState.setValue(resolved);
+  }
+
+  function resolveLaunchCwd(value: string) {
+    return expandDisplayPath(value, displayHomeDirs);
   }
 
   function fakeAgentForCommand(command: string) {
@@ -3194,6 +3201,16 @@ function formatPathForDisplay(value: string, homeDirs: string[]) {
     }
   }
   return path;
+}
+
+function expandDisplayPath(value: string, homeDirs: string[]) {
+  if (value === "~" || value.startsWith("~/")) {
+    const home = homeDirs[0]?.replace(/\/+$/g, "") || "";
+    if (home) {
+      return `${home}${value.slice(1)}`;
+    }
+  }
+  return value;
 }
 
 function renderRecentSessionTitle(session: RecentAgentSession) {

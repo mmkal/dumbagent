@@ -188,7 +188,7 @@ button:disabled {
 
 .launch-command-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 30%);
+  grid-template-columns: minmax(120px, 0.65fr) minmax(220px, 1.35fr);
   gap: 6px;
   align-items: center;
 }
@@ -446,11 +446,11 @@ textarea:focus {
 
 .recent-session-group > .recent-session-groups,
 .recent-session-group > .agent-session-button {
-  margin: 0 0 6px 12px;
+  margin: 0 0 6px 4px;
 }
 
 .recent-session-group > .recent-session-groups {
-  padding-left: 12px;
+  padding-left: 4px;
   border-left: 1px solid #252c36;
 }
 
@@ -2146,27 +2146,40 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   }
 
   .launcher {
-    padding: 8px;
+    padding: 4px 0;
   }
 
   .launch-command-row {
-    grid-template-columns: minmax(0, 1fr) minmax(90px, 30%);
-    gap: 5px;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 4px;
   }
 
   .command-prompt-field,
   .cwd-field {
-    min-height: 34px;
+    min-height: 32px;
   }
 
   .command-prompt-field input,
   .cwd-field input {
-    height: 32px;
+    height: 30px;
     font-size: 16px;
   }
 
-  .cwd-field {
+  .command-prompt-field {
+    gap: 5px;
     padding-left: 7px;
+  }
+
+  .command-prompt-field input {
+    padding: 6px 7px 6px 0;
+  }
+
+  .cwd-field {
+    padding-left: 5px;
+  }
+
+  .cwd-field input {
+    padding: 6px 5px 6px 0;
   }
 
   .cwd-field span {

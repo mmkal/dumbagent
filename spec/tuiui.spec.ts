@@ -843,18 +843,30 @@ test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page,
 
 test("keeps mobile session chrome compact without document scrolling", async ({ page }) => {
   await using ctx = await createContext({ TUIUI_PAGE_LOAD_TOASTS: "1" });
+  const mobileWorkspace = path.join(ctx.env.HOME!, "workspace");
+  const mobileWorkspaceChild = path.join(mobileWorkspace, "mobile-last-segment");
+  fs.mkdirSync(mobileWorkspaceChild, { recursive: true });
+  await page.addInitScript((cwd) => {
+    localStorage.setItem("tuiui-launch-cwd", cwd);
+  }, mobileWorkspace);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(ctx.baseUrl);
 
   const homeInputs = await page.evaluate(() => {
     const commandInput = document.querySelector<HTMLInputElement>("input[name='commandLine']")!;
     const cwdInput = document.querySelector<HTMLInputElement>("input[name='cwd']")!;
+    const commandBox = commandInput.getBoundingClientRect();
+    const cwdBox = cwdInput.getBoundingClientRect();
     return {
       bodyFontSize: getComputedStyle(document.body).fontSize,
       commandFontSize: getComputedStyle(commandInput).fontSize,
       cwdFontSize: getComputedStyle(cwdInput).fontSize,
       commandTouchAction: getComputedStyle(commandInput).touchAction,
       cwdTouchAction: getComputedStyle(cwdInput).touchAction,
+      commandPlaceholder: commandInput.placeholder,
+      cwdValue: cwdInput.value,
+      commandWidth: Math.round(commandBox.width),
+      cwdWidth: Math.round(cwdBox.width),
     };
   });
   expect(homeInputs).toMatchObject({
@@ -863,7 +875,18 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     cwdFontSize: "16px",
     commandTouchAction: "manipulation",
     cwdTouchAction: "manipulation",
+    commandPlaceholder: "codex --yolo",
+    cwdValue: "~/workspace",
   });
+  expect(homeInputs.commandWidth).toBeGreaterThan(homeInputs.cwdWidth);
+  expect(homeInputs.commandWidth / homeInputs.cwdWidth).toBeGreaterThan(1.3);
+  expect(homeInputs.commandWidth / homeInputs.cwdWidth).toBeLessThan(1.7);
+  await page.getByRole("textbox", { name: "Working directory" }).fill("~/workspace/mobile-last-segment");
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
+  await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
+  expect((await fetchSessionPayload(page)).cwd).toBe(mobileWorkspaceChild);
+  await page.goto(ctx.baseUrl);
   await page.evaluate(() => {
     const now = Date.now();
     localStorage.setItem("tuiui-user-chords", JSON.stringify(
@@ -1127,7 +1150,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
   await clickSessionMenuButton(page, "Relayout");
   await expect(page.getByTestId("terminal-redraw-overlay")).toBeVisible();
-  await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
+  await expect(page.locator(".menu-fact code")).toHaveText(mobileWorkspace);
 });
 
 test("archives a session from the hamburger menu and hides it from Home", async ({ page, ctx }) => {
