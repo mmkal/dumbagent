@@ -340,14 +340,15 @@ textarea:focus {
 }
 
 .recent-agents > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
 }
 
 .recent-session-group-config {
   min-width: 0;
+  width: 100%;
 }
 
 .recent-session-group-config summary {
@@ -365,16 +366,20 @@ textarea:focus {
 
 .recent-session-group-config textarea {
   display: block;
-  width: min(520px, calc(100vw - 56px));
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 520px;
   min-height: 72px;
   margin-top: 8px;
   resize: vertical;
   font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.recent-agents > header span {
+.recent-agents > header > span {
+  justify-self: end;
   color: #9ca8b6;
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .recent-session-group-error {
@@ -414,22 +419,16 @@ textarea:focus {
 }
 
 .recent-session-group-title {
-  display: inline-grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px;
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
-  align-items: center;
-}
-
-.recent-session-group-slug {
-  color: #7dd3fc;
-  font-size: 10px;
-  font-weight: 900;
-  text-transform: uppercase;
+  overflow: hidden;
 }
 
 .recent-session-group-title code {
+  display: block;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: #dce5ef;
   text-overflow: ellipsis;
@@ -2187,6 +2186,10 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   .fakeagent-toggle {
     min-height: 28px;
     font-size: 10px;
+  }
+
+  .recent-session-group-config textarea {
+    font-size: 16px;
   }
 
   .session-appbar {

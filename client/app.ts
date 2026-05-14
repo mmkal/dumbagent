@@ -209,8 +209,8 @@ type RecentAgentSession = {
 };
 
 type RecentSessionGroupDefinition = {
-  slug: string;
   expression: string;
+  lineNumber: number;
   compiled: {
     evaluate(input: any): any;
   };
@@ -227,8 +227,7 @@ type RecentSessionGroupRenderResult = {
 };
 
 type RecentSessionGroup = {
-  slug: string;
-  value: string;
+  name: string;
   sessions: RecentAgentSession[];
   children: RecentSessionGroup[];
 };
@@ -316,7 +315,6 @@ let homeIdleNotificationDisplayDirs: string[] = [];
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
 const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
-const recentSessionGroupSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 let terminalFontSize = readTerminalFontSize();
 
 const idleNotifications = new BrowserIdleNotifications({
@@ -775,7 +773,7 @@ async function renderHome() {
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
-  const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
+  const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "cwd");
   const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
@@ -830,7 +828,7 @@ async function renderHome() {
               aria-label="Recent session groups"
               rows="3"
               spellcheck="false"
-              placeholder="dir: cwd"
+              placeholder="cwd"
             >${escapeHtml(recentSessionGroupState.getValue())}</textarea>
           </details>
           <span data-testid="recent-agent-count">Loading</span>
@@ -1035,7 +1033,7 @@ function renderRecentAgentSessionContent(
   try {
     return {
       html: renderRecentSessionGroups(
-        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, 0),
+        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, displayHomeDirs, 0),
         displayHomeDirs,
         0,
       ),
@@ -1053,36 +1051,13 @@ function parseRecentSessionGroupDefinitions(input: string): RecentSessionGroupPa
   const definitions: RecentSessionGroupDefinition[] = [];
   const lines = input.replace(/\r\n/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!.trim();
-    if (!line) {
+    const expression = lines[index]!.trim();
+    if (!expression) {
       continue;
     }
 
-    const separatorIndex = line.indexOf(":");
-    if (separatorIndex === -1) {
-      return {
-        definitions: [],
-        error: `Line ${index + 1}: expected "slug: jsonata expression".`,
-      };
-    }
-
-    const slug = line.slice(0, separatorIndex).trim();
-    const expression = line.slice(separatorIndex + 1).trim();
-    if (!recentSessionGroupSlugPattern.test(slug)) {
-      return {
-        definitions: [],
-        error: `Line ${index + 1}: "${slug}" is not a slug.`,
-      };
-    }
-    if (!expression) {
-      return {
-        definitions: [],
-        error: `Line ${index + 1}: missing jsonata expression.`,
-      };
-    }
-
     try {
-      definitions.push({ slug, expression, compiled: jsonata(expression) });
+      definitions.push({ expression, lineNumber: index + 1, compiled: jsonata(expression) });
     } catch (error) {
       return {
         definitions: [],
@@ -1096,6 +1071,7 @@ function parseRecentSessionGroupDefinitions(input: string): RecentSessionGroupPa
 function groupRecentAgentSessions(
   sessions: RecentAgentSession[],
   definitions: RecentSessionGroupDefinition[],
+  displayHomeDirs: string[],
   definitionIndex: number,
 ): RecentSessionGroup[] {
   if (definitionIndex >= definitions.length) {
@@ -1108,25 +1084,31 @@ function groupRecentAgentSessions(
   for (const session of sessions) {
     let rawValue: any;
     try {
-      rawValue = definition.compiled.evaluate(session);
+      rawValue = definition.compiled.evaluate(recentSessionForJsonata(session, displayHomeDirs));
     } catch (error) {
-      throw new Error(`${definition.slug}: ${formatRecentSessionGroupError(error)}`);
+      throw new Error(`Line ${definition.lineNumber}: ${formatRecentSessionGroupError(error)}`);
     }
-    const value = formatRecentSessionGroupValue(rawValue);
-    const key = `${definition.slug}\u0000${recentSessionGroupValueKey(rawValue)}`;
+    const name = formatRecentSessionGroupValue(rawValue, displayHomeDirs);
+    const key = recentSessionGroupValueKey(rawValue);
     let group = groupsByKey.get(key);
     if (!group) {
-      group = { slug: definition.slug, value, sessions: [], children: [] };
+      group = { name, sessions: [], children: [] };
       groupsByKey.set(key, group);
       groups.push(group);
     }
     group.sessions.push(session);
   }
-
   for (const group of groups) {
-    group.children = groupRecentAgentSessions(group.sessions, definitions, definitionIndex + 1);
+    group.children = groupRecentAgentSessions(group.sessions, definitions, displayHomeDirs, definitionIndex + 1);
   }
   return groups;
+}
+
+function recentSessionForJsonata(session: RecentAgentSession, displayHomeDirs: string[]) {
+  return {
+    ...session,
+    cwd: formatPathForDisplay(session.cwd, displayHomeDirs),
+  };
 }
 
 function renderRecentSessionGroups(
@@ -1140,8 +1122,7 @@ function renderRecentSessionGroups(
         <details class="recent-session-group" data-depth="${depth}">
           <summary>
             <span class="recent-session-group-title">
-              <span class="recent-session-group-slug">${escapeHtml(group.slug)}</span>
-              <code>${escapeHtml(group.value)}</code>
+              <code>${escapeHtml(group.name)}</code>
             </span>
             <span class="recent-session-group-count">${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}</span>
           </summary>
@@ -1154,7 +1135,7 @@ function renderRecentSessionGroups(
   `;
 }
 
-function formatRecentSessionGroupValue(value: any) {
+function formatRecentSessionGroupValue(value: any, displayHomeDirs: string[]) {
   if (value === undefined) {
     return "(undefined)";
   }
@@ -1162,7 +1143,7 @@ function formatRecentSessionGroupValue(value: any) {
     return "(null)";
   }
   if (typeof value === "string") {
-    return value || "(empty)";
+    return value ? formatPathForDisplay(value, displayHomeDirs) : "(empty)";
   }
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
     return String(value);

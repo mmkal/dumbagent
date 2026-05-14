@@ -479,13 +479,13 @@ test("renders home before recent agent sessions finish loading", async ({ page, 
 
   releaseRecentSessions();
 
-  await expect(page.getByRole("button", { name: /Resume Codex session Async Codex/ })).toBeVisible();
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: ctx.workspaceDir })).toContainText("1 session");
 });
 
 test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
   const now = new Date().toISOString();
-  const projectA = path.join(ctx.workspaceDir, "project-a");
-  const projectB = path.join(ctx.workspaceDir, "project-b");
+  const projectA = path.join(ctx.env.HOME!, "project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary");
+  const projectB = path.join(ctx.env.HOME!, "project-b");
   await page.route("**/rpc/agentSessions/recent", async (route) => {
     await route.fulfill({
       status: 200,
@@ -548,21 +548,39 @@ test("groups recent sessions with jsonata expressions from the title details", a
     });
   });
 
+  await page.setViewportSize({ width: 390, height: 800 });
   await page.goto(ctx.baseUrl);
-  await expect(page.locator(".agent-session-button")).toHaveCount(3);
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: "~/project-a" })).toContainText("2 sessions");
   await page.locator("[data-testid='recent-session-group-config'] > summary").click();
-  await page.getByTestId("recent-session-group-input").fill("dir: cwd\nstate: status");
+  await page.getByTestId("recent-session-group-input").fill("status\ncwd");
 
   await expect(page.getByTestId("recent-session-group-error")).toBeHidden();
-  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectA })).toContainText("2 sessions");
-  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectB })).toContainText("1 session");
+  const projectADisplay = "~/project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary";
+  const projectBDisplay = "~/project-b";
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: "busy" })).toContainText("1 session");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: "idle" })).toContainText("2 sessions");
 
-  await page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectA }).click();
-  await expect(page.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: "busy" })).toContainText("1 session");
-  await page.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: "busy" }).click();
+  const idleGroup = page.locator(".recent-session-group[data-depth='0']").filter({ hasText: "idle" });
+  await idleGroup.locator("> summary").click();
+  await expect(idleGroup.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: projectADisplay })).toContainText("1 session");
+  await expect(idleGroup.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: projectBDisplay })).toContainText("1 session");
+
+  await page.getByTestId("recent-session-group-input").fill("[cwd,status]");
+  const busyProjectAGroup = JSON.stringify([projectADisplay, "busy"]);
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup })).toContainText("1 session");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: JSON.stringify([projectBDisplay, "idle"]) })).toContainText("1 session");
+  expect(await recentSessionGroupControlLayout(page)).toMatchObject({
+    textareaFontSize: "16px",
+    groupOverflow: "hidden",
+    groupTextOverflow: "ellipsis",
+    groupWhiteSpace: "nowrap",
+    textareaStaysBeforeCount: true,
+    groupLabelIsConstrained: true,
+  });
+  await page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup }).click();
   await expect(page.getByRole("button", { name: /Resume Codex session Build UI/ })).toBeVisible();
 
-  await page.getByTestId("recent-session-group-input").fill("dir: cwd[");
+  await page.getByTestId("recent-session-group-input").fill("cwd[");
   await expect(page.getByTestId("recent-session-group-error")).toBeVisible();
   await expect(page.getByTestId("recent-session-group-error")).toContainText("Line 1");
   await expect(page.getByTestId("recent-session-group-error")).toHaveCSS("color", "rgb(255, 138, 138)");
@@ -1549,6 +1567,25 @@ async function mobilePromptboxLayout(page: Page) {
     return {
       height: Math.round(textareaBox.height),
       mainSurfaceHeight: Math.round(mainSurfaceBox.height),
+    };
+  });
+}
+
+async function recentSessionGroupControlLayout(page: Page) {
+  return await page.getByTestId("recent-agents").evaluate((section) => {
+    const textarea = section.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
+    const count = section.querySelector<HTMLElement>("[data-testid='recent-agent-count']")!;
+    const groupCode = section.querySelector<HTMLElement>(".recent-session-group-title code")!;
+    const textareaBox = textarea.getBoundingClientRect();
+    const countBox = count.getBoundingClientRect();
+    const groupStyle = getComputedStyle(groupCode);
+    return {
+      textareaFontSize: getComputedStyle(textarea).fontSize,
+      groupOverflow: groupStyle.overflowX,
+      groupTextOverflow: groupStyle.textOverflow,
+      groupWhiteSpace: groupStyle.whiteSpace,
+      textareaStaysBeforeCount: textareaBox.right <= countBox.left,
+      groupLabelIsConstrained: groupCode.scrollWidth > groupCode.clientWidth + 1,
     };
   });
 }
