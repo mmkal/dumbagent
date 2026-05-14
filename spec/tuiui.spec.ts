@@ -482,6 +482,94 @@ test("renders home before recent agent sessions finish loading", async ({ page, 
   await expect(page.getByRole("button", { name: /Resume Codex session Async Codex/ })).toBeVisible();
 });
 
+test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  const projectA = path.join(ctx.workspaceDir, "project-a");
+  const projectB = path.join(ctx.workspaceDir, "project-b");
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: [
+          {
+            provider: "codex",
+            id: "codex-build-ui",
+            title: "Build UI",
+            cwd: projectA,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Build the UI",
+            initialUserText: "Build the UI",
+            latestUserText: "Build the UI",
+            userMessageCount: 1,
+            latestAssistantText: "Working on it.",
+            messageCount: 2,
+            status: "busy",
+            command: "codex",
+            args: ["resume", "codex-build-ui"],
+          },
+          {
+            provider: "claude",
+            id: "claude-docs",
+            title: "Docs",
+            cwd: projectA,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Document it",
+            initialUserText: "Document it",
+            latestUserText: "Document it",
+            userMessageCount: 1,
+            latestAssistantText: "Done.",
+            messageCount: 2,
+            status: "idle",
+            command: "claude",
+            args: ["--resume", "claude-docs"],
+          },
+          {
+            provider: "opencode",
+            id: "opencode-review",
+            title: "Review",
+            cwd: projectB,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Review it",
+            initialUserText: "Review it",
+            latestUserText: "Review it",
+            userMessageCount: 1,
+            latestAssistantText: "Looks good.",
+            messageCount: 2,
+            status: "idle",
+            command: "opencode",
+            args: ["run", "opencode-review"],
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await expect(page.locator(".agent-session-button")).toHaveCount(3);
+  await page.locator("[data-testid='recent-session-group-config'] > summary").click();
+  await page.getByTestId("recent-session-group-input").fill("dir: cwd\nstate: status");
+
+  await expect(page.getByTestId("recent-session-group-error")).toBeHidden();
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectA })).toContainText("2 sessions");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectB })).toContainText("1 session");
+
+  await page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: projectA }).click();
+  await expect(page.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: "busy" })).toContainText("1 session");
+  await page.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: "busy" }).click();
+  await expect(page.getByRole("button", { name: /Resume Codex session Build UI/ })).toBeVisible();
+
+  await page.getByTestId("recent-session-group-input").fill("dir: cwd[");
+  await expect(page.getByTestId("recent-session-group-error")).toBeVisible();
+  await expect(page.getByTestId("recent-session-group-error")).toContainText("Line 1");
+  await expect(page.getByTestId("recent-session-group-error")).toHaveCSS("color", "rgb(255, 138, 138)");
+  await expect(page.locator(".recent-session-group")).toHaveCount(0);
+  await expect(page.locator(".agent-session-button")).toHaveCount(3);
+});
+
 test("loads home when a recent provider database cannot be opened", async ({ page }) => {
   using openCodeDatabasePath = createTempDirectoryAsDatabasePath("tuiui-opencode-db-path-");
   await using ctx = await createContext({ OPENCODE_DB_PATH: openCodeDatabasePath.path });

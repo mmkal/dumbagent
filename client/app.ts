@@ -3,6 +3,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import jsonata from "@mmkal/jsonata/sync";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
@@ -207,6 +208,31 @@ type RecentAgentSession = {
   args: string[];
 };
 
+type RecentSessionGroupDefinition = {
+  slug: string;
+  expression: string;
+  compiled: {
+    evaluate(input: any): any;
+  };
+};
+
+type RecentSessionGroupParseResult = {
+  definitions: RecentSessionGroupDefinition[];
+  error: string;
+};
+
+type RecentSessionGroupRenderResult = {
+  html: string;
+  error: string;
+};
+
+type RecentSessionGroup = {
+  slug: string;
+  value: string;
+  sessions: RecentAgentSession[];
+  children: RecentSessionGroup[];
+};
+
 type SessionListItem = {
   id: string;
   title: string;
@@ -286,6 +312,9 @@ let composerAttachments: ComposerAttachment[] = [];
 let sessionIdleRefreshTimer: number | null = null;
 let homeIdleNotificationPollTimer: number | null = null;
 let homeIdleNotificationDisplayDirs: string[] = [];
+
+const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
+const recentSessionGroupSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const idleNotifications = new BrowserIdleNotifications({
   storage: window.localStorage,
@@ -726,10 +755,12 @@ async function renderHome() {
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
+  const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
   const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
+  let loadedRecentAgentSessions: RecentAgentSession[] | null = null;
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -771,9 +802,20 @@ async function renderHome() {
       </section>
       <section class="recent-agents" aria-label="Recent agent sessions" data-testid="recent-agents">
         <header>
-          <strong>Recent Sessions</strong>
+          <details class="recent-session-group-config" data-testid="recent-session-group-config">
+            <summary><strong>Recent Sessions</strong></summary>
+            <textarea
+              data-recent-session-groups-input
+              data-testid="recent-session-group-input"
+              aria-label="Recent session groups"
+              rows="3"
+              spellcheck="false"
+              placeholder="dir: cwd"
+            >${escapeHtml(recentSessionGroupState.getValue())}</textarea>
+          </details>
           <span data-testid="recent-agent-count">Loading</span>
         </header>
+        <p class="recent-session-group-error" data-testid="recent-session-group-error" hidden></p>
         <div class="recent-agents-list" data-testid="recent-agent-list">
           <p class="empty">Loading recent sessions</p>
         </div>
@@ -787,10 +829,20 @@ async function renderHome() {
   startHomeIdleNotificationPolling(displayHomeDirs);
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
+  const recentSessionGroupInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
   const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
   const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
   const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
+
+  recentSessionGroupInput.addEventListener("input", () => {
+    recentSessionGroupState.setValue(recentSessionGroupInput.value);
+    if (!loadedRecentAgentSessions) {
+      return;
+    }
+    renderRecentAgentSessions(loadedRecentAgentSessions);
+    bindRecentAgentSessionButtons(loadedRecentAgentSessions);
+  });
 
   cwdInput.addEventListener("input", () => {
     launchCwdState.setValue(cwdInput.value);
@@ -832,6 +884,7 @@ async function renderHome() {
       if (!form.isConnected) {
         return;
       }
+      loadedRecentAgentSessions = recentAgentSessions;
       observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
       renderRecentAgentSessions(recentAgentSessions);
       bindRecentAgentSessionButtons(recentAgentSessions);
@@ -846,10 +899,14 @@ async function renderHome() {
     if (!count || !list) {
       return;
     }
+    const rendered = renderRecentAgentSessionContent(
+      recentAgentSessions,
+      displayHomeDirs,
+      recentSessionGroupState.getValue(),
+    );
     count.textContent = recentAgentSessions.length ? `${recentAgentSessions.length} active in 24h` : "None";
-    list.innerHTML = recentAgentSessions.length
-      ? renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs)
-      : `<p class="empty">No recent sessions</p>`;
+    list.innerHTML = rendered.html;
+    renderRecentSessionGroupError(rendered.error);
   }
 
   function renderRecentAgentSessionFailure() {
@@ -860,6 +917,7 @@ async function renderHome() {
     }
     count.textContent = "Unavailable";
     list.innerHTML = `<p class="empty">Recent sessions unavailable</p>`;
+    renderRecentSessionGroupError("");
   }
 
   function bindRecentAgentSessionButtons(recentAgentSessions: RecentAgentSession[]) {
@@ -927,6 +985,198 @@ async function renderHome() {
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
   }
+}
+
+function renderRecentSessionGroupError(message: string) {
+  const error = document.querySelector<HTMLElement>("[data-testid='recent-session-group-error']");
+  if (!error) {
+    return;
+  }
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+function renderRecentAgentSessionContent(
+  recentAgentSessions: RecentAgentSession[],
+  displayHomeDirs: string[],
+  groupInput: string,
+): RecentSessionGroupRenderResult {
+  const parsed = parseRecentSessionGroupDefinitions(groupInput);
+  if (!recentAgentSessions.length) {
+    return { html: `<p class="empty">No recent sessions</p>`, error: parsed.error };
+  }
+  if (parsed.error || !parsed.definitions.length) {
+    return {
+      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+      error: parsed.error,
+    };
+  }
+
+  try {
+    return {
+      html: renderRecentSessionGroups(
+        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, 0),
+        displayHomeDirs,
+        0,
+      ),
+      error: "",
+    };
+  } catch (error) {
+    return {
+      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+      error: formatRecentSessionGroupError(error),
+    };
+  }
+}
+
+function parseRecentSessionGroupDefinitions(input: string): RecentSessionGroupParseResult {
+  const definitions: RecentSessionGroupDefinition[] = [];
+  const lines = input.replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!.trim();
+    if (!line) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      return {
+        definitions: [],
+        error: `Line ${index + 1}: expected "slug: jsonata expression".`,
+      };
+    }
+
+    const slug = line.slice(0, separatorIndex).trim();
+    const expression = line.slice(separatorIndex + 1).trim();
+    if (!recentSessionGroupSlugPattern.test(slug)) {
+      return {
+        definitions: [],
+        error: `Line ${index + 1}: "${slug}" is not a slug.`,
+      };
+    }
+    if (!expression) {
+      return {
+        definitions: [],
+        error: `Line ${index + 1}: missing jsonata expression.`,
+      };
+    }
+
+    try {
+      definitions.push({ slug, expression, compiled: jsonata(expression) });
+    } catch (error) {
+      return {
+        definitions: [],
+        error: `Line ${index + 1}: ${formatRecentSessionGroupError(error)}`,
+      };
+    }
+  }
+  return { definitions, error: "" };
+}
+
+function groupRecentAgentSessions(
+  sessions: RecentAgentSession[],
+  definitions: RecentSessionGroupDefinition[],
+  definitionIndex: number,
+): RecentSessionGroup[] {
+  if (definitionIndex >= definitions.length) {
+    return [];
+  }
+
+  const definition = definitions[definitionIndex]!;
+  const groups: RecentSessionGroup[] = [];
+  const groupsByKey = new Map<string, RecentSessionGroup>();
+  for (const session of sessions) {
+    let rawValue: any;
+    try {
+      rawValue = definition.compiled.evaluate(session);
+    } catch (error) {
+      throw new Error(`${definition.slug}: ${formatRecentSessionGroupError(error)}`);
+    }
+    const value = formatRecentSessionGroupValue(rawValue);
+    const key = `${definition.slug}\u0000${recentSessionGroupValueKey(rawValue)}`;
+    let group = groupsByKey.get(key);
+    if (!group) {
+      group = { slug: definition.slug, value, sessions: [], children: [] };
+      groupsByKey.set(key, group);
+      groups.push(group);
+    }
+    group.sessions.push(session);
+  }
+
+  for (const group of groups) {
+    group.children = groupRecentAgentSessions(group.sessions, definitions, definitionIndex + 1);
+  }
+  return groups;
+}
+
+function renderRecentSessionGroups(
+  groups: RecentSessionGroup[],
+  displayHomeDirs: string[],
+  depth: number,
+): string {
+  return `
+    <div class="recent-session-groups" data-depth="${depth}">
+      ${groups.map((group) => `
+        <details class="recent-session-group" data-depth="${depth}">
+          <summary>
+            <span class="recent-session-group-title">
+              <span class="recent-session-group-slug">${escapeHtml(group.slug)}</span>
+              <code>${escapeHtml(group.value)}</code>
+            </span>
+            <span class="recent-session-group-count">${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}</span>
+          </summary>
+          ${group.children.length
+            ? renderRecentSessionGroups(group.children, displayHomeDirs, depth + 1)
+            : renderRecentAgentSessionCards(group.sessions, displayHomeDirs)}
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function formatRecentSessionGroupValue(value: any) {
+  if (value === undefined) {
+    return "(undefined)";
+  }
+  if (value === null) {
+    return "(null)";
+  }
+  if (typeof value === "string") {
+    return value || "(empty)";
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return stringifyRecentSessionGroupValue(value);
+}
+
+function recentSessionGroupValueKey(value: any) {
+  if (value === undefined) {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${typeof value}:${String(value)}`;
+  }
+  return `json:${stringifyRecentSessionGroupValue(value)}`;
+}
+
+function stringifyRecentSessionGroupValue(value: any) {
+  try {
+    return JSON.stringify(value) || String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatRecentSessionGroupError(error: unknown) {
+  const details = error as { code?: string; message?: string; position?: number; token?: string };
+  const message = details && details.message ? details.message : String(error);
+  const code = details && details.code ? `${details.code}: ` : "";
+  const position = details && typeof details.position === "number" ? ` at position ${details.position}` : "";
+  return `${code}${message}${position}`;
 }
 
 function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[], displayHomeDirs: string[]) {

@@ -346,8 +346,30 @@ textarea:focus {
   gap: 10px;
 }
 
+.recent-session-group-config {
+  min-width: 0;
+}
+
+.recent-session-group-config summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #f4f7fb;
+}
+
+.recent-session-group-config summary strong,
 .recent-agents > header strong {
   font-size: 12px;
+}
+
+.recent-session-group-config textarea {
+  display: block;
+  width: min(520px, calc(100vw - 56px));
+  min-height: 72px;
+  margin-top: 8px;
+  resize: vertical;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .recent-agents > header span {
@@ -355,10 +377,79 @@ textarea:focus {
   font-size: 11px;
 }
 
+.recent-session-group-error {
+  margin: -2px 0 0;
+  color: #ff8a8a;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.recent-session-group-error[hidden] {
+  display: none;
+}
+
 .recent-agents-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+}
+
+.recent-session-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-session-group {
+  min-width: 0;
+  border: 1px solid #303844;
+  border-radius: 7px;
+  background: #14191f;
+  overflow: hidden;
+}
+
+.recent-session-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  cursor: pointer;
+}
+
+.recent-session-group-title {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  align-items: center;
+}
+
+.recent-session-group-slug {
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.recent-session-group-title code {
+  min-width: 0;
+  overflow: hidden;
+  color: #dce5ef;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.recent-session-group-count {
+  flex: 0 0 auto;
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.recent-session-group > .recent-session-groups,
+.recent-session-group > .agent-session-button {
+  margin: 0 8px 8px;
 }
 
 .agent-session-button {
