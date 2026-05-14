@@ -2336,7 +2336,7 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   }
 
   .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-shortcuts {
-    grid-template-columns: minmax(0, 1fr) 62px;
+    grid-template-columns: minmax(0, 1fr) 66px;
     overflow: visible;
   }
 

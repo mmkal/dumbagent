@@ -973,6 +973,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     const screen = document.getElementById("screen")!.getBoundingClientRect();
     const promptbox = document.querySelector<HTMLTextAreaElement>("[data-label='promptbox']")!.getBoundingClientRect();
     const returnButton = document.getElementById("send")!.getBoundingClientRect();
+    const chordToggle = document.querySelector<HTMLElement>(".chord-toggle")!.getBoundingClientRect();
     const composerAttach = document.getElementById("attach")!;
     const terminalAttach = document.querySelector<HTMLElement>(".terminal-attach-button")!;
     const scrollDown = document.querySelector<HTMLElement>("[data-terminal-scroll='1']")!;
@@ -985,6 +986,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       returnHeight: Math.round(returnButton.height),
       returnTop: Math.round(returnButton.top),
       returnWidth: Math.round(returnButton.width),
+      chordButtonGap: Math.round(returnButton.left - chordToggle.right),
       promptboxTop: Math.round(promptbox.top),
       scrollDownWidth: Math.round(scrollDownBox.width),
       terminalAttachWidth: Math.round(terminalAttachBox.width),
@@ -1002,6 +1004,8 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   expect(mobileControlLayout.returnHeight).toBeGreaterThanOrEqual(70);
   expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.scrollDownWidth);
   expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.terminalAttachWidth);
+  expect(mobileControlLayout.chordButtonGap).toBeGreaterThanOrEqual(3);
+  expect(mobileControlLayout.chordButtonGap).toBeLessThanOrEqual(5);
   expect(Math.abs(mobileControlLayout.returnTop - mobileControlLayout.promptboxTop)).toBeLessThanOrEqual(2);
   expect(mobileControlLayout.scrollDownBottom).toBeLessThanOrEqual(mobileControlLayout.terminalAttachTop + 1);
   expect(mobileControlLayout.terminalAttachBottom).toBeLessThanOrEqual(mobileControlLayout.screenBottom + 1);
