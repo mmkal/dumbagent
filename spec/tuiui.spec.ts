@@ -846,6 +846,18 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     commandTouchAction: "manipulation",
     cwdTouchAction: "manipulation",
   });
+  await page.evaluate(() => {
+    const now = Date.now();
+    localStorage.setItem("tuiui-user-chords", JSON.stringify(
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `user-common-mobile-${index}`,
+        binary: "",
+        label: `Long mobile chord ${index + 1}`,
+        sequence: `ctrl+${index + 1}`,
+        lastUsedAt: new Date(now - index).toISOString(),
+      })),
+    ));
+  });
 
   await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
   await page.getByRole("textbox", { name: "Command" }).press("Enter");
@@ -895,6 +907,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
 
   await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scroll terminal down" })).toBeVisible();
+  await expect(page.locator(".terminal-attach-button")).toBeVisible();
   const terminalRowsBefore = await page.locator(".xterm-rows").textContent();
   await page.getByRole("button", { name: "Scroll terminal up" }).click();
   let terminalRowsAfterUp = "";
@@ -936,13 +949,62 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
 
   const promptbox = page.getByRole("textbox", { name: "Send stdin" });
   const promptboxBefore = await mobilePromptboxLayout(page);
-  await promptbox.fill("line one\nline two\nline three\nline four\nline five\nline six");
+  await promptbox.fill("line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine");
   const promptboxAfter = await mobilePromptboxLayout(page);
   expect(promptboxAfter.height).toBeGreaterThan(promptboxBefore.height + 24);
-  expect(promptboxAfter.height).toBeLessThanOrEqual(promptboxBefore.height * 3 + 1);
+  expect(promptboxAfter.height).toBeGreaterThan(promptboxBefore.height * 3);
+  expect(promptboxAfter.height).toBeLessThanOrEqual(promptboxBefore.height * 4.5 + 1);
   expect(Math.abs(promptboxAfter.mainSurfaceHeight - promptboxBefore.mainSurfaceHeight)).toBeLessThan(1);
+  await page.getByRole("button", { name: "Scroll terminal down" }).click();
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxBefore.height);
+  await promptbox.click();
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxAfter.height);
   await promptbox.fill("");
   await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxBefore.height);
+
+  const returnKeyEventCount = (await fetchSessionPayload(page)).stdinEvents.length;
+  await promptbox.fill("mobile return key");
+  await promptbox.press("Enter");
+  await expect(promptbox).toHaveValue("mobile return key\n");
+  expect((await fetchSessionPayload(page)).stdinEvents.length).toBe(returnKeyEventCount);
+  await promptbox.fill("");
+
+  const mobileControlLayout = await page.evaluate(() => {
+    const screen = document.getElementById("screen")!.getBoundingClientRect();
+    const promptbox = document.querySelector<HTMLTextAreaElement>("[data-label='promptbox']")!.getBoundingClientRect();
+    const returnButton = document.getElementById("send")!.getBoundingClientRect();
+    const composerAttach = document.getElementById("attach")!;
+    const terminalAttach = document.querySelector<HTMLElement>(".terminal-attach-button")!;
+    const scrollDown = document.querySelector<HTMLElement>("[data-terminal-scroll='1']")!;
+    const terminalAttachBox = terminalAttach.getBoundingClientRect();
+    const scrollDownBox = scrollDown.getBoundingClientRect();
+    return {
+      composerAttachDisplay: getComputedStyle(composerAttach).display,
+      terminalAttachDisplay: getComputedStyle(terminalAttach).display,
+      returnBackgroundColor: getComputedStyle(document.getElementById("send")!).backgroundColor,
+      returnHeight: Math.round(returnButton.height),
+      returnTop: Math.round(returnButton.top),
+      returnWidth: Math.round(returnButton.width),
+      promptboxTop: Math.round(promptbox.top),
+      scrollDownWidth: Math.round(scrollDownBox.width),
+      terminalAttachWidth: Math.round(terminalAttachBox.width),
+      scrollDownBottom: Math.round(scrollDownBox.bottom),
+      terminalAttachTop: Math.round(terminalAttachBox.top),
+      terminalAttachBottom: Math.round(terminalAttachBox.bottom),
+      screenBottom: Math.round(screen.bottom),
+    };
+  });
+  expect(mobileControlLayout).toMatchObject({
+    composerAttachDisplay: "none",
+    terminalAttachDisplay: "grid",
+    returnBackgroundColor: "rgb(32, 38, 46)",
+  });
+  expect(mobileControlLayout.returnHeight).toBeGreaterThanOrEqual(70);
+  expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.scrollDownWidth);
+  expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.terminalAttachWidth);
+  expect(Math.abs(mobileControlLayout.returnTop - mobileControlLayout.promptboxTop)).toBeLessThanOrEqual(2);
+  expect(mobileControlLayout.scrollDownBottom).toBeLessThanOrEqual(mobileControlLayout.terminalAttachTop + 1);
+  expect(mobileControlLayout.terminalAttachBottom).toBeLessThanOrEqual(mobileControlLayout.screenBottom + 1);
 
   const colsBeforeZoom = (await fetchSessionPayload(page)).cols;
   await openSessionMenu(page);
@@ -950,28 +1012,50 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await page.getByRole("button", { name: "Zoom terminal out" }).click();
   await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("10px");
   await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsBeforeZoom);
+  const colsAt10px = (await fetchSessionPayload(page)).cols;
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("9px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsAt10px);
+  const colsAt9px = (await fetchSessionPayload(page)).cols;
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("8px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsAt9px);
   await expect.poll(async () => {
     return await page.locator(".terminal-xterm-wrap").evaluate((terminal) => getComputedStyle(terminal).fontSize);
-  }).toBe("10px");
+  }).toBe("8px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("9px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("10px");
   await page.getByRole("button", { name: "Zoom terminal in" }).click();
   await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("11px");
   await page.getByRole("button", { name: "Close session menu" }).click();
   await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
 
   const chordMetrics = await page.locator(".chord-shortcuts").evaluate((shortcuts) => {
-    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-button")]
+    const scroll = shortcuts.querySelector<HTMLElement>(".chord-scroll")!;
+    scroll.scrollLeft = scroll.scrollWidth;
+    const scrollStyle = getComputedStyle(scroll);
+    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-scroll .chord-button")]
       .filter((button) => getComputedStyle(button).display !== "none")
       .map((button) => button.getBoundingClientRect())
       .filter((box) => box.width > 0 && box.height > 0);
     const tops = visibleBoxes.map((box) => box.top);
     return {
+      maskImage: scrollStyle.maskImage,
+      overflowX: scrollStyle.overflowX,
+      scrollLeft: Math.round(scroll.scrollLeft),
+      scrollWidth: Math.round(scroll.scrollWidth),
+      clientWidth: Math.round(scroll.clientWidth),
       visibleButtonCount: visibleBoxes.length,
       topSpread: Math.max(...tops) - Math.min(...tops),
     };
   });
-  expect(chordMetrics).toMatchObject({
-    visibleButtonCount: 8,
-  });
+  expect(chordMetrics.visibleButtonCount).toBeGreaterThanOrEqual(6);
+  expect(chordMetrics.overflowX).toBe("auto");
+  expect(chordMetrics.maskImage).not.toBe("none");
+  expect(chordMetrics.scrollWidth).toBeGreaterThan(chordMetrics.clientWidth);
+  expect(chordMetrics.scrollLeft).toBeGreaterThan(0);
   expect(chordMetrics.topSpread).toBeLessThan(2);
 
   const mainSurfaceHeight = await page.locator(".main-surface").evaluate((surface) => surface.getBoundingClientRect().height);

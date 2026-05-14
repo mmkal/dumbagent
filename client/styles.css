@@ -1890,6 +1890,7 @@ pre {
 
 .promptbox-shell {
   --promptbox-base-height: 48px;
+  --promptbox-max-height-ratio: 3;
   position: relative;
   min-width: 0;
   height: var(--promptbox-base-height);
@@ -1909,7 +1910,8 @@ pre {
   padding: 0;
 }
 
-.composer-attach svg {
+.composer-attach svg,
+.terminal-attach-button svg {
   width: 17px;
   height: 17px;
   fill: none;
@@ -1939,6 +1941,7 @@ pre {
   padding: 0 16px 1px 0;
   scrollbar-width: none;
   mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
 }
 
 .chord-scroll::-webkit-scrollbar {
@@ -2065,7 +2068,7 @@ textarea[data-label="promptbox"] {
   inset-inline: 0;
   bottom: 0;
   z-index: 2;
-  max-height: calc(var(--promptbox-base-height) * 3);
+  max-height: calc(var(--promptbox-base-height) * var(--promptbox-max-height-ratio));
   overflow-y: hidden;
 }
 
@@ -2260,9 +2263,20 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
 
   .main-surface[data-renderer="terminal"] .terminal-scroll-controls {
     display: grid;
-    grid-template-rows: 1fr 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(40px, 1fr) 40px;
     gap: 4px;
     min-height: 0;
+  }
+
+  .terminal-attach-button {
+    display: grid;
+    place-items: center;
+    min-height: 40px;
+  }
+
+  .terminal-attach-button svg {
+    width: 15px;
+    height: 15px;
   }
 
   .terminal-xterm-wrap,
@@ -2292,11 +2306,21 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
 
   .promptbox-shell {
     --promptbox-base-height: 40px;
+    --promptbox-max-height-ratio: 4.5;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row {
+    grid-template-columns: minmax(0, 1fr);
+    padding-right: 28px;
   }
 
   .composer-attach {
     min-width: 34px;
     min-height: 40px;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row > .composer-attach {
+    display: none;
   }
 
   .composer-actions {
@@ -2309,6 +2333,41 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
 
   .voice-controls {
     justify-content: flex-start;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-shortcuts {
+    grid-template-columns: minmax(0, 1fr) 62px;
+    overflow: visible;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-scroll {
+    padding-right: 16px;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-fixed {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    width: auto;
+    height: 28px;
+    padding-left: 4px;
+    background: #111418;
+    pointer-events: auto;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-fixed #send {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: 4;
+    width: 24px;
+    min-width: 24px;
+    height: 74px;
+    min-height: 74px;
+    border-color: #3a4350;
+    background: #20262e;
+    color: #dce5ef;
+    font-size: 16px;
   }
 
   .agent-session-title,

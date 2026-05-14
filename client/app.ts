@@ -314,7 +314,7 @@ let homeIdleNotificationPollTimer: number | null = null;
 let homeIdleNotificationDisplayDirs: string[] = [];
 
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
-const terminalFontSizeSteps = [9, 10, 11, 12, 13, 14, 15, 16];
+const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
 const recentSessionGroupSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 let terminalFontSize = readTerminalFontSize();
@@ -644,11 +644,25 @@ function providerLabelForCommand(provider: string, command: string) {
 function setupPromptboxState(sessionId: string, promptbox: HTMLTextAreaElement) {
   const state = useLocalStorageState(promptboxStorageKey(sessionId), "");
   promptbox.value = state.getValue();
-  resizePromptbox(promptbox);
+  collapsePromptbox(promptbox);
   promptbox.addEventListener("input", () => {
     state.setValue(promptbox.value);
+    resizePromptboxIfFocused(promptbox);
+  });
+  promptbox.addEventListener("focus", () => {
     resizePromptbox(promptbox);
   });
+  promptbox.addEventListener("blur", () => {
+    collapsePromptbox(promptbox);
+  });
+}
+
+function resizePromptboxIfFocused(promptbox: HTMLTextAreaElement) {
+  if (document.activeElement === promptbox) {
+    resizePromptbox(promptbox);
+    return;
+  }
+  collapsePromptbox(promptbox);
 }
 
 function setPromptboxValue(promptbox: HTMLTextAreaElement, value: string) {
@@ -1259,6 +1273,9 @@ async function renderSession(sessionId: string) {
         <div class="terminal-scroll-controls" aria-label="Terminal scroll controls">
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
+          <button type="button" class="terminal-scroll-button terminal-attach-button" data-action="attach-file" aria-label="Attach file" title="Attach file">
+            ${renderAttachIcon()}
+          </button>
         </div>
       </section>
       <section class="composer" aria-label="Session input">
@@ -1283,10 +1300,8 @@ async function renderSession(sessionId: string) {
             <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="1" spellcheck="false"></textarea>
           </div>
           <input id="attachment-file" class="attachment-file-input" type="file" multiple />
-          <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
-            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-              <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
-            </svg>
+          <button type="button" id="attach" class="icon-button composer-attach" data-action="attach-file" aria-label="Attach file" title="Attach file">
+            ${renderAttachIcon()}
           </button>
         </div>
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
@@ -1359,6 +1374,9 @@ function bindSessionControls(sessionId: string) {
 
   textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (usesTextareaReturnForNewline()) {
+        return;
+      }
       event.preventDefault();
       void sendComposer(sessionId);
       return;
@@ -1455,25 +1473,27 @@ function bindSessionControls(sessionId: string) {
 
 function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElement) {
   const input = document.getElementById("attachment-file") as HTMLInputElement | null;
-  const button = document.getElementById("attach") as HTMLButtonElement | null;
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-action='attach-file']")];
   const preview = document.getElementById("attachment-preview") as HTMLElement | null;
   const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
   const composer = document.querySelector<HTMLElement>(".composer");
-  if (!input || !button || !preview || !dialog || !composer) {
+  if (!input || !buttons.length || !preview || !dialog || !composer) {
     return;
   }
 
   clearComposerAttachments(preview);
   bindAttachmentDialog(dialog, textarea);
 
-  button.addEventListener("click", () => {
-    input.click();
-  });
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      input.click();
+    });
+  }
 
   input.addEventListener("change", () => {
     const files = Array.from(input.files || []);
     input.value = "";
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "file");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "file");
   });
 
   textarea.addEventListener("paste", (event) => {
@@ -1482,7 +1502,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
       return;
     }
     event.preventDefault();
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "paste");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "paste");
   });
 
   preview.addEventListener("click", (event) => {
@@ -1523,7 +1543,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
     }
     event.preventDefault();
     delete composer.dataset.attachmentDragging;
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "drop");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "drop");
   });
 }
 
@@ -1531,11 +1551,13 @@ async function uploadComposerAttachments(
   sessionId: string,
   textarea: HTMLTextAreaElement,
   preview: HTMLElement,
-  button: HTMLButtonElement,
+  buttons: HTMLButtonElement[],
   files: File[],
   source: AttachmentSource,
 ) {
-  button.disabled = true;
+  for (const button of buttons) {
+    button.disabled = true;
+  }
   try {
     for (const file of files) {
       const upload = await uploadAttachment(sessionId, file, source);
@@ -1556,7 +1578,9 @@ async function uploadComposerAttachments(
       testId: "attachment-upload-error-toast",
     });
   } finally {
-    button.disabled = false;
+    for (const button of buttons) {
+      button.disabled = false;
+    }
   }
 }
 
@@ -1828,11 +1852,21 @@ function closeSessionMenu() {
 function resizePromptbox(promptbox: HTMLTextAreaElement) {
   const styles = getComputedStyle(promptbox);
   const baseHeight = parsePixel(styles.getPropertyValue("--promptbox-base-height")) || promptbox.clientHeight || 48;
-  const maxHeight = baseHeight * 3;
+  const maxHeightRatio = parsePixel(styles.getPropertyValue("--promptbox-max-height-ratio")) || 3;
+  const maxHeight = baseHeight * maxHeightRatio;
   promptbox.style.height = `${baseHeight}px`;
   const nextHeight = Math.min(maxHeight, Math.max(baseHeight, promptbox.scrollHeight));
   promptbox.style.height = `${Math.ceil(nextHeight)}px`;
   promptbox.dataset.overflowing = String(promptbox.scrollHeight > nextHeight + 1);
+  promptbox.dataset.expanded = String(nextHeight > baseHeight + 1);
+}
+
+function collapsePromptbox(promptbox: HTMLTextAreaElement) {
+  const styles = getComputedStyle(promptbox);
+  const baseHeight = parsePixel(styles.getPropertyValue("--promptbox-base-height")) || promptbox.clientHeight || 48;
+  promptbox.style.height = `${baseHeight}px`;
+  promptbox.dataset.overflowing = "false";
+  promptbox.dataset.expanded = "false";
 }
 
 async function sendComposer(sessionId: string) {
@@ -3344,6 +3378,18 @@ function renderFixedEnterChordButton() {
 
 function shouldAutoFocusChordInput() {
   return !window.matchMedia("(pointer: coarse), (max-width: 640px)").matches;
+}
+
+function usesTextareaReturnForNewline() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
+function renderAttachIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
+    </svg>
+  `;
 }
 
 function formatChordButtonLabel(label: string) {
