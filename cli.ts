@@ -1096,6 +1096,7 @@ async function createSession(input: CreateSessionInput) {
       session.writeQueue = session.writeQueue.then(() => appendOutput(state, session, text));
     },
   });
+  recordSessionProcessOwnerIfRecoverable(session);
 
   session.backend.exited.then((exitCode: number | null) => {
     session.writeQueue = session.writeQueue
@@ -1109,6 +1110,7 @@ async function createSession(input: CreateSessionInput) {
         session.exitCode = exitCode;
         session.updatedAt = new Date().toISOString();
         await session.fakeAgent?.[Symbol.asyncDispose]();
+        removeSessionProcessOwner(session);
         publishSession(session);
       })
       .catch((error: unknown) => {
@@ -2093,6 +2095,43 @@ function storeSessionRecoveryCommand(session: RuntimeSession, args: string[]) {
     recoveryCommand: formatCommandLine(session.command, args),
     createdAtMs: Date.now(),
   });
+  recordSessionProcessOwnerIfRecoverable(session);
+}
+
+function recordSessionProcessOwnerIfRecoverable(session: RuntimeSession) {
+  const pid = sessionBackendPid(session);
+  if (!pid || !state.sessionStore.getSession(session.id)?.recoveryCommand) {
+    return;
+  }
+
+  const now = Date.now();
+  state.sessionStore.recordSessionProcessOwner({
+    sessionId: session.id,
+    pid,
+    createdAtMs: now,
+    updatedAtMs: now,
+  });
+}
+
+function removeSessionProcessOwner(session: RuntimeSession) {
+  const pid = sessionBackendPid(session);
+  if (!pid) {
+    return;
+  }
+
+  state.sessionStore.removeSessionProcessOwner({
+    sessionId: session.id,
+    pid,
+  });
+}
+
+function sessionBackendPid(session: RuntimeSession) {
+  if (session.backend.name !== "bun") {
+    return 0;
+  }
+
+  const pid = session.backend.process?.pid;
+  return typeof pid === "number" ? pid : 0;
 }
 
 async function refreshCodexSessionSdk(session: RuntimeSession) {
