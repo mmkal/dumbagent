@@ -717,15 +717,14 @@ async function fetchSessionRecovery(sessionId: string) {
 }
 
 async function renderHome() {
-  const [cwd, sessions, commands, recentAgentSessions] = await Promise.all([
+  const [cwd, sessions, commands] = await Promise.all([
     clientApi.cwd(),
     clientApi.sessions.list(),
     clientApi.commands(),
-    clientApi.agentSessions.recent(),
   ]);
   const displayHomeDirs = homeDirsForDisplay(cwd);
   homeIdleNotificationDisplayDirs = displayHomeDirs;
-  observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
+  observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
@@ -770,42 +769,15 @@ async function renderHome() {
           </div>
         </form>
       </section>
-      ${recentAgentSessions.length ? `
-        <section class="recent-agents" aria-label="Recent agent sessions">
-          <header>
-            <strong>Recent Sessions</strong>
-            <span>${recentAgentSessions.length} active in 24h</span>
-          </header>
-          <div class="recent-agents-list">
-            ${recentAgentSessions.map((session) => `
-              <button
-                type="button"
-                class="agent-session-button"
-                data-agent-session-id="${escapeAttr(`${session.provider}:${session.id}`)}"
-                aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
-                title="${escapeAttr([session.command, ...session.args].join(" "))}"
-              >
-                ${renderRecentSessionTitle(session)}
-                ${renderRecentUserPreviewRows(session)}
-                <span class="agent-session-preview">
-                  <span class="agent-session-preview-label">assistant</span>
-                  <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
-                </span>
-                <span class="agent-session-card-footer">
-                  <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
-                  <span class="agent-session-card-badges">
-                    <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
-                      <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
-                      ${escapeHtml(formatRecentSessionStatus(session))}
-                    </span>
-                    <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
-                  </span>
-                </span>
-              </button>
-            `).join("")}
-          </div>
-        </section>
-      ` : ""}
+      <section class="recent-agents" aria-label="Recent agent sessions" data-testid="recent-agents">
+        <header>
+          <strong>Recent Sessions</strong>
+          <span data-testid="recent-agent-count">Loading</span>
+        </header>
+        <div class="recent-agents-list" data-testid="recent-agent-list">
+          <p class="empty">Loading recent sessions</p>
+        </div>
+      </section>
       <section class="sessions" aria-label="Sessions">
         ${sessions.length ? sessions.map(renderSessionLink).join("") : `<p class="empty">No sessions</p>`}
       </section>
@@ -819,7 +791,6 @@ async function renderHome() {
   const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
   const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
-  const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
 
   cwdInput.addEventListener("input", () => {
     launchCwdState.setValue(cwdInput.value);
@@ -848,27 +819,68 @@ async function renderHome() {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-agent-session-id]")) {
-    button.addEventListener("click", async () => {
-      const session = recentAgentSessionsByKey.get(button.dataset.agentSessionId || "");
-      if (!session) {
-        return;
-      }
-      commandInput.value = [session.command, ...session.args].join(" ");
-      setLaunchCwd(session.cwd || currentLaunchCwd());
-      await launchSession({
-        command: session.command,
-        args: session.args,
-        cwd: session.cwd || currentLaunchCwd(),
-        fakeAgent: "",
-      });
-    });
-  }
-
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await submitLaunchForm();
   });
+
+  void loadRecentAgentSessions();
+
+  async function loadRecentAgentSessions() {
+    try {
+      const recentAgentSessions = await clientApi.agentSessions.recent();
+      if (!form.isConnected) {
+        return;
+      }
+      observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
+      renderRecentAgentSessions(recentAgentSessions);
+      bindRecentAgentSessionButtons(recentAgentSessions);
+    } catch {
+      renderRecentAgentSessionFailure();
+    }
+  }
+
+  function renderRecentAgentSessions(recentAgentSessions: RecentAgentSession[]) {
+    const count = document.querySelector<HTMLElement>("[data-testid='recent-agent-count']");
+    const list = document.querySelector<HTMLElement>("[data-testid='recent-agent-list']");
+    if (!count || !list) {
+      return;
+    }
+    count.textContent = recentAgentSessions.length ? `${recentAgentSessions.length} active in 24h` : "None";
+    list.innerHTML = recentAgentSessions.length
+      ? renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs)
+      : `<p class="empty">No recent sessions</p>`;
+  }
+
+  function renderRecentAgentSessionFailure() {
+    const count = document.querySelector<HTMLElement>("[data-testid='recent-agent-count']");
+    const list = document.querySelector<HTMLElement>("[data-testid='recent-agent-list']");
+    if (!count || !list) {
+      return;
+    }
+    count.textContent = "Unavailable";
+    list.innerHTML = `<p class="empty">Recent sessions unavailable</p>`;
+  }
+
+  function bindRecentAgentSessionButtons(recentAgentSessions: RecentAgentSession[]) {
+    const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-agent-session-id]")) {
+      button.addEventListener("click", async () => {
+        const session = recentAgentSessionsByKey.get(button.dataset.agentSessionId || "");
+        if (!session) {
+          return;
+        }
+        commandInput.value = [session.command, ...session.args].join(" ");
+        setLaunchCwd(session.cwd || currentLaunchCwd());
+        await launchSession({
+          command: session.command,
+          args: session.args,
+          cwd: session.cwd || currentLaunchCwd(),
+          fakeAgent: "",
+        });
+      });
+    }
+  }
 
   async function submitLaunchForm() {
     const commandLine = parseCommandLine(commandInput.value);
@@ -915,6 +927,35 @@ async function renderHome() {
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
   }
+}
+
+function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[], displayHomeDirs: string[]) {
+  return recentAgentSessions.map((session) => `
+    <button
+      type="button"
+      class="agent-session-button"
+      data-agent-session-id="${escapeAttr(`${session.provider}:${session.id}`)}"
+      aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
+      title="${escapeAttr([session.command, ...session.args].join(" "))}"
+    >
+      ${renderRecentSessionTitle(session)}
+      ${renderRecentUserPreviewRows(session)}
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">assistant</span>
+        <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
+      </span>
+      <span class="agent-session-card-footer">
+        <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
+        <span class="agent-session-card-badges">
+          <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
+            <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
+            ${escapeHtml(formatRecentSessionStatus(session))}
+          </span>
+          <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+        </span>
+      </span>
+    </button>
+  `).join("");
 }
 
 async function renderSession(sessionId: string) {

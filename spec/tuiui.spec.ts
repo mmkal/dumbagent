@@ -437,6 +437,51 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   });
 });
 
+test("renders home before recent agent sessions finish loading", async ({ page, ctx }) => {
+  let releaseRecentSessions!: () => void;
+  const recentSessionsReady = new Promise<void>((resolve) => {
+    releaseRecentSessions = resolve;
+  });
+
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await recentSessionsReady;
+    const now = new Date().toISOString();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: [{
+          provider: "codex",
+          id: "async-codex-thread",
+          title: "Async Codex",
+          cwd: ctx.workspaceDir,
+          updatedAt: now,
+          lastMessageAt: now,
+          lastMessageText: "Check async recent sessions",
+          initialUserText: "Start the async session",
+          latestUserText: "Check async recent sessions",
+          userMessageCount: 1,
+          latestAssistantText: "Recent sessions loaded.",
+          messageCount: 2,
+          status: "idle",
+          command: "codex",
+          args: ["resume", "async-codex-thread"],
+        }],
+      }),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByRole("textbox", { name: "Command" })).toBeVisible();
+  await expect(page.getByTestId("session-count")).toBeVisible();
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("Loading");
+
+  releaseRecentSessions();
+
+  await expect(page.getByRole("button", { name: /Resume Codex session Async Codex/ })).toBeVisible();
+});
+
 test("loads home when a recent provider database cannot be opened", async ({ page }) => {
   using openCodeDatabasePath = createTempDirectoryAsDatabasePath("tuiui-opencode-db-path-");
   await using ctx = await createContext({ OPENCODE_DB_PATH: openCodeDatabasePath.path });
@@ -444,7 +489,8 @@ test("loads home when a recent provider database cannot be opened", async ({ pag
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByRole("group", { name: "Shortcuts" }).getByRole("button", { name: "codex", exact: true })).toBeVisible();
-  await expect(page.locator(".recent-agents")).toHaveCount(0);
+  await expect(page.getByTestId("recent-agent-list")).toContainText("No recent sessions");
+  await expect(page.locator(".agent-session-button")).toHaveCount(0);
 });
 
 test("sends named key chords separately from the composer", async ({ page, ctx }) => {
