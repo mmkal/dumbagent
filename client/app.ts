@@ -313,8 +313,11 @@ let sessionIdleRefreshTimer: number | null = null;
 let homeIdleNotificationPollTimer: number | null = null;
 let homeIdleNotificationDisplayDirs: string[] = [];
 
+const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
+const terminalFontSizeSteps = [9, 10, 11, 12, 13, 14, 15, 16];
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
 const recentSessionGroupSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+let terminalFontSize = readTerminalFontSize();
 
 const idleNotifications = new BrowserIdleNotifications({
   storage: window.localStorage,
@@ -337,6 +340,7 @@ window.addEventListener("popstate", () => {
 });
 
 async function boot() {
+  applyTerminalFontSize();
   const config = await loadClientConfig();
   if (config.pageLoadToasts) {
     showPageLoadToast();
@@ -640,8 +644,10 @@ function providerLabelForCommand(provider: string, command: string) {
 function setupPromptboxState(sessionId: string, promptbox: HTMLTextAreaElement) {
   const state = useLocalStorageState(promptboxStorageKey(sessionId), "");
   promptbox.value = state.getValue();
+  resizePromptbox(promptbox);
   promptbox.addEventListener("input", () => {
     state.setValue(promptbox.value);
+    resizePromptbox(promptbox);
   });
 }
 
@@ -1239,6 +1245,11 @@ async function renderSession(sessionId: string) {
                 <button type="button" class="icon-button" data-action="relayout">Relayout</button>
                 <button type="button" class="icon-button" data-action="archive-session">Archive</button>
               </div>
+              <div class="terminal-zoom-control" role="group" aria-label="Terminal zoom">
+                <button type="button" class="icon-button" data-terminal-zoom="-1" aria-label="Zoom terminal out" title="Zoom terminal out">−</button>
+                <output data-terminal-zoom-value aria-label="Terminal font size">${terminalFontSize}px</output>
+                <button type="button" class="icon-button" data-terminal-zoom="1" aria-label="Zoom terminal in" title="Zoom terminal in">+</button>
+              </div>
             </div>
           </div>
         </details>
@@ -1268,7 +1279,9 @@ async function renderSession(sessionId: string) {
           </form>
         </dialog>
         <div class="composer-input-row">
-          <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+          <div class="promptbox-shell">
+            <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="1" spellcheck="false"></textarea>
+          </div>
           <input id="attachment-file" class="attachment-file-input" type="file" multiple />
           <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
             <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
@@ -1425,6 +1438,13 @@ function bindSessionControls(sessionId: string) {
   document.querySelector<HTMLButtonElement>("[data-action='archive-session']")?.addEventListener("click", () => {
     void archiveSession(sessionId);
   });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-terminal-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      changeTerminalFontSize(sessionId, Number(button.dataset.terminalZoom || 0));
+    });
+  });
+  updateTerminalZoomControls();
 
   document.querySelectorAll<HTMLButtonElement>("[data-terminal-scroll]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1805,6 +1825,16 @@ function closeSessionMenu() {
   document.querySelector<HTMLDetailsElement>(".session-menu")?.removeAttribute("open");
 }
 
+function resizePromptbox(promptbox: HTMLTextAreaElement) {
+  const styles = getComputedStyle(promptbox);
+  const baseHeight = parsePixel(styles.getPropertyValue("--promptbox-base-height")) || promptbox.clientHeight || 48;
+  const maxHeight = baseHeight * 3;
+  promptbox.style.height = `${baseHeight}px`;
+  const nextHeight = Math.min(maxHeight, Math.max(baseHeight, promptbox.scrollHeight));
+  promptbox.style.height = `${Math.ceil(nextHeight)}px`;
+  promptbox.dataset.overflowing = String(promptbox.scrollHeight > nextHeight + 1);
+}
+
 async function sendComposer(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const text = textarea.value;
@@ -2104,6 +2134,71 @@ function relayoutTerminal(sessionId: string) {
   }, 750);
 }
 
+function changeTerminalFontSize(sessionId: string, direction: number) {
+  if (!direction) {
+    return;
+  }
+  const currentIndex = terminalFontSizeSteps.indexOf(terminalFontSize);
+  const index = currentIndex === -1 ? terminalFontSizeSteps.indexOf(defaultTerminalFontSize()) : currentIndex;
+  const nextIndex = Math.max(0, Math.min(terminalFontSizeSteps.length - 1, index + direction));
+  const nextFontSize = terminalFontSizeSteps[nextIndex]!;
+  if (nextFontSize === terminalFontSize) {
+    updateTerminalZoomControls();
+    return;
+  }
+
+  terminalFontSize = nextFontSize;
+  storeTerminalFontSize(nextFontSize);
+  applyTerminalFontSize();
+  updateTerminalZoomControls();
+  lastTerminalResizeKey = "";
+  if (!activeSession || renderer !== "terminal") {
+    return;
+  }
+  destroyXterm();
+  renderSessionPayload(activeSession);
+  scheduleTerminalResize(sessionId);
+}
+
+function updateTerminalZoomControls() {
+  document.querySelectorAll<HTMLOutputElement>("[data-terminal-zoom-value]").forEach((output) => {
+    output.textContent = `${terminalFontSize}px`;
+  });
+  const currentIndex = terminalFontSizeSteps.indexOf(terminalFontSize);
+  document.querySelectorAll<HTMLButtonElement>("[data-terminal-zoom]").forEach((button) => {
+    const direction = Number(button.dataset.terminalZoom || 0);
+    button.disabled = direction < 0
+      ? currentIndex <= 0
+      : currentIndex >= terminalFontSizeSteps.length - 1;
+  });
+}
+
+function applyTerminalFontSize() {
+  document.documentElement.style.setProperty("--terminal-font-size", `${terminalFontSize}px`);
+}
+
+function readTerminalFontSize() {
+  try {
+    const stored = Number(localStorage.getItem(terminalFontSizeStorageKey) || "");
+    if (terminalFontSizeSteps.includes(stored)) {
+      return stored;
+    }
+  } catch {
+  }
+  return defaultTerminalFontSize();
+}
+
+function defaultTerminalFontSize() {
+  return window.matchMedia("(max-width: 640px)").matches ? 11 : 12;
+}
+
+function storeTerminalFontSize(fontSize: number) {
+  try {
+    localStorage.setItem(terminalFontSizeStorageKey, String(fontSize));
+  } catch {
+  }
+}
+
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
   if (payload.renderedAnsi === undefined && payload.renderedHtml) {
@@ -2177,7 +2272,7 @@ async function ensureXterm(payload: SessionPayload) {
       rows: payload.rows,
       convertEol: false,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
+      fontSize: terminalFontSize,
       lineHeight: 1.18,
       theme: {
         background: "#0a0a0a",

@@ -832,6 +832,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     const commandInput = document.querySelector<HTMLInputElement>("input[name='commandLine']")!;
     const cwdInput = document.querySelector<HTMLInputElement>("input[name='cwd']")!;
     return {
+      bodyFontSize: getComputedStyle(document.body).fontSize,
       commandFontSize: getComputedStyle(commandInput).fontSize,
       cwdFontSize: getComputedStyle(cwdInput).fontSize,
       commandTouchAction: getComputedStyle(commandInput).touchAction,
@@ -839,6 +840,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     };
   });
   expect(homeInputs).toMatchObject({
+    bodyFontSize: "12px",
     commandFontSize: "16px",
     cwdFontSize: "16px",
     commandTouchAction: "manipulation",
@@ -879,7 +881,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
         appScrolls: app.scrollHeight > app.clientHeight + 1,
         horizontalScrolls: doc.scrollWidth > doc.clientWidth + 1,
         screenOverflowY: getComputedStyle(screen).overflowY,
-        terminalOwnsScroll: Boolean(terminalViewport && getComputedStyle(terminalViewport).overflowY === "auto"),
+        terminalViewportOverflowY: terminalViewport ? getComputedStyle(terminalViewport).overflowY : "",
       };
     });
   }).toMatchObject({
@@ -888,7 +890,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     appScrolls: false,
     horizontalScrolls: false,
     screenOverflowY: "hidden",
-    terminalOwnsScroll: true,
+    terminalViewportOverflowY: "hidden",
   });
 
   await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
@@ -927,10 +929,34 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     composerBorder: "0px",
     screenTouchAction: "manipulation",
     scrollButtonTouchAction: "manipulation",
-    terminalFontSize: "12px",
+    terminalFontSize: "11px",
     textareaFontSize: "16px",
     textareaTouchAction: "manipulation",
   });
+
+  const promptbox = page.getByRole("textbox", { name: "Send stdin" });
+  const promptboxBefore = await mobilePromptboxLayout(page);
+  await promptbox.fill("line one\nline two\nline three\nline four\nline five\nline six");
+  const promptboxAfter = await mobilePromptboxLayout(page);
+  expect(promptboxAfter.height).toBeGreaterThan(promptboxBefore.height + 24);
+  expect(promptboxAfter.height).toBeLessThanOrEqual(promptboxBefore.height * 3 + 1);
+  expect(Math.abs(promptboxAfter.mainSurfaceHeight - promptboxBefore.mainSurfaceHeight)).toBeLessThan(1);
+  await promptbox.fill("");
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxBefore.height);
+
+  const colsBeforeZoom = (await fetchSessionPayload(page)).cols;
+  await openSessionMenu(page);
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("11px");
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("10px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsBeforeZoom);
+  await expect.poll(async () => {
+    return await page.locator(".terminal-xterm-wrap").evaluate((terminal) => getComputedStyle(terminal).fontSize);
+  }).toBe("10px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("11px");
+  await page.getByRole("button", { name: "Close session menu" }).click();
+  await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
 
   const chordMetrics = await page.locator(".chord-shortcuts").evaluate((shortcuts) => {
     const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-button")]
@@ -1423,6 +1449,18 @@ async function sessionMenuPlainButtonStyles(page: Page) {
       reference: referenceStyle,
       debug: debugStyle,
       matches: JSON.stringify(referenceStyle) === JSON.stringify(debugStyle),
+    };
+  });
+}
+
+async function mobilePromptboxLayout(page: Page) {
+  return await page.getByRole("textbox", { name: "Send stdin" }).evaluate((textarea) => {
+    const mainSurface = document.querySelector<HTMLElement>(".main-surface")!;
+    const textareaBox = textarea.getBoundingClientRect();
+    const mainSurfaceBox = mainSurface.getBoundingClientRect();
+    return {
+      height: Math.round(textareaBox.height),
+      mainSurfaceHeight: Math.round(mainSurfaceBox.height),
     };
   });
 }
