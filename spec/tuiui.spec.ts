@@ -254,10 +254,11 @@ test("launches the coordinator as a normal TUI session with MCP tools", async ({
   expect(payload.args.at(-1)).toContain("You are TUI UI's coordinator agent");
 });
 
-test("opens a coordinator session from the talk to coordinator shortcut", async ({ page, ctx }) => {
+test("opens a coordinator session from the coordinator shortcut", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
+  await expect(page.getByRole("link", { name: "Factory floor" })).toHaveText("🏭");
   await page.getByRole("checkbox", { name: "fakeagent" }).check();
-  await page.getByRole("button", { name: "Talk to coordinator" }).click();
+  await page.getByRole("link", { name: "Coordinator" }).click();
 
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
   await expect(page.getByTestId("rendered-terminal")).toContainText("TUI UI's coordinator agent");

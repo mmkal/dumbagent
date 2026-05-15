@@ -26,6 +26,7 @@ import {
 import { showToast } from "./toast.ts";
 import {
   createPreferredBrowserVoiceRecognizer,
+  createBrowserVoiceRecognizer,
   createBrowserVoiceSpeaker,
   createVoiceLoop,
   type VoiceLoop,
@@ -804,7 +805,8 @@ async function renderHome() {
       <header class="topbar">
         <a class="brand" href="/">tuiui</a>
         <span class="muted" data-testid="session-count">${sessions.length} sessions</span>
-        <a class="view-switch-link" href="/factory-floor">Factory floor</a>
+        <a class="view-switch-link" href="/" data-action="open-coordinator">Coordinator</a>
+        <a class="view-switch-link" href="/factory-floor" aria-label="Factory floor">🏭</a>
         ${renderIdleNotificationControl()}
       </header>
       <section class="launcher" aria-label="Launch session">
@@ -835,13 +837,6 @@ async function renderHome() {
               <input name="fakeagent" type="checkbox" aria-label="fakeagent" />
               <span>fakeagent</span>
             </label>
-          </div>
-          <div class="coordinator-voice-row">
-            <button
-              type="button"
-              class="secondary-button coordinator-voice-button"
-              data-action="talk-to-coordinator"
-            >Talk to coordinator</button>
           </div>
         </form>
       </section>
@@ -917,7 +912,8 @@ async function renderHome() {
     });
   }
 
-  form.querySelector<HTMLButtonElement>("[data-action='talk-to-coordinator']")?.addEventListener("click", async () => {
+  app.querySelector<HTMLAnchorElement>("[data-action='open-coordinator']")?.addEventListener("click", async (event) => {
+    event.preventDefault();
     await openOrLaunchCoordinator();
   });
 
@@ -2075,7 +2071,7 @@ function dragEventHasFiles(event: DragEvent) {
 function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
   unsubscribeVoiceLoop?.();
   voiceLoop = createVoiceLoop({
-    recognizer: window.__tuiuiVoiceTest?.recognizer || createPreferredBrowserVoiceRecognizer(),
+    recognizer: window.__tuiuiVoiceTest?.recognizer || createSessionVoiceRecognizer(),
     speaker: window.__tuiuiVoiceTest?.speaker || createBrowserVoiceSpeaker(),
     now: window.__tuiuiVoiceTest?.now || (() => Date.now()),
     minReadbackDelayMs: Number(window.__tuiuiVoiceTest?.minReadbackDelayMs || 700),
@@ -2122,6 +2118,11 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
   stop.addEventListener("click", () => {
     voiceLoop?.stopSpeaking();
   });
+}
+
+function createSessionVoiceRecognizer() {
+  const createPreferred = createPreferredBrowserVoiceRecognizer || createBrowserVoiceRecognizer;
+  return createPreferred();
 }
 
 function updateVoiceControls(state: VoiceLoop["state"]) {
