@@ -43,6 +43,10 @@ test("coordinator tools are attached to a normal managed session", async () => {
     rows: 24,
     env: {},
   });
+  await expect(await client.sessions.get({ sessionId: coordinator.id })).toMatchObject({
+    command: expect.stringContaining("codex"),
+    args: expect.arrayContaining(["--dangerously-bypass-approvals-and-sandbox"]),
+  });
   await poll(async () => {
     const payload = await client.sessions.get({ sessionId: first.id });
     return payload.renderedText;

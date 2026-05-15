@@ -579,10 +579,7 @@ function coordinatorCodexArgs() {
     "mcp_servers.tuiui_coordinator.tool_timeout_sec=20",
     "-c",
     "mcp_servers.tuiui_coordinator.required=true",
-    "--sandbox",
-    "read-only",
-    "--ask-for-approval",
-    "on-request",
+    "--dangerously-bypass-approvals-and-sandbox",
     createCoordinatorInitialPrompt(),
   ];
 }

@@ -240,7 +240,7 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
 test("launches the coordinator as a normal TUI session with MCP tools", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
   await page.getByRole("checkbox", { name: "fakeagent" }).check();
-  await page.getByRole("group", { name: "Shortcuts" }).getByRole("button", { name: "coordinator", exact: true }).click();
+  await page.getByRole("link", { name: "Coordinator" }).click();
 
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
   await expect(page.getByTestId("rendered-terminal")).toContainText("TUI UI's coordinator agent");
@@ -251,6 +251,7 @@ test("launches the coordinator as a normal TUI session with MCP tools", async ({
   expect(payload.args.join(" ")).toContain("/mcp/coordinator");
   expect(payload.args.join(" ")).toContain("enabled_tools");
   expect(payload.args.join(" ")).toContain("listAgents");
+  expect(payload.args).toContain("--dangerously-bypass-approvals-and-sandbox");
   expect(payload.args.at(-1)).toContain("You are TUI UI's coordinator agent");
 });
 
@@ -444,11 +445,28 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   const rows = await page.locator(".quick-launch-row").evaluateAll((elements) => {
     return elements.map((element) => ({
       buttons: [...element.querySelectorAll("button")].map((button) => button.textContent?.trim()),
+      buttonStyles: [...element.querySelectorAll("button")].map((button) => {
+        const styles = getComputedStyle(button);
+        return {
+          fontFamily: styles.fontFamily,
+          fontSize: styles.fontSize,
+          minHeight: styles.minHeight,
+          paddingLeft: styles.paddingLeft,
+        };
+      }),
       fakeagent: element.querySelector("label")?.textContent?.trim(),
     }));
   });
   expect(rows).toMatchObject([
-    { buttons: ["Coordinator", "Codex", "Claude", "OpenCode"], fakeagent: "fakeagent" },
+    {
+      buttons: ["codex", "claude", "opencode"],
+      buttonStyles: [
+        { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
+        { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
+        { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
+      ],
+      fakeagent: "fakeagent",
+    },
   ]);
 
   await page.getByRole("textbox", { name: "Working directory" }).fill(ctx.tempRoot);

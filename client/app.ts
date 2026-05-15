@@ -805,7 +805,7 @@ async function renderHome() {
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
   const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
-  const launchCommandOrder = ["coordinator", "codex", "claude", "opencode"];
+  const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
@@ -841,7 +841,7 @@ async function renderHome() {
                   data-preset-id="${escapeAttr(command.id)}"
                   aria-label="${escapeAttr(command.coordinator ? "coordinator" : command.command)}"
                   title="${escapeAttr(command.command)}"
-                >${escapeHtml(command.label || command.command)}</button>
+                >${escapeHtml(command.command.toLowerCase())}</button>
               `).join("")}
             </div>
             <label class="fakeagent-toggle">
@@ -1102,7 +1102,7 @@ async function renderFactoryFloorHome() {
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
-  const launchCommandOrder = ["coordinator", "codex", "claude", "opencode"];
+  const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
@@ -1137,7 +1137,7 @@ async function renderFactoryFloorHome() {
                   data-preset-id="${escapeAttr(command.id)}"
                   aria-label="${escapeAttr(command.coordinator ? "coordinator" : command.command)}"
                   title="${escapeAttr(command.command)}"
-                >${escapeHtml(command.label || command.command)}</button>
+                >${escapeHtml(command.command.toLowerCase())}</button>
               `).join("")}
             </div>
             <label class="fakeagent-toggle">

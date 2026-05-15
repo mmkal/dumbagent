@@ -85,7 +85,7 @@ The coordinator may inspect, brief, subscribe, and send prompts to managed sessi
 ## Implementation Notes
 
 - Official Codex SDK docs describe the TypeScript SDK as a way to control Codex programmatically.
-- Installed `codex --help` supports `-c key=value` config overrides, `--sandbox read-only`, `--ask-for-approval on-request`, and an initial prompt argument for the interactive TUI.
+- Installed `codex --help` supports `-c key=value` config overrides, `--dangerously-bypass-approvals-and-sandbox`, and an initial prompt argument for the interactive TUI.
 - Installed `codex mcp add --help` supports streamable HTTP MCP servers with `--url` and `--bearer-token-env-var`, which is the mechanism this pivot uses through config overrides.
 - The existing TUI UI session brief contract is already the right source for `getBriefing(agentId)` where available.
 - 2026-05-14: Implemented the first section and verified with `bun run typecheck` plus `bun test test/coordinator-tools.test.ts test/coordinator-mcp.test.ts`.

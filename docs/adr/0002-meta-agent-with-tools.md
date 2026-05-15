@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-05-14. Revised after product review on 2026-05-14.
+Accepted, 2026-05-14. Revised after product review on 2026-05-14 and coordinator launch review on 2026-05-15.
 
 ## Context
 
@@ -21,7 +21,7 @@ The coordinator is a normal PTY-backed Codex session rendered through the existi
 - a local streamable HTTP MCP server at `/mcp/coordinator`;
 - `listAgents`, `getBriefing`, `promptAgent`, `subscribe`, and `findClashes` enabled;
 - a coordinator role prompt as the initial Codex prompt;
-- read-only sandboxing and normal interactive approval behavior.
+- yolo-style Codex permissions via `--dangerously-bypass-approvals-and-sandbox`.
 
 TUI UI implements coordination as deterministic TypeScript functions first:
 
@@ -46,5 +46,7 @@ The browser does not need coordinator-specific chat state, polling, ORPC get/sen
 The coordinator can use natural language to explain deterministic state, but exact clash detection remains auditable TypeScript set logic.
 
 `promptAgent` is intentionally narrow. It forwards a user-visible prompt through existing managed-session input paths only during a server-authorized human turn. It does not grant shell, kill, archive, merge, push, PR, or history-rewrite authority.
+
+The coordinator's own Codex session is launched with no approval prompts because its job is to use the deterministic coordination tools fluidly. The authority boundary for writing into other agents remains the server-side `promptAgent` gate, not Codex's interactive tool approval prompt.
 
 Subscriptions are limited to live managed sessions. External recent Codex sessions and exited sessions can be inspected, but they cannot promise a TUI UI idle callback.
