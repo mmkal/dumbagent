@@ -126,11 +126,17 @@ button:disabled {
 
 .idle-notification-toggle {
   justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
   min-height: 30px;
   border-color: #34404d;
   background: #20262e;
   color: #d6dde7;
-  font-size: 11px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 8px;
   white-space: nowrap;
 }
 

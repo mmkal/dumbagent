@@ -426,9 +426,14 @@ function renderIdleNotificationControl() {
       data-testid="idle-notification-toggle"
       data-notification-permission="${escapeAttr(state.permission)}"
       aria-pressed="${state.enabled}"
+      aria-label="${escapeAttr(state.label)}"
       title="${escapeAttr(state.description)}"
-    >${escapeHtml(state.label)}</button>
+    >${idleNotificationControlIcon(state.enabled)}</button>
   `;
+}
+
+function idleNotificationControlIcon(enabled: boolean) {
+  return enabled ? "🔔" : "🔕";
 }
 
 function bindIdleNotificationControls() {
@@ -467,10 +472,11 @@ function disableIdleNotifications() {
 function updateIdleNotificationControls() {
   const state = idleNotifications.getControlState();
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-action='toggle-idle-notifications']")) {
-    button.textContent = state.label;
+    button.textContent = idleNotificationControlIcon(state.enabled);
     button.title = state.description;
     button.dataset.notificationPermission = state.permission;
     button.setAttribute("aria-pressed", String(state.enabled));
+    button.setAttribute("aria-label", state.label);
   }
 }
 

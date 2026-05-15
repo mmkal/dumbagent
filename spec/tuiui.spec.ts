@@ -75,12 +75,14 @@ test("requests idle notification permission only after the explicit control is c
 
   await page.goto(ctx.baseUrl);
 
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: off");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔕");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: off");
   expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(0);
 
   await page.getByTestId("idle-notification-toggle").click();
 
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: browser");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔔");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: browser");
   expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(1);
   expect(await page.evaluate(() => localStorage.getItem("tuiui-browser-idle-notifications-enabled"))).toBe("1");
 });
@@ -96,7 +98,8 @@ test("does not poll home idle notification snapshots before opt in", async ({ pa
   });
 
   await page.goto(ctx.baseUrl);
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("Idle alerts: off");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔕");
+  await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: off");
   const requestsAfterInitialLoad = jsonApiRequests;
   expect(requestsAfterInitialLoad).toBeGreaterThan(0);
 
