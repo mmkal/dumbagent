@@ -417,6 +417,17 @@ function openIdleNotificationRoute(path: string) {
   void renderRoute();
 }
 
+function bindClientRouteLink(link: HTMLAnchorElement, path: string) {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (location.pathname === path) {
+      return;
+    }
+    history.pushState({}, "", path);
+    void renderRoute();
+  });
+}
+
 function renderIdleNotificationControl() {
   const state = idleNotifications.getControlState();
   return `
@@ -806,7 +817,7 @@ async function renderHome() {
         <a class="brand" href="/">tuiui</a>
         <span class="muted" data-testid="session-count">${sessions.length} sessions</span>
         <a class="view-switch-link" href="/" data-action="open-coordinator">Coordinator</a>
-        <a class="view-switch-link" href="/factory-floor" aria-label="Factory floor">🏭</a>
+        <a class="view-switch-link" href="/factory-floor" data-action="open-factory-floor" aria-label="Factory floor">🏭</a>
         ${renderIdleNotificationControl()}
       </header>
       <section class="launcher" aria-label="Launch session">
@@ -867,6 +878,10 @@ async function renderHome() {
   `;
   bindIdleNotificationControls();
   startHomeIdleNotificationPolling(displayHomeDirs);
+  const factoryFloorLink = app.querySelector<HTMLAnchorElement>("[data-action='open-factory-floor']");
+  if (factoryFloorLink) {
+    bindClientRouteLink(factoryFloorLink, "/factory-floor");
+  }
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
   const recentSessionGroupInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
@@ -1042,7 +1057,7 @@ async function renderHome() {
   }
 
   async function openOrLaunchCoordinator() {
-    const existing = sessions.find((session) => session.title === "coordinator" && session.lifecycle === "running");
+    const existing = sessions.find((session) => isCoordinatorSession(session) && session.lifecycle === "running");
     if (existing) {
       history.pushState({}, "", `/sessions/${existing.id}`);
       await renderRoute();
@@ -1068,6 +1083,14 @@ async function renderHome() {
   }
 }
 
+function isCoordinatorSession(session: SessionListItem) {
+  const title = normalizeComparableText(session.title);
+  const args = session.args.join(" ");
+  return title === "coordinator"
+    || args.includes("/mcp/coordinator")
+    || (title.includes("tui ui") && title.includes("coordinator agent"));
+}
+
 async function renderFactoryFloorHome() {
   const [cwd, sessions, commands] = await Promise.all([
     clientApi.cwd(),
@@ -1090,7 +1113,7 @@ async function renderFactoryFloorHome() {
       <header class="topbar factory-floor-topbar">
         <a class="brand" href="/">tuiui</a>
         <span class="muted" data-testid="session-count">${sessions.length} sessions</span>
-        <a class="view-switch-link" href="/">List view</a>
+        <a class="view-switch-link" href="/" data-action="open-list-view">List view</a>
         ${renderIdleNotificationControl()}
       </header>
       <section class="launcher factory-launcher" aria-label="Launch session">
@@ -1136,6 +1159,10 @@ async function renderFactoryFloorHome() {
   `;
   bindIdleNotificationControls();
   startHomeIdleNotificationPolling(displayHomeDirs);
+  const listViewLink = app.querySelector<HTMLAnchorElement>("[data-action='open-list-view']");
+  if (listViewLink) {
+    bindClientRouteLink(listViewLink, "/");
+  }
 
   const form = document.getElementById("factory-launch-form") as HTMLFormElement;
   const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;

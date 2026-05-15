@@ -63,6 +63,7 @@ import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-scree
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
 import { composerSubmitChunks, usesLfCrSubmit } from "./src/terminal-input.ts";
 import { formatCommandLine, parseCommandLine } from "./src/command-line.ts";
+import { terminateOwnersForRecoveryCommand } from "./src/codex-lease.ts";
 import {
   createTmuxBackend,
   reconnectTmuxBackend,
@@ -998,6 +999,7 @@ async function createSession(input: CreateSessionInput) {
   if (!cwdStats.isDirectory()) {
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
+  await terminateExistingCodexResumeOwners(input.command, input.args, input.fakeAgent);
 
   const id = input.id;
   const createdAtMs = Date.now();
@@ -1998,6 +2000,22 @@ function isCodexCommand(command: string) {
 
 function isClaudeCommand(command: string) {
   return path.basename(command).toLowerCase() === "claude";
+}
+
+async function terminateExistingCodexResumeOwners(command: string, args: string[], fakeAgent: AgentName | "") {
+  if (fakeAgent || !isCodexCommand(command) || !findCodexResumeId(args)) {
+    return;
+  }
+  await terminateOwnersForRecoveryCommand(state.sessionStore, formatCommandLine("codex", args));
+}
+
+function findCodexResumeId(args: string[]) {
+  const index = args.indexOf("resume");
+  if (index === -1) {
+    return "";
+  }
+  const candidate = args[index + 1] || "";
+  return candidate && !candidate.startsWith("-") ? candidate : "";
 }
 
 async function refreshSessionSdk(session: RuntimeSession) {

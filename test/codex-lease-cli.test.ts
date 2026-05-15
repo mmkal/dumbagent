@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,7 +10,7 @@ test("codex resume terminates the existing wrapper-owned session before starting
   using fixture = createFakeCodexFixture();
   const sessionId = "019e9999-1111-7222-8333-abcdefabcdef";
 
-  const first = spawn("node", [path.resolve("bin/tuiui.ts"), "codex"], {
+  const first = spawn(process.execPath, [path.resolve("bin/tuiui.ts"), "codex"], {
     cwd: fixture.workspace,
     env: {
       ...process.env,
@@ -28,7 +29,7 @@ test("codex resume terminates the existing wrapper-owned session before starting
     await waitForFile(fixture.firstStartedPath);
     await waitForLease(fixture.stateDb, sessionId);
 
-    const resumed = spawnSync("node", [path.resolve("bin/tuiui.ts"), "codex", "resume", sessionId], {
+    const resumed = spawnSync(process.execPath, [path.resolve("bin/tuiui.ts"), "codex", "resume", sessionId], {
       cwd: fixture.workspace,
       encoding: "utf8",
       env: {
@@ -54,10 +55,77 @@ test("codex resume terminates the existing wrapper-owned session before starting
   }
 });
 
+test("web UI codex resume terminates the existing wrapper-owned session before starting the managed resume", async () => {
+  using fixture = createFakeCodexFixture();
+  const sessionId = "019e9999-1111-7222-8333-bbbbbbbbbbbb";
+
+  const first = spawn(process.execPath, [path.resolve("bin/tuiui.ts"), "codex"], {
+    cwd: fixture.workspace,
+    env: {
+      ...process.env,
+      CODEX_HOME: fixture.codexHome,
+      FAKE_CODEX_SESSION_ID: sessionId,
+      FAKE_CODEX_STARTED_PATH: fixture.firstStartedPath,
+      FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+      REALCODEX: fixture.codexPath,
+      TUIUI_CODEX_LEASE_DISCOVERY_INTERVAL_MS: "25",
+      TUIUI_STATE_DB: fixture.stateDb,
+    },
+    stdio: "ignore",
+  });
+  let server: ChildProcess | null = null;
+
+  try {
+    await waitForFile(fixture.firstStartedPath);
+    await waitForLease(fixture.stateDb, sessionId);
+
+    const port = await getFreePort();
+    server = await startTuiuiServer(fixture.workspace, {
+      ...process.env,
+      CODEX_HOME: fixture.codexHome,
+      FAKE_CODEX_RESUMED_PATH: fixture.resumedPath,
+      FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+      HOME: path.join(fixture.workspace, "home"),
+      PATH: [fixture.binDir, process.env.PATH || ""].join(path.delimiter),
+      TUIUI_CODEX_LEASE_KILL_TIMEOUT_MS: "500",
+      TUIUI_STATE_DB: fixture.stateDb,
+    }, port);
+
+    await fetchJson<{ id: string }>(`http://127.0.0.1:${port}/api/sessions`, {
+      method: "POST",
+      body: JSON.stringify({
+        command: "codex",
+        args: ["resume", sessionId],
+        cwd: fixture.workspace,
+        cols: 80,
+        rows: 24,
+        env: {
+          FAKE_CODEX_RESUMED_PATH: fixture.resumedPath,
+          FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+        },
+      }),
+    });
+
+    await waitForFile(fixture.firstTerminatedPath);
+    await waitForFile(fixture.resumedPath);
+    await waitForExit(first);
+    expect(JSON.parse(fs.readFileSync(fixture.resumedPath, "utf8"))).toMatchObject({
+      args: ["resume", sessionId],
+      terminatedBeforeResumeStarted: true,
+    });
+  } finally {
+    killIfRunning(first);
+    if (server) {
+      server.kill("SIGTERM");
+      await waitForExit(server).catch(() => {});
+    }
+  }
+});
+
 test("codex command forwards unknown Codex flags instead of treating them as tuiui options", () => {
   using fixture = createFakeCodexFixture();
 
-  const result = spawnSync("node", [path.resolve("bin/tuiui.ts"), "codex", "--help", "--yolo"], {
+  const result = spawnSync(process.execPath, [path.resolve("bin/tuiui.ts"), "codex", "--help", "--yolo"], {
     cwd: fixture.workspace,
     encoding: "utf8",
     env: {
@@ -74,13 +142,16 @@ test("codex command forwards unknown Codex flags instead of treating them as tui
 
 function createFakeCodexFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-codex-lease-"));
+  const binDir = path.join(root, "bin");
   const codexHome = path.join(root, "codex-home");
   const workspace = path.join(root, "workspace");
-  const codexPath = path.join(root, "fake-codex.js");
+  const codexPath = path.join(binDir, "codex");
+  fs.mkdirSync(binDir, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(codexPath, fakeCodexSource, { mode: 0o755 });
 
   return {
+    binDir,
     codexHome,
     codexPath,
     firstStartedPath: path.join(root, "first-started.json"),
@@ -101,8 +172,10 @@ async function waitForLease(stateDb: string, sessionId: string) {
       return null;
     }
 
-    const database = new Database(stateDb);
+    let database: Database | null = null;
     try {
+      database = new Database(stateDb);
+      database.exec("pragma busy_timeout = 1000;");
       return database.query(`
         select
           session_process_owners.session_id as sessionId,
@@ -115,8 +188,13 @@ async function waitForLease(stateDb: string, sessionId: string) {
         where session_process_owners.session_id = ?
         limit 1
       `).get(sessionId) as any;
+    } catch (error) {
+      if (String(error).includes("SQLITE_BUSY")) {
+        return null;
+      }
+      throw error;
     } finally {
-      database.close();
+      database?.close();
     }
   });
   expect(lease).toMatchObject({
@@ -153,6 +231,66 @@ function killIfRunning(child: ChildProcess) {
   }
 
   child.kill("SIGTERM");
+}
+
+async function startTuiuiServer(cwd: string, env: NodeJS.ProcessEnv, port: number) {
+  const server = spawn(process.execPath, ["run", path.resolve(import.meta.dirname, "..", "cli.ts"), "--host", "127.0.0.1", "--port", String(port)], {
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  server.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  server.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      if (response.ok) {
+        return server;
+      }
+    } catch {
+    }
+    if (server.exitCode !== null) {
+      throw new Error(`server exited early\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  server.kill("SIGTERM");
+  throw new Error(`timed out waiting for server\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...init?.headers,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`${response.status} ${await response.text()}`);
+  }
+  return await response.json();
+}
+
+async function getFreePort() {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 const fakeCodexSource = `#!/usr/bin/env node

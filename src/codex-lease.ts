@@ -1,20 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { DatabaseSync } from "node:sqlite";
 import { formatCommandLine } from "./command-line.ts";
-import { sessionStorePathForEnv } from "./state-db-path.ts";
-
-type SessionProcessOwner = {
-  sessionId: string;
-  pid: number;
-  startedAtMs: number;
-  updatedAtMs: number;
-};
+import { createSessionStoreForEnv, type SessionStore, type StoredSessionProcessOwner } from "./session-store.ts";
 
 type SessionDiscovery = {
   id: string;
@@ -28,11 +20,14 @@ export async function runCodexLease(args: string[]) {
     return 127;
   }
 
-  cleanupStaleOwners();
-
   const resumeId = findResumeId(args);
-  if (resumeId) {
-    await terminateOwnersForRecoveryCommand(formatCommandLine("codex", args));
+  {
+    using store = createSessionStoreForEnv(process.env);
+    if (resumeId) {
+      await terminateOwnersForRecoveryCommand(store, formatCommandLine("codex", args));
+    } else {
+      cleanupStaleOwners(store);
+    }
   }
 
   return runRealCodex(realCodex, args, resumeId);
@@ -106,7 +101,8 @@ async function runRealCodex(realCodex: string, args: string[], knownSessionId: s
 
   const sessionId = await discovery;
   if (sessionId) {
-    removeSessionProcessOwner(sessionId, childPid);
+    using store = createSessionStoreForEnv(process.env);
+    removeSessionProcessOwner(store, sessionId, childPid);
   }
 
   if (result.signal) {
@@ -129,20 +125,21 @@ function findResumeId(args: string[]) {
   return candidate;
 }
 
-async function terminateOwnersForRecoveryCommand(recoveryCommand: string) {
-  const owners = getActiveOwnersForRecoveryCommand(recoveryCommand);
+export async function terminateOwnersForRecoveryCommand(store: SessionStore, recoveryCommand: string) {
+  cleanupStaleOwners(store);
+  const owners = store.getSessionProcessOwnersForRecoveryCommand(recoveryCommand);
 
   for (const owner of owners) {
-    await terminateOwner(owner);
+    await terminateOwner(store, owner);
   }
 }
 
-async function terminateOwner(owner: SessionProcessOwner) {
+async function terminateOwner(store: SessionStore, owner: StoredSessionProcessOwner) {
   const timeoutMs = Number(process.env.TUIUI_CODEX_LEASE_KILL_TIMEOUT_MS || 2_000);
   try {
     process.kill(owner.pid, "SIGTERM");
   } catch {
-    removeSessionProcessOwner(owner.sessionId, owner.pid);
+    removeSessionProcessOwner(store, owner.sessionId, owner.pid);
     return;
   }
 
@@ -155,39 +152,15 @@ async function terminateOwner(owner: SessionProcessOwner) {
     await waitForPidExit(owner.pid, 1_000);
   }
 
-  removeSessionProcessOwner(owner.sessionId, owner.pid);
+  removeSessionProcessOwner(store, owner.sessionId, owner.pid);
 }
 
-function getActiveOwnersForRecoveryCommand(recoveryCommand: string) {
-  cleanupStaleOwners();
-  return withDatabase((database) => database.prepare(`
-    select
-      session_process_owners.session_id as sessionId,
-      session_process_owners.pid,
-      session_process_owners.created_at_ms as startedAtMs,
-      session_process_owners.updated_at_ms as updatedAtMs
-    from session_process_owners
-    inner join session_recovery on session_recovery.session_id = session_process_owners.session_id
-    where session_recovery.recovery_command = ?
-  `).all(recoveryCommand) as SessionProcessOwner[]);
-}
-
-function cleanupStaleOwners() {
-  withDatabase((database) => {
-    const owners = database.prepare(`
-      select
-        session_id as sessionId,
-        pid,
-        created_at_ms as startedAtMs,
-        updated_at_ms as updatedAtMs
-      from session_process_owners
-    `).all() as SessionProcessOwner[];
-    for (const owner of owners) {
-      if (!isProcessAlive(owner.pid)) {
-        deleteSessionProcessOwner(database, owner.sessionId, owner.pid);
-      }
+export function cleanupStaleOwners(store: SessionStore) {
+  for (const owner of store.getSessionProcessOwners()) {
+    if (!isProcessAlive(owner.pid)) {
+      removeSessionProcessOwner(store, owner.sessionId, owner.pid);
     }
-  });
+  }
 }
 
 function recordRecoverableSessionOwner(input: {
@@ -202,53 +175,28 @@ function recordRecoverableSessionOwner(input: {
   }
 
   const recoveryCommand = formatCommandLine("codex", ["resume", input.sessionId]);
-  withDatabase((database) => {
-    database.prepare(`
-      insert into sessions (
-        id,
-        cwd,
-        launch_command,
-        created_at_ms
-      )
-      values (?, ?, ?, ?)
-      on conflict (id) do nothing
-    `).run(input.sessionId, process.cwd(), input.command, input.startedAtMs);
-    database.prepare(`
-      insert into session_recovery (
-        session_id,
-        recovery_command,
-        created_at_ms
-      )
-      values (?, ?, ?)
-      on conflict (session_id) do update set
-        recovery_command = excluded.recovery_command
-    `).run(input.sessionId, recoveryCommand, input.startedAtMs);
-    database.prepare(`
-      insert into session_process_owners (
-        session_id,
-        pid,
-        created_at_ms,
-        updated_at_ms
-      )
-      values (?, ?, ?, ?)
-      on conflict (session_id, pid) do update set
-        updated_at_ms = excluded.updated_at_ms
-    `).run(input.sessionId, input.pid, input.startedAtMs, input.updatedAtMs);
+  using store = createSessionStoreForEnv(process.env);
+  store.recordSession({
+    id: input.sessionId,
+    cwd: process.cwd(),
+    launchCommand: input.command,
+    createdAtMs: input.startedAtMs,
+  });
+  store.setSessionRecovery({
+    sessionId: input.sessionId,
+    recoveryCommand,
+    createdAtMs: input.startedAtMs,
+  });
+  store.recordSessionProcessOwner({
+    sessionId: input.sessionId,
+    pid: input.pid,
+    createdAtMs: input.startedAtMs,
+    updatedAtMs: input.updatedAtMs,
   });
 }
 
-function removeSessionProcessOwner(sessionId: string, pid: number) {
-  withDatabase((database) => {
-    deleteSessionProcessOwner(database, sessionId, pid);
-  });
-}
-
-function deleteSessionProcessOwner(database: DatabaseSync, sessionId: string, pid: number) {
-  database.prepare(`
-    delete from session_process_owners
-    where session_id = ?
-      and pid = ?
-  `).run(sessionId, pid);
+function removeSessionProcessOwner(store: SessionStore, sessionId: string, pid: number) {
+  store.removeSessionProcessOwner({ sessionId, pid });
 }
 
 async function discoverSessionIdForChild(params: { childPid: number; cwd: string; startedAtMs: number }) {
@@ -333,19 +281,6 @@ function entryPathSessionId(filePath: string) {
 
 function codexHome() {
   return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-}
-
-function withDatabase<T>(useDatabase: (database: DatabaseSync) => T) {
-  const databasePath = sessionStorePathForEnv(process.env);
-  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-  const database = new DatabaseSync(databasePath);
-  try {
-    database.exec("pragma foreign_keys = on;");
-    database.exec(fs.readFileSync(path.resolve(import.meta.dirname, "../db/definitions.sql"), "utf8"));
-    return useDatabase(database);
-  } finally {
-    database.close();
-  }
 }
 
 function isProcessAlive(pid: number) {
