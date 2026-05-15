@@ -3,6 +3,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import jsonata from "@mmkal/jsonata/sync";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
@@ -208,6 +209,30 @@ type RecentAgentSession = {
   args: string[];
 };
 
+type RecentSessionGroupDefinition = {
+  expression: string;
+  lineNumber: number;
+  compiled: {
+    evaluate(input: any): any;
+  };
+};
+
+type RecentSessionGroupParseResult = {
+  definitions: RecentSessionGroupDefinition[];
+  error: string;
+};
+
+type RecentSessionGroupRenderResult = {
+  html: string;
+  error: string;
+};
+
+type RecentSessionGroup = {
+  name: string;
+  sessions: RecentAgentSession[];
+  children: RecentSessionGroup[];
+};
+
 type SessionListItem = {
   id: string;
   title: string;
@@ -289,6 +314,11 @@ let sessionIdleRefreshTimer: number | null = null;
 let homeIdleNotificationPollTimer: number | null = null;
 let homeIdleNotificationDisplayDirs: string[] = [];
 
+const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
+const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
+let terminalFontSize = readTerminalFontSize();
+
 const idleNotifications = new BrowserIdleNotifications({
   storage: window.localStorage,
   notifications: nativeIdleNotificationApi(),
@@ -310,6 +340,7 @@ window.addEventListener("popstate", () => {
 });
 
 async function boot() {
+  applyTerminalFontSize();
   const config = await loadClientConfig();
   if (config.pageLoadToasts) {
     showPageLoadToast();
@@ -613,9 +644,25 @@ function providerLabelForCommand(provider: string, command: string) {
 function setupPromptboxState(sessionId: string, promptbox: HTMLTextAreaElement) {
   const state = useLocalStorageState(promptboxStorageKey(sessionId), "");
   promptbox.value = state.getValue();
+  collapsePromptbox(promptbox);
   promptbox.addEventListener("input", () => {
     state.setValue(promptbox.value);
+    resizePromptboxIfFocused(promptbox);
   });
+  promptbox.addEventListener("focus", () => {
+    resizePromptbox(promptbox);
+  });
+  promptbox.addEventListener("blur", () => {
+    collapsePromptbox(promptbox);
+  });
+}
+
+function resizePromptboxIfFocused(promptbox: HTMLTextAreaElement) {
+  if (document.activeElement === promptbox) {
+    resizePromptbox(promptbox);
+    return;
+  }
+  collapsePromptbox(promptbox);
 }
 
 function setPromptboxValue(promptbox: HTMLTextAreaElement, value: string) {
@@ -728,10 +775,13 @@ async function renderHome() {
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
+  const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
+  const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
   const launchCommandOrder = ["coordinator", "codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
+  let loadedRecentAgentSessions: RecentAgentSession[] | null = null;
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -745,11 +795,11 @@ async function renderHome() {
           <div class="launch-command-row">
             <label class="command-prompt-field">
               <span class="command-prompt-glyph" aria-hidden="true">&gt;</span>
-              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --foo-bar" />
+              <input name="commandLine" aria-label="Command" autocomplete="off" required placeholder="codex --yolo" />
             </label>
             <label class="cwd-field">
               <span aria-hidden="true">cwd</span>
-              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(launchCwdState.getValue() || cwd.cwd)}" />
+              <input name="cwd" aria-label="Working directory" autocomplete="off" required value="${escapeAttr(formatPathForDisplay(launchCwdValue, displayHomeDirs))}" />
             </label>
           </div>
           <div class="quick-launch-row" role="group" aria-label="Shortcuts">
@@ -773,9 +823,20 @@ async function renderHome() {
       </section>
       <section class="recent-agents" aria-label="Recent agent sessions" data-testid="recent-agents">
         <header>
-          <strong>Recent Sessions</strong>
+          <details class="recent-session-group-config" data-testid="recent-session-group-config">
+            <summary><strong>Recent Sessions</strong></summary>
+            <textarea
+              data-recent-session-groups-input
+              data-testid="recent-session-group-input"
+              aria-label="Recent session groups"
+              rows="3"
+              spellcheck="false"
+              placeholder="cwd"
+            >${escapeHtml(recentSessionGroupState.getValue())}</textarea>
+          </details>
           <span data-testid="recent-agent-count">Loading</span>
         </header>
+        <p class="recent-session-group-error" data-testid="recent-session-group-error" hidden></p>
         <div class="recent-agents-list" data-testid="recent-agent-list">
           <p class="empty">Loading recent sessions</p>
         </div>
@@ -789,13 +850,23 @@ async function renderHome() {
   startHomeIdleNotificationPolling(displayHomeDirs);
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
+  const recentSessionGroupInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
   const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
   const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
   const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
   const presets = new Map(commands.map((command) => [command.id, command]));
 
+  recentSessionGroupInput.addEventListener("input", () => {
+    recentSessionGroupState.setValue(recentSessionGroupInput.value);
+    if (!loadedRecentAgentSessions) {
+      return;
+    }
+    renderRecentAgentSessions(loadedRecentAgentSessions);
+    bindRecentAgentSessionButtons(loadedRecentAgentSessions);
+  });
+
   cwdInput.addEventListener("input", () => {
-    launchCwdState.setValue(cwdInput.value);
+    launchCwdState.setValue(resolveLaunchCwd(cwdInput.value));
   });
   commandInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
@@ -835,6 +906,7 @@ async function renderHome() {
       if (!form.isConnected) {
         return;
       }
+      loadedRecentAgentSessions = recentAgentSessions;
       observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
       renderRecentAgentSessions(recentAgentSessions);
       bindRecentAgentSessionButtons(recentAgentSessions);
@@ -849,10 +921,14 @@ async function renderHome() {
     if (!count || !list) {
       return;
     }
+    const rendered = renderRecentAgentSessionContent(
+      recentAgentSessions,
+      displayHomeDirs,
+      recentSessionGroupState.getValue(),
+    );
     count.textContent = recentAgentSessions.length ? `${recentAgentSessions.length} active in 24h` : "None";
-    list.innerHTML = recentAgentSessions.length
-      ? renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs)
-      : `<p class="empty">No recent sessions</p>`;
+    list.innerHTML = rendered.html;
+    renderRecentSessionGroupError(rendered.error);
   }
 
   function renderRecentAgentSessionFailure() {
@@ -863,6 +939,7 @@ async function renderHome() {
     }
     count.textContent = "Unavailable";
     list.innerHTML = `<p class="empty">Recent sessions unavailable</p>`;
+    renderRecentSessionGroupError("");
   }
 
   function bindRecentAgentSessionButtons(recentAgentSessions: RecentAgentSession[]) {
@@ -901,13 +978,19 @@ async function renderHome() {
   }
 
   function currentLaunchCwd() {
-    launchCwdState.setValue(cwdInput.value);
-    return cwdInput.value;
+    const value = resolveLaunchCwd(cwdInput.value);
+    launchCwdState.setValue(value);
+    return value;
   }
 
   function setLaunchCwd(value: string) {
-    cwdInput.value = value;
-    launchCwdState.setValue(value);
+    const resolved = resolveLaunchCwd(value);
+    cwdInput.value = formatPathForDisplay(resolved, displayHomeDirs);
+    launchCwdState.setValue(resolved);
+  }
+
+  function resolveLaunchCwd(value: string) {
+    return expandDisplayPath(value, displayHomeDirs);
   }
 
   function fakeAgentForCommand(command: string) {
@@ -933,6 +1016,181 @@ async function renderHome() {
     history.pushState({}, "", `/sessions/${result.id}`);
     await renderRoute();
   }
+}
+
+function renderRecentSessionGroupError(message: string) {
+  const error = document.querySelector<HTMLElement>("[data-testid='recent-session-group-error']");
+  if (!error) {
+    return;
+  }
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+function renderRecentAgentSessionContent(
+  recentAgentSessions: RecentAgentSession[],
+  displayHomeDirs: string[],
+  groupInput: string,
+): RecentSessionGroupRenderResult {
+  const parsed = parseRecentSessionGroupDefinitions(groupInput);
+  if (!recentAgentSessions.length) {
+    return { html: `<p class="empty">No recent sessions</p>`, error: parsed.error };
+  }
+  if (parsed.error || !parsed.definitions.length) {
+    return {
+      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+      error: parsed.error,
+    };
+  }
+
+  try {
+    return {
+      html: renderRecentSessionGroups(
+        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, displayHomeDirs, 0),
+        displayHomeDirs,
+        0,
+      ),
+      error: "",
+    };
+  } catch (error) {
+    return {
+      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+      error: formatRecentSessionGroupError(error),
+    };
+  }
+}
+
+function parseRecentSessionGroupDefinitions(input: string): RecentSessionGroupParseResult {
+  const definitions: RecentSessionGroupDefinition[] = [];
+  const lines = input.replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const expression = lines[index]!.trim();
+    if (!expression) {
+      continue;
+    }
+
+    try {
+      definitions.push({ expression, lineNumber: index + 1, compiled: jsonata(expression) });
+    } catch (error) {
+      return {
+        definitions: [],
+        error: `Line ${index + 1}: ${formatRecentSessionGroupError(error)}`,
+      };
+    }
+  }
+  return { definitions, error: "" };
+}
+
+function groupRecentAgentSessions(
+  sessions: RecentAgentSession[],
+  definitions: RecentSessionGroupDefinition[],
+  displayHomeDirs: string[],
+  definitionIndex: number,
+): RecentSessionGroup[] {
+  if (definitionIndex >= definitions.length) {
+    return [];
+  }
+
+  const definition = definitions[definitionIndex]!;
+  const groups: RecentSessionGroup[] = [];
+  const groupsByKey = new Map<string, RecentSessionGroup>();
+  for (const session of sessions) {
+    let rawValue: any;
+    try {
+      rawValue = definition.compiled.evaluate(recentSessionForJsonata(session, displayHomeDirs));
+    } catch (error) {
+      throw new Error(`Line ${definition.lineNumber}: ${formatRecentSessionGroupError(error)}`);
+    }
+    const name = formatRecentSessionGroupValue(rawValue, displayHomeDirs);
+    const key = recentSessionGroupValueKey(rawValue);
+    let group = groupsByKey.get(key);
+    if (!group) {
+      group = { name, sessions: [], children: [] };
+      groupsByKey.set(key, group);
+      groups.push(group);
+    }
+    group.sessions.push(session);
+  }
+  for (const group of groups) {
+    group.children = groupRecentAgentSessions(group.sessions, definitions, displayHomeDirs, definitionIndex + 1);
+  }
+  return groups;
+}
+
+function recentSessionForJsonata(session: RecentAgentSession, displayHomeDirs: string[]) {
+  return {
+    ...session,
+    cwd: formatPathForDisplay(session.cwd, displayHomeDirs),
+  };
+}
+
+function renderRecentSessionGroups(
+  groups: RecentSessionGroup[],
+  displayHomeDirs: string[],
+  depth: number,
+): string {
+  return `
+    <div class="recent-session-groups" data-depth="${depth}">
+      ${groups.map((group) => `
+        <details class="recent-session-group" data-depth="${depth}">
+          <summary>
+            <span class="recent-session-group-title">
+              <code>${escapeHtml(group.name)}</code>
+            </span>
+            <span class="recent-session-group-count">${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}</span>
+          </summary>
+          ${group.children.length
+            ? renderRecentSessionGroups(group.children, displayHomeDirs, depth + 1)
+            : renderRecentAgentSessionCards(group.sessions, displayHomeDirs)}
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function formatRecentSessionGroupValue(value: any, displayHomeDirs: string[]) {
+  if (value === undefined) {
+    return "(undefined)";
+  }
+  if (value === null) {
+    return "(null)";
+  }
+  if (typeof value === "string") {
+    return value ? formatPathForDisplay(value, displayHomeDirs) : "(empty)";
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  return stringifyRecentSessionGroupValue(value);
+}
+
+function recentSessionGroupValueKey(value: any) {
+  if (value === undefined) {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${typeof value}:${String(value)}`;
+  }
+  return `json:${stringifyRecentSessionGroupValue(value)}`;
+}
+
+function stringifyRecentSessionGroupValue(value: any) {
+  try {
+    return JSON.stringify(value) || String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatRecentSessionGroupError(error: unknown) {
+  const details = error as { code?: string; message?: string; position?: number; token?: string };
+  const message = details && details.message ? details.message : String(error);
+  const code = details && details.code ? `${details.code}: ` : "";
+  const position = details && typeof details.position === "number" ? ` at position ${details.position}` : "";
+  return `${code}${message}${position}`;
 }
 
 function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[], displayHomeDirs: string[]) {
@@ -995,6 +1253,11 @@ async function renderSession(sessionId: string) {
                 <button type="button" class="icon-button" data-action="relayout">Relayout</button>
                 <button type="button" class="icon-button" data-action="archive-session">Archive</button>
               </div>
+              <div class="terminal-zoom-control" role="group" aria-label="Terminal zoom">
+                <button type="button" class="icon-button" data-terminal-zoom="-1" aria-label="Zoom terminal out" title="Zoom terminal out">−</button>
+                <output data-terminal-zoom-value aria-label="Terminal font size">${terminalFontSize}px</output>
+                <button type="button" class="icon-button" data-terminal-zoom="1" aria-label="Zoom terminal in" title="Zoom terminal in">+</button>
+              </div>
             </div>
           </div>
         </details>
@@ -1004,6 +1267,9 @@ async function renderSession(sessionId: string) {
         <div class="terminal-scroll-controls" aria-label="Terminal scroll controls">
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
+          <button type="button" class="terminal-scroll-button terminal-attach-button" data-action="attach-file" aria-label="Attach file" title="Attach file">
+            ${renderAttachIcon()}
+          </button>
         </div>
       </section>
       <section class="composer" aria-label="Session input">
@@ -1024,12 +1290,12 @@ async function renderSession(sessionId: string) {
           </form>
         </dialog>
         <div class="composer-input-row">
-          <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="3" spellcheck="false"></textarea>
+          <div class="promptbox-shell">
+            <textarea id="stdin" data-label="promptbox" aria-label="Send stdin" rows="1" spellcheck="false"></textarea>
+          </div>
           <input id="attachment-file" class="attachment-file-input" type="file" multiple />
-          <button type="button" id="attach" class="icon-button composer-attach" aria-label="Attach file" title="Attach file">
-            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-              <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
-            </svg>
+          <button type="button" id="attach" class="icon-button composer-attach" data-action="attach-file" aria-label="Attach file" title="Attach file">
+            ${renderAttachIcon()}
           </button>
         </div>
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
@@ -1102,6 +1368,9 @@ function bindSessionControls(sessionId: string) {
 
   textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (usesTextareaReturnForNewline()) {
+        return;
+      }
       event.preventDefault();
       void sendComposer(sessionId);
       return;
@@ -1182,6 +1451,13 @@ function bindSessionControls(sessionId: string) {
     void archiveSession(sessionId);
   });
 
+  document.querySelectorAll<HTMLButtonElement>("[data-terminal-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      changeTerminalFontSize(sessionId, Number(button.dataset.terminalZoom || 0));
+    });
+  });
+  updateTerminalZoomControls();
+
   document.querySelectorAll<HTMLButtonElement>("[data-terminal-scroll]").forEach((button) => {
     button.addEventListener("click", () => {
       scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
@@ -1191,25 +1467,27 @@ function bindSessionControls(sessionId: string) {
 
 function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElement) {
   const input = document.getElementById("attachment-file") as HTMLInputElement | null;
-  const button = document.getElementById("attach") as HTMLButtonElement | null;
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-action='attach-file']")];
   const preview = document.getElementById("attachment-preview") as HTMLElement | null;
   const dialog = document.getElementById("attachment-dialog") as HTMLDialogElement | null;
   const composer = document.querySelector<HTMLElement>(".composer");
-  if (!input || !button || !preview || !dialog || !composer) {
+  if (!input || !buttons.length || !preview || !dialog || !composer) {
     return;
   }
 
   clearComposerAttachments(preview);
   bindAttachmentDialog(dialog, textarea);
 
-  button.addEventListener("click", () => {
-    input.click();
-  });
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      input.click();
+    });
+  }
 
   input.addEventListener("change", () => {
     const files = Array.from(input.files || []);
     input.value = "";
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "file");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "file");
   });
 
   textarea.addEventListener("paste", (event) => {
@@ -1218,7 +1496,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
       return;
     }
     event.preventDefault();
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "paste");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "paste");
   });
 
   preview.addEventListener("click", (event) => {
@@ -1259,7 +1537,7 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
     }
     event.preventDefault();
     delete composer.dataset.attachmentDragging;
-    void uploadComposerAttachments(sessionId, textarea, preview, button, files, "drop");
+    void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "drop");
   });
 }
 
@@ -1267,11 +1545,13 @@ async function uploadComposerAttachments(
   sessionId: string,
   textarea: HTMLTextAreaElement,
   preview: HTMLElement,
-  button: HTMLButtonElement,
+  buttons: HTMLButtonElement[],
   files: File[],
   source: AttachmentSource,
 ) {
-  button.disabled = true;
+  for (const button of buttons) {
+    button.disabled = true;
+  }
   try {
     for (const file of files) {
       const upload = await uploadAttachment(sessionId, file, source);
@@ -1292,7 +1572,9 @@ async function uploadComposerAttachments(
       testId: "attachment-upload-error-toast",
     });
   } finally {
-    button.disabled = false;
+    for (const button of buttons) {
+      button.disabled = false;
+    }
   }
 }
 
@@ -1559,6 +1841,26 @@ function updateVoiceControls(state: VoiceLoop["state"]) {
 
 function closeSessionMenu() {
   document.querySelector<HTMLDetailsElement>(".session-menu")?.removeAttribute("open");
+}
+
+function resizePromptbox(promptbox: HTMLTextAreaElement) {
+  const styles = getComputedStyle(promptbox);
+  const baseHeight = parsePixel(styles.getPropertyValue("--promptbox-base-height")) || promptbox.clientHeight || 48;
+  const maxHeightRatio = parsePixel(styles.getPropertyValue("--promptbox-max-height-ratio")) || 3;
+  const maxHeight = baseHeight * maxHeightRatio;
+  promptbox.style.height = `${baseHeight}px`;
+  const nextHeight = Math.min(maxHeight, Math.max(baseHeight, promptbox.scrollHeight));
+  promptbox.style.height = `${Math.ceil(nextHeight)}px`;
+  promptbox.dataset.overflowing = String(promptbox.scrollHeight > nextHeight + 1);
+  promptbox.dataset.expanded = String(nextHeight > baseHeight + 1);
+}
+
+function collapsePromptbox(promptbox: HTMLTextAreaElement) {
+  const styles = getComputedStyle(promptbox);
+  const baseHeight = parsePixel(styles.getPropertyValue("--promptbox-base-height")) || promptbox.clientHeight || 48;
+  promptbox.style.height = `${baseHeight}px`;
+  promptbox.dataset.overflowing = "false";
+  promptbox.dataset.expanded = "false";
 }
 
 async function sendComposer(sessionId: string) {
@@ -1860,6 +2162,71 @@ function relayoutTerminal(sessionId: string) {
   }, 750);
 }
 
+function changeTerminalFontSize(sessionId: string, direction: number) {
+  if (!direction) {
+    return;
+  }
+  const currentIndex = terminalFontSizeSteps.indexOf(terminalFontSize);
+  const index = currentIndex === -1 ? terminalFontSizeSteps.indexOf(defaultTerminalFontSize()) : currentIndex;
+  const nextIndex = Math.max(0, Math.min(terminalFontSizeSteps.length - 1, index + direction));
+  const nextFontSize = terminalFontSizeSteps[nextIndex]!;
+  if (nextFontSize === terminalFontSize) {
+    updateTerminalZoomControls();
+    return;
+  }
+
+  terminalFontSize = nextFontSize;
+  storeTerminalFontSize(nextFontSize);
+  applyTerminalFontSize();
+  updateTerminalZoomControls();
+  lastTerminalResizeKey = "";
+  if (!activeSession || renderer !== "terminal") {
+    return;
+  }
+  destroyXterm();
+  renderSessionPayload(activeSession);
+  scheduleTerminalResize(sessionId);
+}
+
+function updateTerminalZoomControls() {
+  document.querySelectorAll<HTMLOutputElement>("[data-terminal-zoom-value]").forEach((output) => {
+    output.textContent = `${terminalFontSize}px`;
+  });
+  const currentIndex = terminalFontSizeSteps.indexOf(terminalFontSize);
+  document.querySelectorAll<HTMLButtonElement>("[data-terminal-zoom]").forEach((button) => {
+    const direction = Number(button.dataset.terminalZoom || 0);
+    button.disabled = direction < 0
+      ? currentIndex <= 0
+      : currentIndex >= terminalFontSizeSteps.length - 1;
+  });
+}
+
+function applyTerminalFontSize() {
+  document.documentElement.style.setProperty("--terminal-font-size", `${terminalFontSize}px`);
+}
+
+function readTerminalFontSize() {
+  try {
+    const stored = Number(localStorage.getItem(terminalFontSizeStorageKey) || "");
+    if (terminalFontSizeSteps.includes(stored)) {
+      return stored;
+    }
+  } catch {
+  }
+  return defaultTerminalFontSize();
+}
+
+function defaultTerminalFontSize() {
+  return window.matchMedia("(max-width: 640px)").matches ? 11 : 12;
+}
+
+function storeTerminalFontSize(fontSize: number) {
+  try {
+    localStorage.setItem(terminalFontSizeStorageKey, String(fontSize));
+  } catch {
+  }
+}
+
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
   if (payload.renderedAnsi === undefined && payload.renderedHtml) {
@@ -1933,7 +2300,7 @@ async function ensureXterm(payload: SessionPayload) {
       rows: payload.rows,
       convertEol: false,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
+      fontSize: terminalFontSize,
       lineHeight: 1.18,
       theme: {
         background: "#0a0a0a",
@@ -2842,6 +3209,16 @@ function formatPathForDisplay(value: string, homeDirs: string[]) {
   return path;
 }
 
+function expandDisplayPath(value: string, homeDirs: string[]) {
+  if (value === "~" || value.startsWith("~/")) {
+    const home = homeDirs[0]?.replace(/\/+$/g, "") || "";
+    if (home) {
+      return `${home}${value.slice(1)}`;
+    }
+  }
+  return value;
+}
+
 function renderRecentSessionTitle(session: RecentAgentSession) {
   const title = session.title || session.id;
   if (!title || textIsBasicallySame(title, session.initialUserText)) {
@@ -3005,6 +3382,18 @@ function renderFixedEnterChordButton() {
 
 function shouldAutoFocusChordInput() {
   return !window.matchMedia("(pointer: coarse), (max-width: 640px)").matches;
+}
+
+function usesTextareaReturnForNewline() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
+function renderAttachIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M8.5 12.5 14 7a3.2 3.2 0 0 1 4.5 4.5l-7.2 7.2a5 5 0 0 1-7.1-7.1l8.1-8.1a6.8 6.8 0 0 1 9.6 9.6l-8.4 8.4" />
+    </svg>
+  `;
 }
 
 function formatChordButtonLabel(label: string) {

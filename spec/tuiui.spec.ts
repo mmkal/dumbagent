@@ -496,7 +496,117 @@ test("renders home before recent agent sessions finish loading", async ({ page, 
 
   releaseRecentSessions();
 
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("1 active in 24h");
+  await expect(page.locator(".recent-session-group")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume Codex session Async Codex/ })).toBeVisible();
+});
+
+test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  const projectA = path.join(ctx.env.HOME!, "project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary");
+  const projectB = path.join(ctx.env.HOME!, "project-b");
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: [
+          {
+            provider: "codex",
+            id: "codex-build-ui",
+            title: "Build UI",
+            cwd: projectA,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Build the UI",
+            initialUserText: "Build the UI",
+            latestUserText: "Build the UI",
+            userMessageCount: 1,
+            latestAssistantText: "Working on it.",
+            messageCount: 2,
+            status: "busy",
+            command: "codex",
+            args: ["resume", "codex-build-ui"],
+          },
+          {
+            provider: "claude",
+            id: "claude-docs",
+            title: "Docs",
+            cwd: projectA,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Document it",
+            initialUserText: "Document it",
+            latestUserText: "Document it",
+            userMessageCount: 1,
+            latestAssistantText: "Done.",
+            messageCount: 2,
+            status: "idle",
+            command: "claude",
+            args: ["--resume", "claude-docs"],
+          },
+          {
+            provider: "opencode",
+            id: "opencode-review",
+            title: "Review",
+            cwd: projectB,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Review it",
+            initialUserText: "Review it",
+            latestUserText: "Review it",
+            userMessageCount: 1,
+            latestAssistantText: "Looks good.",
+            messageCount: 2,
+            status: "idle",
+            command: "opencode",
+            args: ["run", "opencode-review"],
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(ctx.baseUrl);
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("3 active in 24h");
+  await expect(page.locator(".recent-session-group")).toHaveCount(0);
+  await expect(page.locator(".agent-session-button")).toHaveCount(3);
+  await page.locator("[data-testid='recent-session-group-config'] > summary").click();
+  await page.getByTestId("recent-session-group-input").fill("status\ncwd");
+
+  await expect(page.getByTestId("recent-session-group-error")).toBeHidden();
+  const projectADisplay = "~/project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary";
+  const projectBDisplay = "~/project-b";
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: "busy" })).toContainText("1 session");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: "idle" })).toContainText("2 sessions");
+
+  const idleGroup = page.locator(".recent-session-group[data-depth='0']").filter({ hasText: "idle" });
+  await idleGroup.locator("> summary").click();
+  await expect(idleGroup.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: projectADisplay })).toContainText("1 session");
+  await expect(idleGroup.locator(".recent-session-group[data-depth='1'] > summary").filter({ hasText: projectBDisplay })).toContainText("1 session");
+
+  await page.getByTestId("recent-session-group-input").fill("[cwd,status]");
+  const busyProjectAGroup = JSON.stringify([projectADisplay, "busy"]);
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup })).toContainText("1 session");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: JSON.stringify([projectBDisplay, "idle"]) })).toContainText("1 session");
+  expect(await recentSessionGroupControlLayout(page)).toMatchObject({
+    textareaFontSize: "16px",
+    groupOverflow: "hidden",
+    groupTextOverflow: "ellipsis",
+    groupWhiteSpace: "nowrap",
+    textareaStaysBeforeCount: true,
+    groupLabelIsConstrained: true,
+  });
+  await page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup }).click();
+  await expect(page.getByRole("button", { name: /Resume Codex session Build UI/ })).toBeVisible();
+
+  await page.getByTestId("recent-session-group-input").fill("cwd[");
+  await expect(page.getByTestId("recent-session-group-error")).toBeVisible();
+  await expect(page.getByTestId("recent-session-group-error")).toContainText("Line 1");
+  await expect(page.getByTestId("recent-session-group-error")).toHaveCSS("color", "rgb(255, 138, 138)");
+  await expect(page.locator(".recent-session-group")).toHaveCount(0);
+  await expect(page.locator(".agent-session-button")).toHaveCount(3);
 });
 
 test("loads home when a recent provider database cannot be opened", async ({ page }) => {
@@ -754,24 +864,61 @@ test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page,
 
 test("keeps mobile session chrome compact without document scrolling", async ({ page }) => {
   await using ctx = await createContext({ TUIUI_PAGE_LOAD_TOASTS: "1" });
+  const mobileWorkspace = path.join(ctx.env.HOME!, "workspace");
+  const mobileWorkspaceChild = path.join(mobileWorkspace, "mobile-last-segment");
+  fs.mkdirSync(mobileWorkspaceChild, { recursive: true });
+  await page.addInitScript((cwd) => {
+    localStorage.setItem("tuiui-launch-cwd", cwd);
+  }, mobileWorkspace);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(ctx.baseUrl);
 
   const homeInputs = await page.evaluate(() => {
     const commandInput = document.querySelector<HTMLInputElement>("input[name='commandLine']")!;
     const cwdInput = document.querySelector<HTMLInputElement>("input[name='cwd']")!;
+    const commandBox = commandInput.getBoundingClientRect();
+    const cwdBox = cwdInput.getBoundingClientRect();
     return {
+      bodyFontSize: getComputedStyle(document.body).fontSize,
       commandFontSize: getComputedStyle(commandInput).fontSize,
       cwdFontSize: getComputedStyle(cwdInput).fontSize,
       commandTouchAction: getComputedStyle(commandInput).touchAction,
       cwdTouchAction: getComputedStyle(cwdInput).touchAction,
+      commandPlaceholder: commandInput.placeholder,
+      cwdValue: cwdInput.value,
+      commandWidth: Math.round(commandBox.width),
+      cwdWidth: Math.round(cwdBox.width),
     };
   });
   expect(homeInputs).toMatchObject({
+    bodyFontSize: "12px",
     commandFontSize: "16px",
     cwdFontSize: "16px",
     commandTouchAction: "manipulation",
     cwdTouchAction: "manipulation",
+    commandPlaceholder: "codex --yolo",
+    cwdValue: "~/workspace",
+  });
+  expect(homeInputs.commandWidth).toBeGreaterThan(homeInputs.cwdWidth);
+  expect(homeInputs.commandWidth / homeInputs.cwdWidth).toBeGreaterThan(1.3);
+  expect(homeInputs.commandWidth / homeInputs.cwdWidth).toBeLessThan(1.7);
+  await page.getByRole("textbox", { name: "Working directory" }).fill("~/workspace/mobile-last-segment");
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
+  await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
+  expect((await fetchSessionPayload(page)).cwd).toBe(mobileWorkspaceChild);
+  await page.goto(ctx.baseUrl);
+  await page.evaluate(() => {
+    const now = Date.now();
+    localStorage.setItem("tuiui-user-chords", JSON.stringify(
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `user-common-mobile-${index}`,
+        binary: "",
+        label: `Long mobile chord ${index + 1}`,
+        sequence: `ctrl+${index + 1}`,
+        lastUsedAt: new Date(now - index).toISOString(),
+      })),
+    ));
   });
 
   await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
@@ -808,7 +955,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
         appScrolls: app.scrollHeight > app.clientHeight + 1,
         horizontalScrolls: doc.scrollWidth > doc.clientWidth + 1,
         screenOverflowY: getComputedStyle(screen).overflowY,
-        terminalOwnsScroll: Boolean(terminalViewport && getComputedStyle(terminalViewport).overflowY === "auto"),
+        terminalViewportOverflowY: terminalViewport ? getComputedStyle(terminalViewport).overflowY : "",
       };
     });
   }).toMatchObject({
@@ -817,11 +964,12 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     appScrolls: false,
     horizontalScrolls: false,
     screenOverflowY: "hidden",
-    terminalOwnsScroll: true,
+    terminalViewportOverflowY: "hidden",
   });
 
   await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scroll terminal down" })).toBeVisible();
+  await expect(page.locator(".terminal-attach-button")).toBeVisible();
   const terminalRowsBefore = await page.locator(".xterm-rows").textContent();
   await page.getByRole("button", { name: "Scroll terminal up" }).click();
   let terminalRowsAfterUp = "";
@@ -856,25 +1004,124 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     composerBorder: "0px",
     screenTouchAction: "manipulation",
     scrollButtonTouchAction: "manipulation",
-    terminalFontSize: "12px",
+    terminalFontSize: "11px",
     textareaFontSize: "16px",
     textareaTouchAction: "manipulation",
   });
 
+  const promptbox = page.getByRole("textbox", { name: "Send stdin" });
+  const promptboxBefore = await mobilePromptboxLayout(page);
+  await promptbox.fill("line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine");
+  const promptboxAfter = await mobilePromptboxLayout(page);
+  expect(promptboxAfter.height).toBeGreaterThan(promptboxBefore.height + 24);
+  expect(promptboxAfter.height).toBeGreaterThan(promptboxBefore.height * 3);
+  expect(promptboxAfter.height).toBeLessThanOrEqual(promptboxBefore.height * 4.5 + 1);
+  expect(Math.abs(promptboxAfter.mainSurfaceHeight - promptboxBefore.mainSurfaceHeight)).toBeLessThan(1);
+  await page.getByRole("button", { name: "Scroll terminal down" }).click();
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxBefore.height);
+  await promptbox.click();
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxAfter.height);
+  await promptbox.fill("");
+  await expect.poll(async () => (await mobilePromptboxLayout(page)).height).toBe(promptboxBefore.height);
+
+  const returnKeyEventCount = (await fetchSessionPayload(page)).stdinEvents.length;
+  await promptbox.fill("mobile return key");
+  await promptbox.press("Enter");
+  await expect(promptbox).toHaveValue("mobile return key\n");
+  expect((await fetchSessionPayload(page)).stdinEvents.length).toBe(returnKeyEventCount);
+  await promptbox.fill("");
+
+  const mobileControlLayout = await page.evaluate(() => {
+    const screen = document.getElementById("screen")!.getBoundingClientRect();
+    const promptbox = document.querySelector<HTMLTextAreaElement>("[data-label='promptbox']")!.getBoundingClientRect();
+    const returnButton = document.getElementById("send")!.getBoundingClientRect();
+    const chordToggle = document.querySelector<HTMLElement>(".chord-toggle")!.getBoundingClientRect();
+    const composerAttach = document.getElementById("attach")!;
+    const terminalAttach = document.querySelector<HTMLElement>(".terminal-attach-button")!;
+    const scrollDown = document.querySelector<HTMLElement>("[data-terminal-scroll='1']")!;
+    const terminalAttachBox = terminalAttach.getBoundingClientRect();
+    const scrollDownBox = scrollDown.getBoundingClientRect();
+    return {
+      composerAttachDisplay: getComputedStyle(composerAttach).display,
+      terminalAttachDisplay: getComputedStyle(terminalAttach).display,
+      returnBackgroundColor: getComputedStyle(document.getElementById("send")!).backgroundColor,
+      returnHeight: Math.round(returnButton.height),
+      returnTop: Math.round(returnButton.top),
+      returnWidth: Math.round(returnButton.width),
+      chordButtonGap: Math.round(returnButton.left - chordToggle.right),
+      promptboxTop: Math.round(promptbox.top),
+      scrollDownWidth: Math.round(scrollDownBox.width),
+      terminalAttachWidth: Math.round(terminalAttachBox.width),
+      scrollDownBottom: Math.round(scrollDownBox.bottom),
+      terminalAttachTop: Math.round(terminalAttachBox.top),
+      terminalAttachBottom: Math.round(terminalAttachBox.bottom),
+      screenBottom: Math.round(screen.bottom),
+    };
+  });
+  expect(mobileControlLayout).toMatchObject({
+    composerAttachDisplay: "none",
+    terminalAttachDisplay: "grid",
+    returnBackgroundColor: "rgb(32, 38, 46)",
+  });
+  expect(mobileControlLayout.returnHeight).toBeGreaterThanOrEqual(70);
+  expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.scrollDownWidth);
+  expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.terminalAttachWidth);
+  expect(mobileControlLayout.chordButtonGap).toBeGreaterThanOrEqual(3);
+  expect(mobileControlLayout.chordButtonGap).toBeLessThanOrEqual(5);
+  expect(Math.abs(mobileControlLayout.returnTop - mobileControlLayout.promptboxTop)).toBeLessThanOrEqual(2);
+  expect(mobileControlLayout.scrollDownBottom).toBeLessThanOrEqual(mobileControlLayout.terminalAttachTop + 1);
+  expect(mobileControlLayout.terminalAttachBottom).toBeLessThanOrEqual(mobileControlLayout.screenBottom + 1);
+
+  const colsBeforeZoom = (await fetchSessionPayload(page)).cols;
+  await openSessionMenu(page);
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("11px");
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("10px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsBeforeZoom);
+  const colsAt10px = (await fetchSessionPayload(page)).cols;
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("9px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsAt10px);
+  const colsAt9px = (await fetchSessionPayload(page)).cols;
+  await page.getByRole("button", { name: "Zoom terminal out" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("8px");
+  await expect.poll(async () => (await fetchSessionPayload(page)).cols).toBeGreaterThan(colsAt9px);
+  await expect.poll(async () => {
+    return await page.locator(".terminal-xterm-wrap").evaluate((terminal) => getComputedStyle(terminal).fontSize);
+  }).toBe("8px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("9px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("10px");
+  await page.getByRole("button", { name: "Zoom terminal in" }).click();
+  await expect(page.locator("[data-terminal-zoom-value]")).toHaveText("11px");
+  await page.getByRole("button", { name: "Close session menu" }).click();
+  await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
+
   const chordMetrics = await page.locator(".chord-shortcuts").evaluate((shortcuts) => {
-    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-button")]
+    const scroll = shortcuts.querySelector<HTMLElement>(".chord-scroll")!;
+    scroll.scrollLeft = scroll.scrollWidth;
+    const scrollStyle = getComputedStyle(scroll);
+    const visibleBoxes = [...shortcuts.querySelectorAll<HTMLElement>(".chord-scroll .chord-button")]
       .filter((button) => getComputedStyle(button).display !== "none")
       .map((button) => button.getBoundingClientRect())
       .filter((box) => box.width > 0 && box.height > 0);
     const tops = visibleBoxes.map((box) => box.top);
     return {
+      maskImage: scrollStyle.maskImage,
+      overflowX: scrollStyle.overflowX,
+      scrollLeft: Math.round(scroll.scrollLeft),
+      scrollWidth: Math.round(scroll.scrollWidth),
+      clientWidth: Math.round(scroll.clientWidth),
       visibleButtonCount: visibleBoxes.length,
       topSpread: Math.max(...tops) - Math.min(...tops),
     };
   });
-  expect(chordMetrics).toMatchObject({
-    visibleButtonCount: 8,
-  });
+  expect(chordMetrics.visibleButtonCount).toBeGreaterThanOrEqual(6);
+  expect(chordMetrics.overflowX).toBe("auto");
+  expect(chordMetrics.maskImage).not.toBe("none");
+  expect(chordMetrics.scrollWidth).toBeGreaterThan(chordMetrics.clientWidth);
+  expect(chordMetrics.scrollLeft).toBeGreaterThan(0);
   expect(chordMetrics.topSpread).toBeLessThan(2);
 
   const mainSurfaceHeight = await page.locator(".main-surface").evaluate((surface) => surface.getBoundingClientRect().height);
@@ -924,7 +1171,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   await expect(page.getByRole("dialog", { name: "Session menu" })).toBeHidden();
   await clickSessionMenuButton(page, "Relayout");
   await expect(page.getByTestId("terminal-redraw-overlay")).toBeVisible();
-  await expect(page.locator(".menu-fact code")).toHaveText(fs.realpathSync(ctx.workspaceDir));
+  await expect(page.locator(".menu-fact code")).toHaveText(mobileWorkspace);
 });
 
 test("archives a session from the hamburger menu and hides it from Home", async ({ page, ctx }) => {
@@ -1356,6 +1603,37 @@ async function sessionMenuPlainButtonStyles(page: Page) {
       reference: referenceStyle,
       debug: debugStyle,
       matches: JSON.stringify(referenceStyle) === JSON.stringify(debugStyle),
+    };
+  });
+}
+
+async function mobilePromptboxLayout(page: Page) {
+  return await page.getByRole("textbox", { name: "Send stdin" }).evaluate((textarea) => {
+    const mainSurface = document.querySelector<HTMLElement>(".main-surface")!;
+    const textareaBox = textarea.getBoundingClientRect();
+    const mainSurfaceBox = mainSurface.getBoundingClientRect();
+    return {
+      height: Math.round(textareaBox.height),
+      mainSurfaceHeight: Math.round(mainSurfaceBox.height),
+    };
+  });
+}
+
+async function recentSessionGroupControlLayout(page: Page) {
+  return await page.getByTestId("recent-agents").evaluate((section) => {
+    const textarea = section.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
+    const count = section.querySelector<HTMLElement>("[data-testid='recent-agent-count']")!;
+    const groupCode = section.querySelector<HTMLElement>(".recent-session-group-title code")!;
+    const textareaBox = textarea.getBoundingClientRect();
+    const countBox = count.getBoundingClientRect();
+    const groupStyle = getComputedStyle(groupCode);
+    return {
+      textareaFontSize: getComputedStyle(textarea).fontSize,
+      groupOverflow: groupStyle.overflowX,
+      groupTextOverflow: groupStyle.textOverflow,
+      groupWhiteSpace: groupStyle.whiteSpace,
+      textareaStaysBeforeCount: textareaBox.right <= countBox.left,
+      groupLabelIsConstrained: groupCode.scrollWidth > groupCode.clientWidth + 1,
     };
   });
 }

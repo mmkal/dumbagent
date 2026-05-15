@@ -2,6 +2,7 @@
 
 :root {
   color-scheme: dark;
+  --terminal-font-size: 12px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #111418;
   color: #eef2f7;
@@ -161,13 +162,11 @@ button:disabled {
 .launcher,
 .recent-agents,
 .sessions {
-  border: 1px solid #2c333d;
-  border-radius: 8px;
-  background: #171b21;
+  background: transparent;
 }
 
 .launcher {
-  padding: 14px;
+  padding: 0;
 }
 
 .missing-session {
@@ -202,7 +201,7 @@ button:disabled {
 
 .launch-command-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 30%);
+  grid-template-columns: minmax(120px, 0.65fr) minmax(220px, 1.35fr);
   gap: 6px;
   align-items: center;
 }
@@ -343,35 +342,130 @@ textarea:focus {
 
 .sessions {
   display: grid;
-  overflow: hidden;
+  gap: 8px;
+  overflow: visible;
 }
 
 .recent-agents {
   display: grid;
   gap: 10px;
-  padding: 12px;
+  padding: 0;
 }
 
 .recent-agents > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
 }
 
+.recent-session-group-config {
+  min-width: 0;
+  width: 100%;
+}
+
+.recent-session-group-config summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #f4f7fb;
+}
+
+.recent-session-group-config summary strong,
 .recent-agents > header strong {
   font-size: 12px;
 }
 
-.recent-agents > header span {
+.recent-session-group-config textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 520px;
+  min-height: 72px;
+  margin-top: 8px;
+  resize: vertical;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.recent-agents > header > span {
+  justify-self: end;
   color: #9ca8b6;
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.recent-session-group-error {
+  margin: -2px 0 0;
+  color: #ff8a8a;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.recent-session-group-error[hidden] {
+  display: none;
 }
 
 .recent-agents-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+}
+
+.recent-session-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.recent-session-group {
+  min-width: 0;
+  overflow: visible;
+}
+
+.recent-session-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid #252c36;
+  cursor: pointer;
+}
+
+.recent-session-group-title {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.recent-session-group-title code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: #dce5ef;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.recent-session-group-count {
+  flex: 0 0 auto;
+  color: #9ca8b6;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.recent-session-group > .recent-session-groups,
+.recent-session-group > .agent-session-button {
+  margin: 0 0 6px;
+}
+
+.recent-session-group > .recent-session-groups {
+  margin-left: 4px;
+  padding-left: 4px;
+  border-left: 1px solid #252c36;
 }
 
 .agent-session-button {
@@ -501,11 +595,13 @@ textarea:focus {
   color: inherit;
   text-decoration: none;
   padding: 12px 14px;
-  border-top: 1px solid #2c333d;
+  border: 1px solid #3a4350;
+  border-radius: 7px;
+  background: #20262e;
 }
 
 .session-link:first-child {
-  border-top: 0;
+  border-top: 1px solid #3a4350;
 }
 
 .session-link span:nth-child(2) {
@@ -716,6 +812,24 @@ textarea:focus {
   gap: 6px;
 }
 
+.terminal-zoom-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.terminal-zoom-control output {
+  min-width: 58px;
+  border: 1px solid #303844;
+  border-radius: 7px;
+  background: #0d1014;
+  color: #c8d2df;
+  padding: 8px 10px;
+  text-align: center;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -922,7 +1036,9 @@ pre {
   overflow: hidden;
   padding: 10px;
   background: #0a0a0a;
-  font: 12px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--terminal-font-size);
+  line-height: 1.18;
   touch-action: manipulation;
 }
 
@@ -1001,14 +1117,16 @@ pre {
   width: max-content;
   min-width: 100%;
   padding: 10px;
-  font: 12px/1.18 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--terminal-font-size);
+  line-height: 1.18;
 }
 
 .terminal-html pre,
 .terminal-html pre > div,
 .terminal-html pre > div > div {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
-  font-size: 12px !important;
+  font-size: var(--terminal-font-size) !important;
   line-height: 1.18 !important;
   white-space: pre;
 }
@@ -1582,6 +1700,8 @@ pre {
 }
 
 .composer {
+  position: relative;
+  z-index: 2;
   display: grid;
   gap: 6px;
   border-top: 0;
@@ -1777,7 +1897,18 @@ pre {
   grid-template-columns: minmax(0, 1fr) 38px;
   gap: 6px;
   min-width: 0;
-  align-items: stretch;
+  align-items: end;
+  min-height: 48px;
+}
+
+.promptbox-shell {
+  --promptbox-base-height: 48px;
+  --promptbox-max-height-ratio: 3;
+  position: relative;
+  min-width: 0;
+  height: var(--promptbox-base-height);
+  overflow: visible;
+  z-index: 2;
 }
 
 .attachment-file-input {
@@ -1792,7 +1923,8 @@ pre {
   padding: 0;
 }
 
-.composer-attach svg {
+.composer-attach svg,
+.terminal-attach-button svg {
   width: 17px;
   height: 17px;
   fill: none;
@@ -1822,6 +1954,7 @@ pre {
   padding: 0 16px 1px 0;
   scrollbar-width: none;
   mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
 }
 
 .chord-scroll::-webkit-scrollbar {
@@ -1943,6 +2076,19 @@ textarea {
   font: 12px/1.32 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+textarea[data-label="promptbox"] {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 2;
+  max-height: calc(var(--promptbox-base-height) * var(--promptbox-max-height-ratio));
+  overflow-y: hidden;
+}
+
+textarea[data-label="promptbox"][data-overflowing="true"] {
+  overflow-y: auto;
+}
+
 .composer-actions {
   justify-content: space-between;
   flex-wrap: wrap;
@@ -2001,6 +2147,10 @@ textarea {
 }
 
 @media (max-width: 640px) {
+  body {
+    font-size: 12px;
+  }
+
   .layout {
     padding: 6px;
   }
@@ -2010,27 +2160,40 @@ textarea {
   }
 
   .launcher {
-    padding: 8px;
+    padding: 4px 0;
   }
 
   .launch-command-row {
-    grid-template-columns: minmax(0, 1fr) minmax(90px, 30%);
-    gap: 5px;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 4px;
   }
 
   .command-prompt-field,
   .cwd-field {
-    min-height: 34px;
+    min-height: 32px;
   }
 
   .command-prompt-field input,
   .cwd-field input {
-    height: 32px;
+    height: 30px;
     font-size: 16px;
   }
 
-  .cwd-field {
+  .command-prompt-field {
+    gap: 5px;
     padding-left: 7px;
+  }
+
+  .command-prompt-field input {
+    padding: 6px 7px 6px 0;
+  }
+
+  .cwd-field {
+    padding-left: 5px;
+  }
+
+  .cwd-field input {
+    padding: 6px 5px 6px 0;
   }
 
   .cwd-field span {
@@ -2050,6 +2213,10 @@ textarea {
   .fakeagent-toggle {
     min-height: 28px;
     font-size: 10px;
+  }
+
+  .recent-session-group-config textarea {
+    font-size: 16px;
   }
 
   .session-appbar {
@@ -2102,6 +2269,12 @@ textarea {
     gap: 6px;
   }
 
+  .terminal-zoom-control output {
+    min-width: 52px;
+    padding: 7px 8px;
+    font-size: 10px;
+  }
+
   .menu-panel .icon-button {
     min-width: 0;
     min-height: 32px;
@@ -2120,14 +2293,29 @@ textarea {
 
   .main-surface[data-renderer="terminal"] .terminal-scroll-controls {
     display: grid;
-    grid-template-rows: 1fr 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(40px, 1fr) 40px;
     gap: 4px;
     min-height: 0;
+  }
+
+  .terminal-attach-button {
+    display: grid;
+    place-items: center;
+    min-height: 40px;
+  }
+
+  .terminal-attach-button svg {
+    width: 15px;
+    height: 15px;
   }
 
   .terminal-xterm-wrap,
   .terminal-html {
     padding: 4px;
+  }
+
+  .terminal-host .xterm-viewport {
+    overflow-y: hidden !important;
   }
 
   .composer {
@@ -2143,11 +2331,26 @@ textarea {
 
   .composer-input-row {
     grid-template-columns: minmax(0, 1fr) 34px;
+    min-height: 40px;
+  }
+
+  .promptbox-shell {
+    --promptbox-base-height: 40px;
+    --promptbox-max-height-ratio: 4.5;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row {
+    grid-template-columns: minmax(0, 1fr);
+    padding-right: 28px;
   }
 
   .composer-attach {
     min-width: 34px;
     min-height: 40px;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row > .composer-attach {
+    display: none;
   }
 
   .composer-actions {
@@ -2160,6 +2363,64 @@ textarea {
 
   .voice-controls {
     justify-content: flex-start;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-shortcuts {
+    grid-template-columns: minmax(0, 1fr) 66px;
+    overflow: visible;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-scroll {
+    padding-right: 16px;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-fixed {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    width: auto;
+    height: 28px;
+    padding-left: 4px;
+    background: #111418;
+    pointer-events: auto;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .chord-fixed #send {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: 4;
+    width: 24px;
+    min-width: 24px;
+    height: 74px;
+    min-height: 74px;
+    border-color: #3a4350;
+    background: #20262e;
+    color: #dce5ef;
+    font-size: 16px;
+  }
+
+  .agent-session-title,
+  .session-link strong {
+    font-size: 12px;
+  }
+
+  .agent-session-preview,
+  .brief-section p,
+  .brief-section ul {
+    font-size: 11px;
+  }
+
+  .session-link code,
+  .session-link time,
+  .empty,
+  .semantic-section header span {
+    font-size: 10px;
+  }
+
+  .semantic-section,
+  .brief-section {
+    padding: 8px;
   }
 
   #send {
