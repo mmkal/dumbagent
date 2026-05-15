@@ -1605,6 +1605,7 @@ async function renderSession(sessionId: string) {
         <div class="terminal-scroll-controls" aria-label="Terminal scroll controls">
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="-1" aria-label="Scroll terminal up">↑</button>
           <button type="button" class="terminal-scroll-button" data-terminal-scroll="1" aria-label="Scroll terminal down">↓</button>
+          ${renderVoiceToggleButton("terminal-scroll-button terminal-voice-button")}
           <button type="button" class="terminal-scroll-button terminal-attach-button" data-action="attach-file" aria-label="Attach file" title="Attach file">
             ${renderAttachIcon()}
           </button>
@@ -1635,6 +1636,7 @@ async function renderSession(sessionId: string) {
           <button type="button" id="attach" class="icon-button composer-attach" data-action="attach-file" aria-label="Attach file" title="Attach file">
             ${renderAttachIcon()}
           </button>
+          ${renderVoiceToggleButton("icon-button composer-voice-button")}
         </div>
         <div class="chord-shortcuts" role="group" aria-label="Shortcut chords" data-chord-binary="${escapeAttr(binary)}">
           ${renderChordShortcuts(binary)}
@@ -1655,14 +1657,7 @@ async function renderSession(sessionId: string) {
             </div>
           </div>
         </form>
-        <div class="composer-actions">
-          <div class="voice-controls" role="group" aria-label="Voice mode">
-            <button type="button" id="voice-talk" class="icon-button voice-talk" aria-label="Push to talk" data-voice-status="idle">Talk</button>
-            <button type="button" id="voice-cancel" class="icon-button" aria-label="Cancel listening">Cancel</button>
-            <button type="button" id="voice-stop" class="icon-button" aria-label="Cancel speech playback">Audio</button>
-            <output id="voice-status" class="voice-status" data-testid="voice-status">Voice ready</output>
-          </div>
-        </div>
+        <output id="voice-status" class="visually-hidden" data-testid="voice-status" aria-live="polite">Voice ready</output>
       </section>
     </main>
   `;
@@ -2110,41 +2105,20 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
   });
   unsubscribeVoiceLoop = voiceLoop.subscribe(updateVoiceControls);
 
-  const talk = document.getElementById("voice-talk") as HTMLButtonElement | null;
-  const cancel = document.getElementById("voice-cancel") as HTMLButtonElement | null;
-  const stop = document.getElementById("voice-stop") as HTMLButtonElement | null;
-  if (!talk || !cancel || !stop) {
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-action='voice-toggle']"));
+  if (!buttons.length) {
     return;
   }
-  talk.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    voiceLoop?.startListening();
-  });
-  talk.addEventListener("pointerup", (event) => {
-    event.preventDefault();
-    voiceLoop?.stopListening();
-  });
-  talk.addEventListener("pointercancel", () => {
-    voiceLoop?.cancelListening();
-  });
-  talk.addEventListener("keydown", (event) => {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      const status = voiceLoop?.state.status;
+      if (status === "listening" || status === "transcribing") {
+        voiceLoop?.cancelListening();
+        return;
+      }
       voiceLoop?.startListening();
-    }
-  });
-  talk.addEventListener("keyup", (event) => {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      voiceLoop?.stopListening();
-    }
-  });
-  cancel.addEventListener("click", () => {
-    voiceLoop?.cancelListening();
-  });
-  stop.addEventListener("click", () => {
-    voiceLoop?.stopSpeaking();
-  });
+    });
+  }
 }
 
 function createSessionVoiceRecognizer() {
@@ -2153,31 +2127,25 @@ function createSessionVoiceRecognizer() {
 }
 
 function updateVoiceControls(state: VoiceLoop["state"]) {
-  const controls = document.querySelector<HTMLElement>(".voice-controls");
-  const talk = document.getElementById("voice-talk") as HTMLButtonElement | null;
-  const cancel = document.getElementById("voice-cancel") as HTMLButtonElement | null;
-  const stop = document.getElementById("voice-stop") as HTMLButtonElement | null;
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-action='voice-toggle']"));
   const status = document.getElementById("voice-status") as HTMLOutputElement | null;
-  if (controls) {
-    controls.hidden = state.status === "unsupported";
-    const actions = controls.closest<HTMLElement>(".composer-actions");
-    if (actions) {
-      actions.dataset.voiceUnsupported = String(state.status === "unsupported");
-    }
-  }
-  if (talk) {
-    talk.disabled = state.status === "unsupported";
-    talk.dataset.voiceStatus = state.status;
-    talk.setAttribute("aria-pressed", String(state.status === "listening" || state.status === "transcribing"));
-  }
-  if (cancel) {
-    cancel.disabled = state.status !== "listening" && state.status !== "transcribing";
-  }
-  if (stop) {
-    stop.disabled = state.status === "unsupported";
+  const active = state.status === "listening" || state.status === "transcribing";
+  const label = state.status === "unsupported"
+    ? state.message
+    : active
+      ? "Cancel voice input"
+      : "Start voice input";
+  const statusText = state.transcript ? `${state.message}: ${state.transcript}` : state.message;
+  for (const button of buttons) {
+    button.disabled = state.status === "unsupported";
+    button.dataset.voiceStatus = state.status;
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", statusText);
+    button.innerHTML = active ? renderVoiceCancelIcon() : renderMicIcon();
   }
   if (status) {
-    status.value = state.transcript ? `${state.message}: ${state.transcript}` : state.message;
+    status.value = statusText;
     status.textContent = status.value;
   }
 }
@@ -3729,6 +3697,38 @@ function shouldAutoFocusChordInput() {
 
 function usesTextareaReturnForNewline() {
   return window.matchMedia("(max-width: 640px)").matches;
+}
+
+function renderVoiceToggleButton(className: string) {
+  return `
+    <button
+      type="button"
+      class="${escapeAttr(`${className} voice-talk`)}"
+      data-action="voice-toggle"
+      data-voice-status="idle"
+      aria-label="Start voice input"
+      title="Start voice input"
+    >${renderMicIcon()}</button>
+  `;
+}
+
+function renderMicIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3" />
+    </svg>
+  `;
+}
+
+function renderVoiceCancelIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  `;
 }
 
 function renderAttachIcon() {

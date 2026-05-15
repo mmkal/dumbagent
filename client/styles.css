@@ -56,6 +56,15 @@ button:disabled {
   opacity: 0.48;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .primary-button {
   display: inline-grid;
   place-items: center;
@@ -2312,7 +2321,7 @@ pre {
 
 .composer-input-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 38px 38px;
   gap: 6px;
   min-width: 0;
   align-items: end;
@@ -2333,7 +2342,8 @@ pre {
   display: none;
 }
 
-.composer-attach {
+.composer-attach,
+.composer-voice-button {
   display: grid;
   place-items: center;
   min-width: 38px;
@@ -2342,7 +2352,9 @@ pre {
 }
 
 .composer-attach svg,
-.terminal-attach-button svg {
+.terminal-attach-button svg,
+.composer-voice-button svg,
+.terminal-voice-button svg {
   width: 17px;
   height: 17px;
   fill: none;
@@ -2849,18 +2861,20 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
 
   .main-surface[data-renderer="terminal"] .terminal-scroll-controls {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(40px, 1fr) 40px;
+    grid-template-rows: minmax(0, 1fr) minmax(40px, 0.7fr) 40px 40px;
     gap: 4px;
     min-height: 0;
   }
 
-  .terminal-attach-button {
+  .terminal-attach-button,
+  .terminal-voice-button {
     display: grid;
     place-items: center;
     min-height: 40px;
   }
 
-  .terminal-attach-button svg {
+  .terminal-attach-button svg,
+  .terminal-voice-button svg {
     width: 15px;
     height: 15px;
   }
@@ -2886,7 +2900,7 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   }
 
   .composer-input-row {
-    grid-template-columns: minmax(0, 1fr) 34px;
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
     min-height: 40px;
   }
 
@@ -2906,6 +2920,10 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   }
 
   .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row > .composer-attach {
+    display: none;
+  }
+
+  .session-layout:has(.main-surface[data-renderer="terminal"]) .composer-input-row > .composer-voice-button {
     display: none;
   }
 

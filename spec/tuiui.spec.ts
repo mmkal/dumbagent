@@ -262,7 +262,7 @@ test("opens a coordinator session from the coordinator shortcut", async ({ page,
 
   await expect(page).toHaveURL(/\/sessions\/tuiui_[a-f0-9]+$/);
   await expect(page.getByTestId("rendered-terminal")).toContainText("TUI UI's coordinator agent");
-  await expect(page.getByRole("button", { name: "Push to talk" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
 });
 
 test("keeps the promptbox draft in localStorage per session", async ({ page, ctx }) => {
@@ -806,7 +806,7 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\r");
 });
 
-test("push-to-talk sends a transcript and reads back the idle result without a real microphone", async ({ page, ctx }) => {
+test("voice input sends a transcript after ok send and reads back the idle result without a real microphone", async ({ page, ctx }) => {
   const sdkRefreshRequests: string[] = [];
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().includes("/rpc/sessions/sdkRefresh")) {
@@ -848,10 +848,11 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
 
   await launchFakeCodex(page, ctx);
 
-  await page.getByRole("button", { name: "Push to talk" }).dispatchEvent("pointerdown");
+  await page.getByRole("button", { name: "Start voice input" }).click();
   await expect(page.getByTestId("voice-status")).toContainText("Listening");
+  await expect(page.getByRole("button", { name: "Cancel voice input" })).toBeVisible();
   await page.evaluate(() => {
-    (window as any).__voiceEmit("what is one plus two");
+    (window as any).__voiceEmit("what is one plus two ok send", false);
   });
 
   await expect.poll(async () => {
@@ -871,7 +872,7 @@ test("push-to-talk sends a transcript and reads back the idle result without a r
   await expect(page.getByTestId("voice-status")).toContainText("Readback complete");
 });
 
-test("hides voice controls when browser voice APIs are unavailable", async ({ page, ctx }) => {
+test("disables voice controls when browser voice APIs are unavailable", async ({ page, ctx }) => {
   await page.addInitScript(() => {
     (window as any).__tuiuiVoiceTest = {
       recognizer: {
@@ -895,7 +896,8 @@ test("hides voice controls when browser voice APIs are unavailable", async ({ pa
 
   await launchFakeCodex(page, ctx);
 
-  await expect(page.locator(".voice-controls")).toBeHidden();
+  await expect(page.getByRole("button", { name: /Voice capture requires HTTPS/ })).toBeDisabled();
+  await expect(page.getByTestId("voice-status")).toContainText("Voice capture requires HTTPS");
 });
 
 test("shortcut chord buttons do not return focus to the composer", async ({ page, ctx }) => {
@@ -1135,6 +1137,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
 
   await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scroll terminal down" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
   await expect(page.locator(".terminal-attach-button")).toBeVisible();
   const terminalRowsBefore = await page.locator(".xterm-rows").textContent();
   await page.getByRole("button", { name: "Scroll terminal up" }).click();
@@ -1203,12 +1206,17 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     const returnButton = document.getElementById("send")!.getBoundingClientRect();
     const chordToggle = document.querySelector<HTMLElement>(".chord-toggle")!.getBoundingClientRect();
     const composerAttach = document.getElementById("attach")!;
+    const composerVoice = document.querySelector<HTMLElement>(".composer-voice-button")!;
+    const terminalVoice = document.querySelector<HTMLElement>(".terminal-voice-button")!;
     const terminalAttach = document.querySelector<HTMLElement>(".terminal-attach-button")!;
     const scrollDown = document.querySelector<HTMLElement>("[data-terminal-scroll='1']")!;
+    const terminalVoiceBox = terminalVoice.getBoundingClientRect();
     const terminalAttachBox = terminalAttach.getBoundingClientRect();
     const scrollDownBox = scrollDown.getBoundingClientRect();
     return {
       composerAttachDisplay: getComputedStyle(composerAttach).display,
+      composerVoiceDisplay: getComputedStyle(composerVoice).display,
+      terminalVoiceDisplay: getComputedStyle(terminalVoice).display,
       terminalAttachDisplay: getComputedStyle(terminalAttach).display,
       returnBackgroundColor: getComputedStyle(document.getElementById("send")!).backgroundColor,
       returnHeight: Math.round(returnButton.height),
@@ -1217,8 +1225,11 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       chordButtonGap: Math.round(returnButton.left - chordToggle.right),
       promptboxTop: Math.round(promptbox.top),
       scrollDownWidth: Math.round(scrollDownBox.width),
+      terminalVoiceWidth: Math.round(terminalVoiceBox.width),
       terminalAttachWidth: Math.round(terminalAttachBox.width),
       scrollDownBottom: Math.round(scrollDownBox.bottom),
+      terminalVoiceTop: Math.round(terminalVoiceBox.top),
+      terminalVoiceBottom: Math.round(terminalVoiceBox.bottom),
       terminalAttachTop: Math.round(terminalAttachBox.top),
       terminalAttachBottom: Math.round(terminalAttachBox.bottom),
       screenBottom: Math.round(screen.bottom),
@@ -1226,16 +1237,20 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
   });
   expect(mobileControlLayout).toMatchObject({
     composerAttachDisplay: "none",
+    composerVoiceDisplay: "none",
+    terminalVoiceDisplay: "grid",
     terminalAttachDisplay: "grid",
     returnBackgroundColor: "rgb(32, 38, 46)",
   });
   expect(mobileControlLayout.returnHeight).toBeGreaterThanOrEqual(70);
   expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.scrollDownWidth);
+  expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.terminalVoiceWidth);
   expect(mobileControlLayout.returnWidth).toBe(mobileControlLayout.terminalAttachWidth);
   expect(mobileControlLayout.chordButtonGap).toBeGreaterThanOrEqual(3);
   expect(mobileControlLayout.chordButtonGap).toBeLessThanOrEqual(5);
   expect(Math.abs(mobileControlLayout.returnTop - mobileControlLayout.promptboxTop)).toBeLessThanOrEqual(2);
-  expect(mobileControlLayout.scrollDownBottom).toBeLessThanOrEqual(mobileControlLayout.terminalAttachTop + 1);
+  expect(mobileControlLayout.scrollDownBottom).toBeLessThanOrEqual(mobileControlLayout.terminalVoiceTop + 1);
+  expect(mobileControlLayout.terminalVoiceBottom).toBeLessThanOrEqual(mobileControlLayout.terminalAttachTop + 1);
   expect(mobileControlLayout.terminalAttachBottom).toBeLessThanOrEqual(mobileControlLayout.screenBottom + 1);
 
   const colsBeforeZoom = (await fetchSessionPayload(page)).cols;

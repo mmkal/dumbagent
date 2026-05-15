@@ -69,13 +69,14 @@ export function createVoiceLoop(input: {
 }) {
   const listeners = new Set<(state: VoiceLoopState) => void>();
   const providerLabel = input.recognizer.label || "browser";
+  const unsupportedMessage = "Voice capture requires HTTPS and microphone support";
   const state: VoiceLoopState = {
     status: input.recognizer.supported && input.speaker.supported ? "idle" : "unsupported",
     transcript: "",
     providerLabel,
     message: input.recognizer.supported && input.speaker.supported
       ? `Voice ready (${providerLabel})`
-      : "Voice is not supported in this browser",
+      : unsupportedMessage,
     awaitingReadback: false,
   };
   let pendingSessionId = "";
@@ -83,6 +84,7 @@ export function createVoiceLoop(input: {
   let promptPayloadUpdatedAt = "";
   let readbackSpokenFor = "";
   let cancelled = false;
+  let ignoreRecognizerEvents = false;
 
   function emit() {
     for (const listener of listeners) {
@@ -118,24 +120,31 @@ export function createVoiceLoop(input: {
     state,
     startListening() {
       if (!input.recognizer.supported || !input.speaker.supported) {
-      state.status = "unsupported";
-      state.message = "Voice is not supported in this browser";
-      emit();
+        state.status = "unsupported";
+        state.message = unsupportedMessage;
+        emit();
         return;
       }
       cancelled = false;
+      ignoreRecognizerEvents = false;
       state.status = "listening";
       state.transcript = "";
-      state.message = `Listening (${providerLabel})`;
+      state.message = `Listening (${providerLabel}); say ok send to send`;
       emit();
       input.recognizer.start({
         onResult(result) {
-          state.transcript = result.transcript;
-          state.status = result.final ? "transcribing" : "listening";
-          state.message = result.final ? "Transcribing" : `Listening (${providerLabel})`;
+          if (ignoreRecognizerEvents || cancelled) {
+            return;
+          }
+          const sendText = voiceSendTextFromTranscript(result.transcript);
+          state.transcript = sendText || result.transcript;
+          state.status = sendText ? "transcribing" : "listening";
+          state.message = sendText ? "Sending voice prompt" : `Listening (${providerLabel}); say ok send to send`;
           emit();
-          if (result.final) {
-            void acceptTranscript(result.transcript).catch((error) => {
+          if (sendText) {
+            ignoreRecognizerEvents = true;
+            input.recognizer.cancel();
+            void acceptTranscript(sendText).catch((error) => {
               state.status = "error";
               state.message = String(error instanceof Error ? error.message : error);
               state.awaitingReadback = false;
@@ -144,25 +153,32 @@ export function createVoiceLoop(input: {
           }
         },
         onError(message) {
+          if (ignoreRecognizerEvents || cancelled) {
+            return;
+          }
           state.status = "error";
           state.message = message;
           state.awaitingReadback = false;
           emit();
         },
         onEnd() {
+          if (ignoreRecognizerEvents || cancelled) {
+            return;
+          }
           if (state.status === "listening") {
             state.status = "idle";
-            state.message = `Voice ready (${providerLabel})`;
+            state.message = state.transcript ? "Say ok send to send" : `Voice ready (${providerLabel})`;
             emit();
           }
         },
       });
     },
     stopListening() {
-      input.recognizer.stop();
-      if (state.status === "listening") {
-        state.status = "transcribing";
-        state.message = "Transcribing";
+      if (state.status === "listening" || state.status === "transcribing") {
+        cancelled = true;
+        input.recognizer.cancel();
+        state.status = "idle";
+        state.message = "Listening cancelled";
         emit();
       }
     },
@@ -227,6 +243,14 @@ export function createVoiceLoop(input: {
   return loop;
 }
 
+export function voiceSendTextFromTranscript(transcript: string) {
+  const match = transcript.match(/\b(?:ok|okay)[,.\s]+send\b/i);
+  if (!match || match.index === undefined) {
+    return "";
+  }
+  return transcript.slice(0, match.index).trim().replace(/[,\s]+$/, "");
+}
+
 export function createBrowserVoiceRecognizer(): VoiceRecognizer {
   const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   let recognition: any = null;
@@ -239,13 +263,13 @@ export function createBrowserVoiceRecognizer(): VoiceRecognizer {
         return;
       }
       recognition = new SpeechRecognition();
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = navigator.language || "en-US";
       recognition.onresult = (event: any) => {
         let transcript = "";
         let final = false;
-        for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
+        for (let index = 0; index < event.results.length; index += 1) {
           const result = event.results[index];
           transcript += String(result?.[0]?.transcript || "");
           final = final || Boolean(result?.isFinal);
@@ -343,6 +367,8 @@ export function createRealtimeTranscriptionVoiceRecognizer(input: {
       const nextSession: RealtimeTranscriptionBrowserSession = {
         cancelled: false,
         transcript: "",
+        itemTranscripts: new Map(),
+        itemOrder: [],
         stream: null,
         pc: null,
         dc: null,
@@ -385,6 +411,8 @@ export function createRealtimeTranscriptionVoiceRecognizer(input: {
 type RealtimeTranscriptionBrowserSession = {
   cancelled: boolean;
   transcript: string;
+  itemTranscripts: Map<string, string>;
+  itemOrder: string[];
   stream: MediaStream | null;
   pc: RTCPeerConnection | null;
   dc: RTCDataChannel | null;
@@ -438,21 +466,33 @@ function handleRealtimeTranscriptionEvent(
     return;
   }
   if (event.type === "conversation.item.input_audio_transcription.delta") {
-    session.transcript += String(event.delta || "");
+    const itemId = String(event.item_id || "current");
+    updateRealtimeItemTranscript(session, itemId, `${session.itemTranscripts.get(itemId) || ""}${String(event.delta || "")}`);
     handlers.onResult({ transcript: session.transcript, final: false });
     return;
   }
   if (event.type === "conversation.item.input_audio_transcription.completed") {
-    const transcript = String(event.transcript || session.transcript).trim();
-    handlers.onResult({ transcript, final: true });
-    closeRealtimeTranscriptionSession(session);
-    handlers.onEnd();
+    const itemId = String(event.item_id || "current");
+    updateRealtimeItemTranscript(session, itemId, String(event.transcript || session.itemTranscripts.get(itemId) || ""));
+    handlers.onResult({ transcript: session.transcript, final: false });
     return;
   }
   if (event.type === "error") {
     closeRealtimeTranscriptionSession(session);
     handlers.onError(String(event.error?.message || "Realtime transcription failed"));
   }
+}
+
+function updateRealtimeItemTranscript(session: RealtimeTranscriptionBrowserSession, itemId: string, transcript: string) {
+  if (!session.itemTranscripts.has(itemId)) {
+    session.itemOrder.push(itemId);
+  }
+  session.itemTranscripts.set(itemId, transcript.trim());
+  session.transcript = session.itemOrder
+    .map((id) => session.itemTranscripts.get(id) || "")
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 }
 
 function parseRealtimeEvent(rawEvent: string): any {

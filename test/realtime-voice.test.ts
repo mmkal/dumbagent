@@ -15,7 +15,7 @@ test("builds a transcription-only realtime session config", () => {
           rate: 24_000,
         },
         transcription: {
-          model: "gpt-realtime-whisper",
+          model: "gpt-4o-transcribe",
           language: "en",
         },
         turn_detection: {
@@ -53,7 +53,7 @@ test("exchanges browser offer SDP for an OpenAI realtime answer", async () => {
     audio: {
       input: {
         transcription: {
-          model: "gpt-realtime-whisper",
+          model: "gpt-4o-transcribe",
         },
       },
     },

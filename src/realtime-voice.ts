@@ -16,7 +16,7 @@ export function realtimeTranscriptionSessionConfig() {
           rate: 24_000,
         },
         transcription: {
-          model: "gpt-realtime-whisper",
+          model: "gpt-4o-transcribe",
           language: "en",
         },
         turn_detection: {

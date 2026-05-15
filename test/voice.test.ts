@@ -4,6 +4,7 @@ import {
   createFallbackVoiceRecognizer,
   createReadbackText,
   createVoiceLoop,
+  voiceSendTextFromTranscript,
   type VoiceRecognizer,
   type VoiceSpeaker,
 } from "../client/voice.ts";
@@ -24,7 +25,7 @@ test("voice loop sends final transcripts and reads back after the session return
   });
 
   loop.startListening();
-  recognizer.emit({ transcript: "what is one plus two", final: true });
+  recognizer.emit({ transcript: "what is one plus two ok send", final: false });
   await Promise.resolve();
 
   expect(sent).toEqual(["what is one plus two"]);
@@ -79,7 +80,7 @@ test("voice loop waits for a fresh provider assistant message before readback", 
   });
 
   loop.startListening();
-  recognizer.emit({ transcript: "what is the status", final: true });
+  recognizer.emit({ transcript: "what is the status okay send", final: false });
   await Promise.resolve();
 
   now = Date.parse("2026-05-11T10:00:02.000Z");
@@ -130,6 +131,45 @@ test("voice loop waits for a fresh provider assistant message before readback", 
     createAcknowledgement("what is the status"),
     "fresh answer",
   ]);
+});
+
+test("voice loop waits for the ok send phrase before sending captured text", async () => {
+  const sent: string[] = [];
+  const recognizer = fakeRecognizer();
+  const loop = createVoiceLoop({
+    recognizer,
+    speaker: fakeSpeaker([]),
+    now: () => 1,
+    minReadbackDelayMs: 0,
+    async sendTranscript(text) {
+      sent.push(text);
+    },
+  });
+
+  loop.startListening();
+  recognizer.emit({ transcript: "draft prompt", final: false });
+  await Promise.resolve();
+
+  expect(sent).toEqual([]);
+  expect(loop.state).toMatchObject({
+    status: "listening",
+    transcript: "draft prompt",
+  });
+
+  recognizer.emit({ transcript: "draft prompt ok send", final: false });
+  await Promise.resolve();
+
+  expect(sent).toEqual(["draft prompt"]);
+  expect(loop.state).toMatchObject({
+    status: "idle",
+    transcript: "draft prompt",
+  });
+});
+
+test("voice send phrase strips ok send variants", () => {
+  expect(voiceSendTextFromTranscript("check status ok send")).toBe("check status");
+  expect(voiceSendTextFromTranscript("check status okay, send")).toBe("check status");
+  expect(voiceSendTextFromTranscript("check status")).toBe("");
 });
 
 test("voice loop can be tested without a microphone or system speech", () => {
