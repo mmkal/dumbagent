@@ -84,6 +84,7 @@ import {
   type CoordinatorAgentSource,
 } from "./src/coordinator-tools.ts";
 import { handleCoordinatorMcpRequest, type CoordinatorMcpHandlers } from "./src/coordinator-mcp.ts";
+import { realtimeTranscriptionSdpResponse } from "./src/realtime-voice.ts";
 
 if (typeof Bun === "undefined") {
   throw new Error("tuiui requires the Bun runtime. Run `bun run cli.ts ...`.");
@@ -330,6 +331,7 @@ function startServer(options: { host: string; port: number; state: ServerState }
       "/": homepage,
       "/sessions": homepage,
       "/sessions/:id": homepage,
+      "/factory-floor": homepage,
       "/health": {
         GET: () => Response.json({ ok: true }),
       },
@@ -403,6 +405,14 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
 
   if (request.method === "GET" && url.pathname === "/api/commands") {
     return Response.json(commandPresetsPayload());
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/voice/realtime-transcription/sdp") {
+    return await realtimeTranscriptionSdpResponse({
+      request,
+      env: process.env,
+      fetchImpl: fetch,
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/agent-sessions/recent") {
