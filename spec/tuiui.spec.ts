@@ -19,6 +19,8 @@ type FixtureContext = {
   env: NodeJS.ProcessEnv;
 };
 
+const terminalTouchDoubleTapTestGapMs = 380;
+
 const test = base.extend<{ ctx: FixtureContext }>({
   ctx: async ({}, use) => {
     await using ctx = await createContext();
@@ -101,7 +103,8 @@ test("does not poll home idle notification snapshots before opt in", async ({ pa
   });
 
   await page.goto(ctx.baseUrl);
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔕");
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon")).toBeVisible();
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon-slash")).toBeVisible();
   await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: off");
   const requestsAfterInitialLoad = jsonApiRequests;
   expect(requestsAfterInitialLoad).toBeGreaterThan(0);
@@ -993,6 +996,130 @@ test("can type directly into the terminal renderer", async ({ page, ctx }) => {
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
 });
 
+test("long press selects terminal text on narrow touch screens", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    Object.defineProperty(window, "__tuiuiClipboardWrites", {
+      configurable: true,
+      value: writes,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        async writeText(text: string) {
+          writes.push(text);
+        },
+      },
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("selectable-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("selectable target word");
+
+  const rowBoxes = await page.locator(".xterm-rows > div").evaluateAll((rows) => {
+    return rows.map((row) => {
+      const rect = row.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: row.textContent || "" };
+    });
+  });
+  const targetRowIndex = rowBoxes.findIndex((row) => row.text.includes("selectable target word"));
+  const targetRow = rowBoxes[targetRowIndex];
+  const previousRow = rowBoxes[targetRowIndex - 1];
+  if (!targetRow || !previousRow) {
+    throw new Error("terminal rows were not rendered");
+  }
+  const target = { x: targetRow.x + 16, y: targetRow.y + targetRow.height / 2 };
+
+  await page.touchscreen.tap(target.x, target.y + targetRow.height * 6);
+  await expect.poll(async () => {
+    return await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
+  }).toBe(false);
+  await page.waitForTimeout(terminalTouchDoubleTapTestGapMs);
+
+  await longPressTouch(page, target);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeVisible();
+  await expect.poll(async () => await page.locator(".xterm-selection div").count()).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual(["selectable"]);
+
+  await dragTouch(page, target, { x: target.x, y: previousRow.y + previousRow.height / 2 });
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual(["selectable", "paragraph starts here\nselectable target word"]);
+
+  await page.touchscreen.tap(target.x, target.y + targetRow.height * 6);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeHidden();
+  await page.waitForTimeout(terminalTouchDoubleTapTestGapMs);
+  await longPressTouch(page, target);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Select terminal line" }).click();
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual(["selectable", "paragraph starts here\nselectable target word", "selectable target word"]);
+
+  await page.getByRole("button", { name: "Select terminal paragraph" }).click();
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual([
+    "selectable",
+    "paragraph starts here\nselectable target word",
+    "selectable target word",
+    "paragraph starts here\nselectable target word\nparagraph ends here",
+  ]);
+
+  await page.locator("body").click({ position: { x: 8, y: 8 } });
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeHidden();
+});
+
+test("dragging a mobile terminal selection near the top scrolls upward", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("scrollback line 80");
+
+  const before = await visibleScrollbackLineNumbers(page);
+  expect(before.length).toBeGreaterThan(0);
+
+  const rowBoxes = await page.locator(".xterm-rows > div").evaluateAll((rows) => {
+    return rows.map((row) => {
+      const rect = row.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: row.textContent || "" };
+    });
+  });
+  const targetRow = rowBoxes.findLast((row) => /scrollback line \d+/.test(row.text));
+  if (!targetRow) {
+    throw new Error("terminal rows were not rendered");
+  }
+  const rowsBox = await page.locator(".xterm-rows").boundingBox();
+  if (!rowsBox) {
+    throw new Error("terminal rows were not rendered");
+  }
+
+  const target = { x: targetRow.x + 16, y: targetRow.y + targetRow.height / 2 };
+  await longPressTouch(page, target);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeVisible();
+
+  await dragTouchWithHold(page, target, { x: target.x, y: rowsBox.y + 8 }, 850);
+
+  await expect.poll(async () => {
+    return Math.min(...await visibleScrollbackLineNumbers(page));
+  }).toBeLessThan(Math.min(...before));
+});
+
 test("opens http links from terminal output in a new tab", async ({ page, ctx }) => {
   const url = "https://example.test/docs?q=tuiui";
 
@@ -1180,11 +1307,11 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
         bodyScrolls: body.scrollHeight > body.clientHeight + 1,
         appScrolls: app.scrollHeight > app.clientHeight + 1,
         horizontalScrolls: doc.scrollWidth > doc.clientWidth + 1,
-        screenOverflowY: getComputedStyle(screen).overflowY,
-        terminalViewportOverflowY: terminalViewport ? getComputedStyle(terminalViewport).overflowY : "",
-        scrollButtonUserSelect: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).userSelect,
-      };
-    });
+      screenOverflowY: getComputedStyle(screen).overflowY,
+      terminalViewportOverflowY: terminalViewport ? getComputedStyle(terminalViewport).overflowY : "",
+      scrollButtonUserSelect: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).userSelect,
+    };
+  });
   }).toMatchObject({
     documentScrolls: false,
     bodyScrolls: false,
@@ -2035,6 +2162,148 @@ async function createTouchPage(browser: Browser, testInfo: TestInfo) {
   };
 }
 
+async function longPressTouch(page: Page, point: { x: number; y: number }) {
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) {
+      throw new Error("touch target was not found");
+    }
+    target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 31,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1,
+    }));
+  }, point);
+  await page.waitForTimeout(520);
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) {
+      throw new Error("touch target was not found");
+    }
+    target.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 31,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 0,
+    }));
+  }, point);
+}
+
+async function dragTouch(page: Page, start: { x: number; y: number }, end: { x: number; y: number }) {
+  await page.evaluate(({ start, end }) => {
+    const target = document.elementFromPoint(start.x, start.y);
+    if (!target) {
+      throw new Error("touch target was not found");
+    }
+    target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 32,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: start.x,
+      clientY: start.y,
+      button: 0,
+      buttons: 1,
+    }));
+    target.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 32,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: end.x,
+      clientY: end.y,
+      button: 0,
+      buttons: 1,
+    }));
+    target.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 32,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: end.x,
+      clientY: end.y,
+      button: 0,
+      buttons: 0,
+    }));
+  }, { start, end });
+}
+
+async function dragTouchWithHold(page: Page, start: { x: number; y: number }, end: { x: number; y: number }, holdMs: number) {
+  await page.evaluate(async ({ start, end, holdMs }) => {
+    const target = document.elementFromPoint(start.x, start.y);
+    if (!target) {
+      throw new Error("touch target was not found");
+    }
+    target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 33,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: start.x,
+      clientY: start.y,
+      button: 0,
+      buttons: 1,
+    }));
+    target.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 33,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: end.x,
+      clientY: end.y,
+      button: 0,
+      buttons: 1,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+    target.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 33,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: end.x,
+      clientY: end.y,
+      button: 0,
+      buttons: 1,
+    }));
+    target.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 33,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: end.x,
+      clientY: end.y,
+      button: 0,
+      buttons: 0,
+    }));
+  }, { start, end, holdMs });
+}
+
+async function visibleScrollbackLineNumbers(page: Page) {
+  const texts = await page.locator(".xterm-rows > div").evaluateAll((rows) => rows.map((row) => row.textContent || ""));
+  return texts.flatMap((text) => {
+    const match = text.match(/scrollback line\s+(\d+)/);
+    return match ? [Number(match[1])] : [];
+  });
+}
+
 function countSerializedHtmlRows(html: string) {
   return html.match(/<div><span>/g)?.length || 0;
 }
@@ -2076,6 +2345,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "image-path-agent"), imagePathAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "selectable-agent"), selectableAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -2224,6 +2494,11 @@ setTimeout(() => {}, 100000);
 
 const imagePathAgentSource = `#!/usr/bin/env node
 process.stdout.write((process.argv[2] || "") + "\\r\\n");
+setTimeout(() => {}, 100000);
+`;
+
+const selectableAgentSource = `#!/usr/bin/env node
+process.stdout.write("paragraph starts here\\r\\nselectable target word\\r\\nparagraph ends here\\r\\n");
 setTimeout(() => {}, 100000);
 `;
 

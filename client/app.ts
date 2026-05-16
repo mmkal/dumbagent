@@ -324,6 +324,7 @@ let terminalScrollAnimationFrame: number | null = null;
 let terminalImageLinkProvider: { dispose(): void } | null = null;
 let terminalImageTapCleanup: (() => void) | null = null;
 let terminalImageHintsCleanup: (() => void) | null = null;
+let terminalTouchSelectionCleanup: (() => void) | null = null;
 let terminalImageHintAnimationFrame: number | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
@@ -354,6 +355,47 @@ const terminalHttpLinkHandler: ILinkHandler = {
   allowNonHttpProtocols: false,
 };
 const terminalImagePathPattern = /(^|[\s"'`(<[{])((?:\/[^\s"'`<>]+|[A-Za-z]:\\[^\s"'`<>]+|\.{1,2}\/[^\s"'`<>]+|[A-Za-z0-9._-][^\s"'`<>]*)\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp))(?=$|[\s"'`<>),;:!?}\]])/gi;
+const terminalTouchLongPressMs = 460;
+const terminalTouchMoveTolerancePx = 8;
+const terminalTouchDoubleTapMs = 340;
+const terminalTouchDoubleTapTolerancePx = 28;
+const terminalTouchEdgeScrollPx = 48;
+const terminalTouchEdgeScrollMs = 190;
+const terminalTouchWordSeparators = new Set([" ", "\t", "(", ")", "[", "]", "{", "}", "'", "\"", ",", "`"]);
+
+type TerminalBufferCell = {
+  column: number;
+  row: number;
+};
+
+type TerminalWordSelection = TerminalBufferCell & {
+  length: number;
+};
+
+type TerminalLineSelectionAnchor = {
+  startRow: number;
+  endRow: number;
+};
+
+type TerminalTouchSelectionState = {
+  activePointerId: number | null;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  longPressTimer: number | null;
+  edgeScrollTimer: number | null;
+  selecting: boolean;
+  anchor: TerminalBufferCell | null;
+  lineExtending: boolean;
+  lineAnchor: TerminalLineSelectionAnchor | null;
+  moved: boolean;
+  suppressMouseUntil: number;
+  lastTapAt: number;
+  lastTapX: number;
+  lastTapY: number;
+  lastLongPressAt: number;
+};
 
 void boot();
 
@@ -2552,7 +2594,7 @@ function scrollTerminalByStep(direction: number) {
     return;
   }
   if (xterm) {
-    smoothScrollXterm(direction * 8);
+    smoothScrollXterm(direction * 8, () => undefined);
     return;
   }
 
@@ -2566,7 +2608,7 @@ function scrollTerminalByStep(direction: number) {
   });
 }
 
-function smoothScrollXterm(totalLines: number) {
+function smoothScrollXterm(totalLines: number, onDelta: (delta: number) => void) {
   cancelTerminalScrollAnimation();
   const direction = Math.sign(totalLines);
   const lineCount = Math.abs(totalLines);
@@ -2579,7 +2621,9 @@ function smoothScrollXterm(totalLines: number) {
     const targetLines = Math.round(lineCount * progress);
     const delta = targetLines - appliedLines;
     if (delta && xterm) {
-      xterm.scrollLines(direction * delta);
+      const appliedDelta = direction * delta;
+      xterm.scrollLines(appliedDelta);
+      onDelta(appliedDelta);
       appliedLines = targetLines;
     }
     if (progress < 1 && appliedLines < lineCount) {
@@ -2696,6 +2740,13 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
         <div id="xterm-terminal" class="terminal-host"></div>
         <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
         <div class="terminal-image-hints" data-terminal-image-hints></div>
+        <div class="terminal-touch-selection-toolbar" data-terminal-touch-selection-toolbar role="toolbar" aria-label="Terminal selection" hidden>
+          <button type="button" data-terminal-touch-copy aria-label="Copy terminal selection">Copy</button>
+          <button type="button" data-terminal-touch-line aria-label="Select terminal line">Line</button>
+          <button type="button" data-terminal-touch-paragraph aria-label="Select terminal paragraph">Para</button>
+          <button type="button" data-terminal-touch-all aria-label="Select all terminal text">All</button>
+          <button type="button" data-terminal-touch-keyboard aria-label="Show terminal keyboard">Keys</button>
+        </div>
         <div id="terminal-image-popover" class="terminal-image-popover xterm-hover" data-testid="terminal-image-preview" hidden>
           <button type="button" class="terminal-image-popover-close" data-terminal-image-preview-close aria-label="Close image preview">×</button>
           <img data-terminal-image-preview-image alt="" />
@@ -2869,6 +2920,639 @@ function bindTerminalImageHints(term: XtermTerminal) {
     hintLayer.innerHTML = "";
   };
   scheduleTerminalImageHintUpdate(term);
+}
+
+function bindTerminalTouchSelection(term: XtermTerminal) {
+  terminalTouchSelectionCleanup?.();
+  terminalTouchSelectionCleanup = null;
+
+  const element = term.element;
+  if (!element) {
+    return;
+  }
+
+  const state: TerminalTouchSelectionState = {
+    activePointerId: null,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    longPressTimer: null,
+    edgeScrollTimer: null,
+    selecting: false,
+    anchor: null,
+    lineExtending: false,
+    lineAnchor: null,
+    moved: false,
+    suppressMouseUntil: 0,
+    lastTapAt: 0,
+    lastTapX: 0,
+    lastTapY: 0,
+    lastLongPressAt: 0,
+  };
+
+  const toolbar = terminalTouchSelectionToolbar();
+
+  const clearLongPressTimer = () => {
+    if (state.longPressTimer === null) {
+      return;
+    }
+    window.clearTimeout(state.longPressTimer);
+    state.longPressTimer = null;
+  };
+
+  const clearEdgeScrollTimer = () => {
+    if (state.edgeScrollTimer === null) {
+      return;
+    }
+    window.clearTimeout(state.edgeScrollTimer);
+    state.edgeScrollTimer = null;
+  };
+
+  const resetPointer = () => {
+    clearLongPressTimer();
+    clearEdgeScrollTimer();
+    state.activePointerId = null;
+    state.selecting = false;
+    state.anchor = null;
+    state.lineExtending = false;
+    state.lineAnchor = null;
+    state.moved = false;
+  };
+
+  const hideToolbarOnBlur = () => {
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (active && toolbar?.contains(active)) {
+        return;
+      }
+      hideTerminalTouchSelectionToolbar(term);
+    });
+  };
+
+  const updateLineExtension = (clientX: number, clientY: number) => {
+    const lineAnchor = state.lineAnchor;
+    if (!lineAnchor) {
+      return false;
+    }
+    const rowsUp = terminalTouchRowsDraggedUp(term, state.startY, clientY);
+    const focus = terminalBufferCellFromPoint(term, clientX, clientY);
+    let startRow = lineAnchor.startRow - rowsUp;
+    if (focus && clientY < state.startY - terminalTouchMoveTolerancePx) {
+      startRow = Math.min(startRow, focus.row);
+    }
+    startRow = Math.max(0, startRow);
+    state.lineExtending = startRow < lineAnchor.startRow || state.lineExtending;
+    if (!state.lineExtending) {
+      return false;
+    }
+    term.selectLines(startRow, lineAnchor.endRow);
+    showTerminalTouchSelectionToolbar(term, clientX, clientY);
+    return true;
+  };
+
+  const shouldEdgeScrollUp = () => {
+    return state.activePointerId !== null
+      && state.lineExtending
+      && state.lastY < state.startY
+      && terminalTouchPointNearTop(term, state.lastY)
+      && term.buffer.active.viewportY > 0;
+  };
+
+  const scheduleEdgeScroll = () => {
+    if (state.edgeScrollTimer !== null || !shouldEdgeScrollUp()) {
+      return;
+    }
+    state.edgeScrollTimer = window.setTimeout(() => {
+      state.edgeScrollTimer = null;
+      if (!shouldEdgeScrollUp()) {
+        return;
+      }
+      smoothScrollXterm(-8, () => {
+        if (xterm === term && shouldEdgeScrollUp()) {
+          updateLineExtension(state.lastX, state.lastY);
+        }
+      });
+      scheduleEdgeScroll();
+    }, terminalTouchEdgeScrollMs);
+  };
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (!terminalTouchSelectionShouldHandle(term, event)) {
+      return;
+    }
+
+    const now = Date.now();
+    state.suppressMouseUntil = now + 900;
+
+    if (terminalTouchSelectionIsDoubleTap(state, event, now)) {
+      resetPointer();
+      state.lastTapAt = 0;
+      hideTerminalTouchSelectionToolbar(term);
+      term.focus();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    resetPointer();
+    state.activePointerId = event.pointerId;
+    state.startX = event.clientX;
+    state.startY = event.clientY;
+    state.lastX = event.clientX;
+    state.lastY = event.clientY;
+    state.lineAnchor = terminalTouchSelectionRows(term);
+    if (state.lineAnchor) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    state.longPressTimer = window.setTimeout(() => {
+      state.longPressTimer = null;
+      if (state.activePointerId !== event.pointerId || xterm !== term) {
+        return;
+      }
+      const selection = terminalWordSelectionAtPoint(term, state.startX, state.startY);
+      if (!selection) {
+        resetPointer();
+        return;
+      }
+      state.selecting = true;
+      state.anchor = { column: selection.column, row: selection.row };
+      state.lastLongPressAt = Date.now();
+      state.suppressMouseUntil = state.lastLongPressAt + 900;
+      term.select(selection.column, selection.row, selection.length);
+      showTerminalTouchSelectionToolbar(term, state.startX, state.startY);
+    }, terminalTouchLongPressMs);
+  };
+
+  const handlePointerMove = (event: PointerEvent) => {
+    if (event.pointerId !== state.activePointerId) {
+      return;
+    }
+    state.lastX = event.clientX;
+    state.lastY = event.clientY;
+
+    const movedPx = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
+    if (state.lineAnchor) {
+      if (movedPx <= terminalTouchMoveTolerancePx && !state.lineExtending) {
+        return;
+      }
+      state.moved = true;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      updateLineExtension(event.clientX, event.clientY);
+      scheduleEdgeScroll();
+      return;
+    }
+
+    if (!state.selecting) {
+      if (movedPx > terminalTouchMoveTolerancePx) {
+        state.moved = true;
+        resetPointer();
+      }
+      return;
+    }
+
+    const anchor = state.anchor;
+    const focus = terminalBufferCellFromPoint(term, event.clientX, event.clientY);
+    if (!anchor || !focus) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    selectTerminalTouchRange(term, anchor, focus);
+    showTerminalTouchSelectionToolbar(term, event.clientX, event.clientY);
+  };
+
+  const handlePointerUp = (event: PointerEvent) => {
+    if (event.pointerId !== state.activePointerId) {
+      return;
+    }
+
+    clearLongPressTimer();
+    if (state.lineAnchor) {
+      if (state.lineExtending) {
+        state.suppressMouseUntil = Date.now() + 900;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      } else if (!state.moved) {
+        state.lastTapAt = Date.now();
+        state.lastTapX = event.clientX;
+        state.lastTapY = event.clientY;
+        term.clearSelection();
+        hideTerminalTouchSelectionToolbar(term);
+      }
+      resetPointer();
+      return;
+    }
+
+    if (state.selecting) {
+      state.lastLongPressAt = Date.now();
+      state.suppressMouseUntil = state.lastLongPressAt + 900;
+      state.activePointerId = null;
+      state.selecting = false;
+      state.anchor = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    const movedPx = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
+    if (!state.moved && movedPx <= terminalTouchMoveTolerancePx) {
+      state.lastTapAt = Date.now();
+      state.lastTapX = event.clientX;
+      state.lastTapY = event.clientY;
+      term.clearSelection();
+      hideTerminalTouchSelectionToolbar(term);
+    }
+    resetPointer();
+  };
+
+  const handlePointerCancel = (event: PointerEvent) => {
+    if (event.pointerId === state.activePointerId) {
+      resetPointer();
+    }
+  };
+
+  const handleTouchStart = (event: TouchEvent) => {
+    if (!terminalTouchSelectionIsNarrow() || terminalTouchSelectionInteractiveTarget(event.target)) {
+      return;
+    }
+    state.suppressMouseUntil = Date.now() + 900;
+  };
+
+  const handleMouseDown = (event: MouseEvent) => {
+    if (!terminalTouchSelectionIsNarrow() || Date.now() > state.suppressMouseUntil || terminalTouchSelectionInteractiveTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+
+  const handleContextMenu = (event: MouseEvent) => {
+    if (!terminalTouchSelectionIsNarrow() || Date.now() - state.lastLongPressAt > 1_200 || terminalTouchSelectionInteractiveTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+
+  const handleDocumentPointerDown = (event: PointerEvent) => {
+    if (!terminalTouchSelectionIsNarrow() || !toolbar || toolbar.hidden) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      hideTerminalTouchSelectionToolbar(term);
+      return;
+    }
+    if (toolbar.contains(target) || element.contains(target)) {
+      return;
+    }
+    hideTerminalTouchSelectionToolbar(term);
+  };
+
+  const handleDocumentFocusIn = (event: FocusEvent) => {
+    if (!toolbar || toolbar.hidden) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      hideTerminalTouchSelectionToolbar(term);
+      return;
+    }
+    if (toolbar.contains(target) || element.contains(target)) {
+      return;
+    }
+    hideTerminalTouchSelectionToolbar(term);
+  };
+
+  const handleElementFocusOut = () => {
+    hideToolbarOnBlur();
+  };
+
+  const handleToolbarClick = (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+    const button = target.closest<HTMLButtonElement>("button");
+    if (!button || !toolbar || !toolbar.contains(button)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (button.matches("[data-terminal-touch-copy]")) {
+      void copyTerminalTouchSelection(term, toolbar);
+      return;
+    }
+    if (button.matches("[data-terminal-touch-line]")) {
+      const range = term.getSelectionPosition();
+      if (range) {
+        term.selectLines(range.start.y, range.start.y);
+      }
+      return;
+    }
+    if (button.matches("[data-terminal-touch-paragraph]")) {
+      selectTerminalTouchParagraph(term);
+      return;
+    }
+    if (button.matches("[data-terminal-touch-all]")) {
+      term.selectAll();
+      return;
+    }
+    if (button.matches("[data-terminal-touch-keyboard]")) {
+      hideTerminalTouchSelectionToolbar(term);
+      term.focus();
+    }
+  };
+
+  element.addEventListener("pointerdown", handlePointerDown, { capture: true });
+  element.addEventListener("pointermove", handlePointerMove, { capture: true });
+  element.addEventListener("pointerup", handlePointerUp, { capture: true });
+  element.addEventListener("pointercancel", handlePointerCancel, { capture: true });
+  element.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
+  element.addEventListener("mousedown", handleMouseDown, { capture: true });
+  element.addEventListener("contextmenu", handleContextMenu, { capture: true });
+  element.addEventListener("focusout", handleElementFocusOut, { capture: true });
+  document.addEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
+  document.addEventListener("focusin", handleDocumentFocusIn, { capture: true });
+  window.addEventListener("blur", hideToolbarOnBlur);
+  toolbar?.addEventListener("click", handleToolbarClick);
+
+  terminalTouchSelectionCleanup = () => {
+    resetPointer();
+    element.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+    element.removeEventListener("pointermove", handlePointerMove, { capture: true });
+    element.removeEventListener("pointerup", handlePointerUp, { capture: true });
+    element.removeEventListener("pointercancel", handlePointerCancel, { capture: true });
+    element.removeEventListener("touchstart", handleTouchStart, { capture: true });
+    element.removeEventListener("mousedown", handleMouseDown, { capture: true });
+    element.removeEventListener("contextmenu", handleContextMenu, { capture: true });
+    element.removeEventListener("focusout", handleElementFocusOut, { capture: true });
+    document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
+    document.removeEventListener("focusin", handleDocumentFocusIn, { capture: true });
+    window.removeEventListener("blur", hideToolbarOnBlur);
+    toolbar?.removeEventListener("click", handleToolbarClick);
+    hideTerminalTouchSelectionToolbar(term);
+  };
+}
+
+function terminalTouchSelectionShouldHandle(term: XtermTerminal, event: PointerEvent) {
+  if (!terminalTouchSelectionIsNarrow() || event.pointerType === "mouse" || event.button !== 0) {
+    return false;
+  }
+  const target = event.target;
+  if (!(target instanceof Node) || !term.element?.contains(target)) {
+    return false;
+  }
+  return !terminalTouchSelectionInteractiveTarget(target);
+}
+
+function terminalTouchSelectionIsNarrow() {
+  return window.innerWidth <= 720 && (navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches);
+}
+
+function terminalTouchSelectionInteractiveTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  return Boolean(target.closest("[data-terminal-touch-selection-toolbar], [data-terminal-image-hint-path], .terminal-image-popover"));
+}
+
+function terminalTouchSelectionIsDoubleTap(state: TerminalTouchSelectionState, event: PointerEvent, now: number) {
+  if (!state.lastTapAt || now - state.lastTapAt > terminalTouchDoubleTapMs) {
+    return false;
+  }
+  return Math.hypot(event.clientX - state.lastTapX, event.clientY - state.lastTapY) <= terminalTouchDoubleTapTolerancePx;
+}
+
+function terminalWordSelectionAtPoint(term: XtermTerminal, clientX: number, clientY: number): TerminalWordSelection | null {
+  const cell = terminalBufferCellFromPoint(term, clientX, clientY);
+  if (!cell) {
+    return null;
+  }
+  return terminalWordSelectionAtCell(term, cell);
+}
+
+function terminalWordSelectionAtCell(term: XtermTerminal, cell: TerminalBufferCell): TerminalWordSelection | null {
+  const line = term.buffer.active.getLine(cell.row);
+  if (!line) {
+    return null;
+  }
+  const text = line.translateToString(false);
+  if (!text.trim()) {
+    return null;
+  }
+  let column = Math.max(0, Math.min(cell.column, term.cols - 1, text.length - 1));
+  if (!terminalTouchWordChar(text[column] || "")) {
+    column = terminalNearestWordColumn(text, column, term.cols);
+    if (column === -1) {
+      return null;
+    }
+  }
+
+  let start = column;
+  while (start > 0 && terminalTouchWordChar(text[start - 1] || "")) {
+    start -= 1;
+  }
+
+  let end = column + 1;
+  while (end < text.length && end < term.cols && terminalTouchWordChar(text[end] || "")) {
+    end += 1;
+  }
+
+  return {
+    column: start,
+    row: cell.row,
+    length: Math.max(1, end - start),
+  };
+}
+
+function terminalTouchWordChar(char: string) {
+  return Boolean(char.trim()) && !terminalTouchWordSeparators.has(char);
+}
+
+function terminalNearestWordColumn(text: string, column: number, cols: number) {
+  for (let offset = 1; offset <= 8; offset += 1) {
+    const left = column - offset;
+    if (left >= 0 && terminalTouchWordChar(text[left] || "")) {
+      return left;
+    }
+    const right = column + offset;
+    if (right < text.length && right < cols && terminalTouchWordChar(text[right] || "")) {
+      return right;
+    }
+  }
+  return -1;
+}
+
+function terminalBufferCellFromPoint(term: XtermTerminal, clientX: number, clientY: number): TerminalBufferCell | null {
+  const position = terminalBufferPositionFromPoint(term, clientX, clientY);
+  if (!position) {
+    return null;
+  }
+  return {
+    column: Math.max(0, position.x - 1),
+    row: Math.max(0, position.y - 1),
+  };
+}
+
+function selectTerminalTouchRange(term: XtermTerminal, anchor: TerminalBufferCell, focus: TerminalBufferCell) {
+  if (term.cols <= 0) {
+    return;
+  }
+  const anchorStart = anchor.row * term.cols + anchor.column;
+  const anchorEnd = anchorStart + 1;
+  const focusStart = focus.row * term.cols + focus.column;
+  const focusEnd = focusStart + 1;
+  const lower = Math.min(anchorStart, focusStart);
+  const upper = Math.max(anchorEnd, focusEnd);
+  const row = Math.floor(lower / term.cols);
+  const column = lower - row * term.cols;
+  term.select(column, row, Math.max(1, upper - lower));
+}
+
+function terminalTouchSelectionRows(term: XtermTerminal): TerminalLineSelectionAnchor | null {
+  const range = term.getSelectionPosition();
+  if (!range || term.buffer.active.length <= 0) {
+    return null;
+  }
+  const lastRow = term.buffer.active.length - 1;
+  const startRow = Math.max(0, Math.min(range.start.y, range.end.y, lastRow));
+  const endRow = Math.max(startRow, Math.min(Math.max(range.start.y, range.end.y), lastRow));
+  return { startRow, endRow };
+}
+
+function terminalTouchRowsDraggedUp(term: XtermTerminal, startY: number, clientY: number) {
+  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
+  if (!rows || term.rows <= 0) {
+    return 0;
+  }
+  const cellHeight = rows.getBoundingClientRect().height / term.rows;
+  if (!cellHeight) {
+    return 0;
+  }
+  return Math.max(0, Math.round((startY - clientY) / cellHeight));
+}
+
+function terminalTouchPointNearTop(term: XtermTerminal, clientY: number) {
+  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
+  if (!rows) {
+    return false;
+  }
+  const rect = rows.getBoundingClientRect();
+  return clientY - rect.top <= terminalTouchEdgeScrollPx;
+}
+
+function selectTerminalTouchParagraph(term: XtermTerminal) {
+  const range = term.getSelectionPosition();
+  if (!range) {
+    return;
+  }
+  const buffer = term.buffer.active;
+  let start = Math.max(0, Math.min(range.start.y, buffer.length - 1));
+  let end = Math.max(start, Math.min(range.end.y, buffer.length - 1));
+  while (start > 0 && !terminalBufferLineIsBlank(term, start - 1)) {
+    start -= 1;
+  }
+  while (end < buffer.length - 1 && !terminalBufferLineIsBlank(term, end + 1)) {
+    end += 1;
+  }
+  term.selectLines(start, end);
+}
+
+function terminalBufferLineIsBlank(term: XtermTerminal, row: number) {
+  const line = term.buffer.active.getLine(row);
+  if (!line) {
+    return true;
+  }
+  return !line.translateToString(false).trim();
+}
+
+function terminalTouchSelectionToolbar() {
+  return document.querySelector<HTMLElement>("[data-terminal-touch-selection-toolbar]");
+}
+
+function showTerminalTouchSelectionToolbar(term: XtermTerminal, clientX: number, clientY: number) {
+  const toolbar = terminalTouchSelectionToolbar();
+  const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
+  if (!toolbar || !wrap || xterm !== term) {
+    return;
+  }
+  const wrapRect = wrap.getBoundingClientRect();
+  const toolbarWidth = toolbar.offsetWidth || 244;
+  const toolbarHeight = toolbar.offsetHeight || 34;
+  const preferredTop = clientY - wrapRect.top - toolbarHeight - 12;
+  const fallbackTop = clientY - wrapRect.top + 12;
+  const left = Math.max(8, Math.min(clientX - wrapRect.left - toolbarWidth / 2, wrapRect.width - toolbarWidth - 8));
+  const top = Math.max(8, Math.min(preferredTop >= 8 ? preferredTop : fallbackTop, wrapRect.height - toolbarHeight - 8));
+  toolbar.style.setProperty("--terminal-touch-selection-left", `${left}px`);
+  toolbar.style.setProperty("--terminal-touch-selection-top", `${top}px`);
+  toolbar.dataset.state = "ready";
+  const copyButton = toolbar.querySelector<HTMLButtonElement>("[data-terminal-touch-copy]");
+  if (copyButton) {
+    copyButton.textContent = "Copy";
+  }
+  toolbar.hidden = false;
+}
+
+function hideTerminalTouchSelectionToolbar(term: XtermTerminal) {
+  const toolbar = terminalTouchSelectionToolbar();
+  if (!toolbar || xterm !== term) {
+    return;
+  }
+  toolbar.hidden = true;
+  toolbar.dataset.state = "hidden";
+}
+
+async function copyTerminalTouchSelection(term: XtermTerminal, toolbar: HTMLElement) {
+  const text = term.getSelection();
+  if (!text) {
+    return;
+  }
+  const copied = await writeClipboardText(text);
+  toolbar.dataset.state = copied ? "copied" : "copy-failed";
+  const copyButton = toolbar.querySelector<HTMLButtonElement>("[data-terminal-touch-copy]");
+  if (!copyButton) {
+    return;
+  }
+  copyButton.textContent = copied ? "Copied" : "Copy failed";
+  window.setTimeout(() => {
+    if (!toolbar.hidden && toolbar.dataset.state !== "hidden") {
+      copyButton.textContent = "Copy";
+      toolbar.dataset.state = "ready";
+    }
+  }, 900);
+}
+
+async function writeClipboardText(text: string) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.append(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  textarea.remove();
+  return copied;
 }
 
 function scheduleTerminalImageHintUpdate(term: XtermTerminal) {
@@ -3172,6 +3856,7 @@ async function ensureXterm(payload: SessionPayload) {
     term.open(host);
     bindTerminalImageTapHandler(term);
     bindTerminalImageHints(term);
+    bindTerminalTouchSelection(term);
     xtermFit = fit;
     term.onData((text) => {
       if (!xtermSessionId) {
@@ -3269,6 +3954,8 @@ function destroyXterm() {
   terminalImageTapCleanup = null;
   terminalImageHintsCleanup?.();
   terminalImageHintsCleanup = null;
+  terminalTouchSelectionCleanup?.();
+  terminalTouchSelectionCleanup = null;
   if (terminalImageHintAnimationFrame !== null) {
     window.cancelAnimationFrame(terminalImageHintAnimationFrame);
     terminalImageHintAnimationFrame = null;

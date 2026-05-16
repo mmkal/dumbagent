@@ -1542,6 +1542,45 @@ pre {
   stroke-width: 1.35;
 }
 
+.terminal-touch-selection-toolbar {
+  position: absolute;
+  left: var(--terminal-touch-selection-left, 12px);
+  top: var(--terminal-touch-selection-top, 12px);
+  z-index: 5;
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  align-items: center;
+  border: 1px solid rgba(238, 242, 247, 0.18);
+  border-radius: 8px;
+  background: rgba(16, 21, 27, 0.94);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
+  padding: 4px;
+}
+
+.terminal-touch-selection-toolbar[hidden] {
+  display: none;
+}
+
+.terminal-touch-selection-toolbar button {
+  min-width: 42px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #eef2f7;
+  padding: 0 8px;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0;
+}
+
+.terminal-touch-selection-toolbar button:hover,
+.terminal-touch-selection-toolbar button:focus-visible {
+  background: #26313d;
+  filter: none;
+  outline: none;
+}
+
 .terminal-image-popover {
   position: absolute;
   left: var(--terminal-image-popover-left, 12px);
