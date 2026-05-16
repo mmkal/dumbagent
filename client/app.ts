@@ -377,6 +377,8 @@ type TerminalLineSelectionAnchor = {
   endRow: number;
 };
 
+type TerminalLineDragHandle = "top" | "middle" | "bottom";
+
 type TerminalTouchSelectionState = {
   activePointerId: number | null;
   startX: number;
@@ -389,6 +391,7 @@ type TerminalTouchSelectionState = {
   anchor: TerminalBufferCell | null;
   lineExtending: boolean;
   lineAnchor: TerminalLineSelectionAnchor | null;
+  lineDragHandle: TerminalLineDragHandle | null;
   moved: boolean;
   suppressMouseUntil: number;
   lastTapAt: number;
@@ -2943,6 +2946,7 @@ function bindTerminalTouchSelection(term: XtermTerminal) {
     anchor: null,
     lineExtending: false,
     lineAnchor: null,
+    lineDragHandle: null,
     moved: false,
     suppressMouseUntil: 0,
     lastTapAt: 0,
@@ -2977,6 +2981,7 @@ function bindTerminalTouchSelection(term: XtermTerminal) {
     state.anchor = null;
     state.lineExtending = false;
     state.lineAnchor = null;
+    state.lineDragHandle = null;
     state.moved = false;
   };
 
@@ -2996,17 +3001,43 @@ function bindTerminalTouchSelection(term: XtermTerminal) {
       return false;
     }
     const rowsUp = terminalTouchRowsDraggedUp(term, state.startY, clientY);
+    const rowsDown = terminalTouchRowsDraggedDown(term, state.startY, clientY);
     const focus = terminalBufferCellFromPoint(term, clientX, clientY);
-    let startRow = lineAnchor.startRow - rowsUp;
-    if (focus && clientY < state.startY - terminalTouchMoveTolerancePx) {
-      startRow = Math.min(startRow, focus.row);
+    const dragHandle = state.lineDragHandle === "middle"
+      ? rowsUp > 0 ? "top" : "bottom"
+      : state.lineDragHandle;
+    let startRow = lineAnchor.startRow;
+    let endRow = lineAnchor.endRow;
+    if (rowsUp > 0 && dragHandle === "bottom") {
+      endRow = Math.max(lineAnchor.startRow, lineAnchor.endRow - rowsUp);
+      if (focus) {
+        endRow = Math.max(lineAnchor.startRow, Math.min(lineAnchor.endRow, focus.row));
+      }
+      state.lineExtending = endRow < lineAnchor.endRow || state.lineExtending;
+    } else if (rowsUp > 0) {
+      startRow = lineAnchor.startRow - rowsUp;
+      if (focus) {
+        startRow = Math.min(startRow, focus.row);
+      }
+      startRow = Math.max(0, startRow);
+      state.lineExtending = startRow < lineAnchor.startRow || state.lineExtending;
+    } else if (rowsDown > 0 && dragHandle === "top") {
+      startRow = Math.min(lineAnchor.endRow, lineAnchor.startRow + rowsDown);
+      if (focus) {
+        startRow = Math.min(lineAnchor.endRow, Math.max(lineAnchor.startRow, focus.row));
+      }
+      state.lineExtending = startRow > lineAnchor.startRow || state.lineExtending;
+    } else if (rowsDown > 0) {
+      endRow = Math.min(term.buffer.active.length - 1, lineAnchor.endRow + rowsDown);
+      if (focus) {
+        endRow = Math.max(lineAnchor.endRow, focus.row);
+      }
+      state.lineExtending = endRow > lineAnchor.endRow || state.lineExtending;
     }
-    startRow = Math.max(0, startRow);
-    state.lineExtending = startRow < lineAnchor.startRow || state.lineExtending;
     if (!state.lineExtending) {
       return false;
     }
-    term.selectLines(startRow, lineAnchor.endRow);
+    term.selectLines(startRow, endRow);
     showTerminalTouchSelectionToolbar(term, clientX, clientY);
     return true;
   };
@@ -3063,6 +3094,7 @@ function bindTerminalTouchSelection(term: XtermTerminal) {
     state.lastY = event.clientY;
     state.lineAnchor = terminalTouchSelectionRows(term);
     if (state.lineAnchor) {
+      state.lineDragHandle = terminalTouchLineDragHandle(term, state.lineAnchor, event.clientX, event.clientY);
       event.preventDefault();
       event.stopImmediatePropagation();
       return;
@@ -3436,6 +3468,36 @@ function terminalTouchRowsDraggedUp(term: XtermTerminal, startY: number, clientY
     return 0;
   }
   return Math.max(0, Math.round((startY - clientY) / cellHeight));
+}
+
+function terminalTouchRowsDraggedDown(term: XtermTerminal, startY: number, clientY: number) {
+  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
+  if (!rows || term.rows <= 0) {
+    return 0;
+  }
+  const cellHeight = rows.getBoundingClientRect().height / term.rows;
+  if (!cellHeight) {
+    return 0;
+  }
+  return Math.max(0, Math.round((clientY - startY) / cellHeight));
+}
+
+function terminalTouchLineDragHandle(term: XtermTerminal, anchor: TerminalLineSelectionAnchor, clientX: number, clientY: number): TerminalLineDragHandle {
+  if (anchor.startRow === anchor.endRow) {
+    return "middle";
+  }
+  const cell = terminalBufferCellFromPoint(term, clientX, clientY);
+  if (!cell) {
+    return "middle";
+  }
+  const midpoint = (anchor.startRow + anchor.endRow) / 2;
+  if (cell.row < midpoint) {
+    return "top";
+  }
+  if (cell.row > midpoint) {
+    return "bottom";
+  }
+  return "middle";
 }
 
 function terminalTouchPointNearTop(term: XtermTerminal, clientY: number) {

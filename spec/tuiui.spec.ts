@@ -1029,10 +1029,15 @@ test("long press selects terminal text on narrow touch screens", async ({ browse
   const targetRowIndex = rowBoxes.findIndex((row) => row.text.includes("selectable target word"));
   const targetRow = rowBoxes[targetRowIndex];
   const previousRow = rowBoxes[targetRowIndex - 1];
-  if (!targetRow || !previousRow) {
+  const nextRow = rowBoxes[targetRowIndex + 1];
+  if (!targetRow || !previousRow || !nextRow) {
     throw new Error("terminal rows were not rendered");
   }
   const target = { x: targetRow.x + 16, y: targetRow.y + targetRow.height / 2 };
+  const previous = { x: previousRow.x + 16, y: previousRow.y + previousRow.height / 2 };
+  const next = { x: nextRow.x + 16, y: nextRow.y + nextRow.height / 2 };
+  const targetRight = { x: targetRow.x + Math.min(targetRow.width - 16, 280), y: target.y };
+  const nextRight = { x: targetRight.x, y: next.y };
 
   await page.touchscreen.tap(target.x, target.y + targetRow.height * 6);
   await expect.poll(async () => {
@@ -1049,11 +1054,23 @@ test("long press selects terminal text on narrow touch screens", async ({ browse
     return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
   }).toEqual(["selectable"]);
 
-  await dragTouch(page, target, { x: target.x, y: previousRow.y + previousRow.height / 2 });
+  await dragTouch(page, target, next);
   await page.getByRole("button", { name: "Copy terminal selection" }).click();
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
-  }).toEqual(["selectable", "paragraph starts here\nselectable target word"]);
+  }).toEqual(["selectable", "selectable target word\nparagraph ends here"]);
+
+  await page.touchscreen.tap(target.x, target.y + targetRow.height * 6);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeHidden();
+  await page.waitForTimeout(terminalTouchDoubleTapTestGapMs);
+  await longPressTouch(page, target);
+  await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeVisible();
+
+  await dragTouch(page, target, previous);
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual(["selectable", "selectable target word\nparagraph ends here", "paragraph starts here\nselectable target word"]);
 
   await page.touchscreen.tap(target.x, target.y + targetRow.height * 6);
   await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeHidden();
@@ -1065,7 +1082,7 @@ test("long press selects terminal text on narrow touch screens", async ({ browse
   await page.getByRole("button", { name: "Copy terminal selection" }).click();
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
-  }).toEqual(["selectable", "paragraph starts here\nselectable target word", "selectable target word"]);
+  }).toEqual(["selectable", "selectable target word\nparagraph ends here", "paragraph starts here\nselectable target word", "selectable target word"]);
 
   await page.getByRole("button", { name: "Select terminal paragraph" }).click();
   await page.getByRole("button", { name: "Copy terminal selection" }).click();
@@ -1073,9 +1090,37 @@ test("long press selects terminal text on narrow touch screens", async ({ browse
     return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
   }).toEqual([
     "selectable",
+    "selectable target word\nparagraph ends here",
     "paragraph starts here\nselectable target word",
     "selectable target word",
     "paragraph starts here\nselectable target word\nparagraph ends here",
+  ]);
+
+  await dragTouch(page, previous, target);
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual([
+    "selectable",
+    "selectable target word\nparagraph ends here",
+    "paragraph starts here\nselectable target word",
+    "selectable target word",
+    "paragraph starts here\nselectable target word\nparagraph ends here",
+    "selectable target word\nparagraph ends here",
+  ]);
+
+  await dragTouch(page, nextRight, targetRight);
+  await page.getByRole("button", { name: "Copy terminal selection" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiClipboardWrites);
+  }).toEqual([
+    "selectable",
+    "selectable target word\nparagraph ends here",
+    "paragraph starts here\nselectable target word",
+    "selectable target word",
+    "paragraph starts here\nselectable target word\nparagraph ends here",
+    "selectable target word\nparagraph ends here",
+    "selectable target word",
   ]);
 
   await page.locator("body").click({ position: { x: 8, y: 8 } });
