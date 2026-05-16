@@ -424,6 +424,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
     return Response.json(readRecentCodexSessions());
   }
 
+  if (request.method === "GET" && url.pathname === "/api/image-preview") {
+    return createImagePreviewResponse(url);
+  }
+
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     return Response.json(sessionsListPayload(state));
   }
@@ -985,6 +989,61 @@ function nextAvailableAttachmentPath(directory: string, fileName: string) {
       return candidate;
     }
   }
+}
+
+function createImagePreviewResponse(url: URL) {
+  const requestedPath = url.searchParams.get("path") || "";
+  const cwd = url.searchParams.get("cwd") || "";
+  if (!requestedPath || requestedPath.includes("\0") || cwd.includes("\0")) {
+    return Response.json({ error: "A file path is required" }, { status: 400 });
+  }
+
+  if (!path.isAbsolute(requestedPath) && (!cwd || !path.isAbsolute(cwd))) {
+    return Response.json({ error: "Relative image paths require an absolute cwd" }, { status: 400 });
+  }
+
+  const filePath = path.isAbsolute(requestedPath) ? requestedPath : path.resolve(cwd, requestedPath);
+  const contentType = imagePreviewContentType(filePath);
+  if (!contentType) {
+    return Response.json({ error: "Only image file paths can be previewed" }, { status: 415 });
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return Response.json({ error: "Image not found" }, { status: 404 });
+  }
+  if (!stat.isFile()) {
+    return Response.json({ error: "Image not found" }, { status: 404 });
+  }
+
+  return new Response(Bun.file(filePath), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": contentType,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function imagePreviewContentType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  const contentTypes: Record<string, string> = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+  };
+  return contentTypes[extension] || "";
 }
 
 async function createSession(input: CreateSessionInput) {

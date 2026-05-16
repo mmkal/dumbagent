@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { once } from "node:events";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Browser, type Page, type TestInfo } from "@playwright/test";
+import { addPlugins } from "./playwright-plugin.ts";
 import { test as base } from "./test-helpers.ts";
 
 type FixtureContext = {
@@ -1010,6 +1011,38 @@ test("opens http links from terminal output in a new tab", async ({ page, ctx })
   }]);
 });
 
+test("opens absolute image paths from terminal output in a preview popover", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+  const imagePath = path.join(ctx.tempRoot, "terminal-preview.png");
+  fs.writeFileSync(imagePath, Buffer.from(tinyPngBase64, "base64"));
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill(`image-path-agent ${imagePath}`);
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText(imagePath);
+
+  const rowsBox = await page.locator(".xterm-rows").boundingBox();
+  if (!rowsBox) {
+    throw new Error("terminal rows were not rendered");
+  }
+  const linkX = rowsBox.x + 8;
+  const linkY = rowsBox.y + 8;
+  await page.touchscreen.tap(linkX, linkY);
+
+  const preview = page.getByTestId("terminal-image-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(imagePath);
+  await expect.poll(async () => {
+    return await preview.locator("img").evaluate((image: HTMLImageElement) => {
+      return {
+        complete: image.complete,
+        naturalWidth: image.naturalWidth,
+      };
+    });
+  }).toMatchObject({ complete: true, naturalWidth: 1 });
+});
+
 test("keeps the terminal shell fixed while xterm owns scrolling", async ({ page, ctx }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await launchFakeCodex(page, ctx);
@@ -1959,6 +1992,26 @@ async function isYamlEditorContentMarked(page: Page) {
   });
 }
 
+async function createTouchPage(browser: Browser, testInfo: TestInfo) {
+  const context = await browser.newContext({
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 720 },
+  });
+  const page = await addPlugins({
+    page: await context.newPage(),
+    testInfo,
+    plugins: [],
+  });
+  return {
+    page,
+    async [Symbol.asyncDispose]() {
+      await page[Symbol.asyncDispose]();
+      await context.close();
+    },
+  };
+}
+
 function countSerializedHtmlRows(html: string) {
   return html.match(/<div><span>/g)?.length || 0;
 }
@@ -1999,6 +2052,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "title-noise-ui"), titleNoiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "image-path-agent"), imagePathAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
@@ -2142,6 +2196,11 @@ setTimeout(() => {}, 100000);
 
 const linkAgentSource = `#!/usr/bin/env node
 process.stdout.write("https://example.test/docs?q=tuiui\\r\\n");
+setTimeout(() => {}, 100000);
+`;
+
+const imagePathAgentSource = `#!/usr/bin/env node
+process.stdout.write((process.argv[2] || "") + "\\r\\n");
 setTimeout(() => {}, 100000);
 `;
 

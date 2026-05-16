@@ -6,7 +6,7 @@ import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import jsonata from "@mmkal/jsonata/sync";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
+import type { ILink, ILinkHandler, ILinkProvider, Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import {
   detectChordBinary,
@@ -314,6 +314,8 @@ let xtermScreenVersion = -1;
 let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
+let terminalImageLinkProvider: { dispose(): void } | null = null;
+let terminalImageTapCleanup: (() => void) | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
 let voiceReadbackTimer: number | null = null;
@@ -340,6 +342,7 @@ const terminalHttpLinkHandler: ILinkHandler = {
   },
   allowNonHttpProtocols: false,
 };
+const terminalImagePathPattern = /(^|[\s"'`(<[{])((?:\/[^\s"'`<>]+|[A-Za-z]:\\[^\s"'`<>]+|\.{1,2}\/[^\s"'`<>]+|[A-Za-z0-9._-][^\s"'`<>]*)\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp))(?=$|[\s"'`<>),;:!?}\]])/gi;
 
 void boot();
 
@@ -2557,6 +2560,11 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
       <div class="terminal-xterm-wrap" data-testid="rendered-terminal">
         <div id="xterm-terminal" class="terminal-host"></div>
         <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
+        <div id="terminal-image-popover" class="terminal-image-popover xterm-hover" data-testid="terminal-image-preview" hidden>
+          <button type="button" class="terminal-image-popover-close" data-terminal-image-preview-close aria-label="Close image preview">×</button>
+          <img data-terminal-image-preview-image alt="" />
+          <code data-terminal-image-preview-path></code>
+        </div>
         <div class="terminal-redraw-overlay" data-testid="terminal-redraw-overlay" hidden>
           <div class="terminal-redraw-pill" role="status" aria-live="polite">
             <span class="terminal-redraw-spinner" aria-hidden="true"></span>
@@ -2572,6 +2580,7 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   if (snapshot) {
     snapshot.textContent = payload.renderedText;
   }
+  bindTerminalImagePreview(screen);
   xtermSyncQueue = xtermSyncQueue.then(() => syncXterm(payload)).catch(() => undefined);
   startTerminalAutoResize(payload.id);
 }
@@ -2597,6 +2606,269 @@ function openTerminalHttpLink(event: MouseEvent, uri: string) {
   }
   event.preventDefault();
   window.open(url.href, "_blank", "noopener,noreferrer");
+}
+
+function bindTerminalImagePreview(screen: HTMLElement) {
+  const popover = screen.querySelector<HTMLElement>("[data-testid='terminal-image-preview']");
+  if (!popover || popover.dataset.bound) {
+    return;
+  }
+  popover.dataset.bound = "true";
+  popover.querySelector<HTMLButtonElement>("[data-terminal-image-preview-close]")?.addEventListener("click", () => {
+    closeTerminalImagePreview(popover);
+  });
+  popover.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+}
+
+function bindTerminalImageTapHandler(term: XtermTerminal) {
+  terminalImageTapCleanup?.();
+  terminalImageTapCleanup = null;
+
+  const element = term.element;
+  if (!element) {
+    return;
+  }
+
+  const activateAtPoint = (event: Event, point: { clientX: number; clientY: number }) => {
+    const result = terminalImageLinkAtPoint(term, point.clientX, point.clientY);
+    const link = result.link;
+    if (!link) {
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    openTerminalImagePreviewAtPoint(point.clientX, point.clientY, link.text);
+    return true;
+  };
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    activateAtPoint(event, event);
+  };
+
+  const handleMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    activateAtPoint(event, event);
+  };
+
+  const handleTouchStart = (event: TouchEvent) => {
+    const touch = event.changedTouches[0] || event.touches[0];
+    if (!touch) {
+      return;
+    }
+    activateAtPoint(event, touch);
+  };
+
+  element.addEventListener("pointerdown", handlePointerDown, { capture: true });
+  element.addEventListener("mousedown", handleMouseDown, { capture: true });
+  element.addEventListener("touchstart", handleTouchStart, { capture: true, passive: false });
+  terminalImageTapCleanup = () => {
+    element.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+    element.removeEventListener("mousedown", handleMouseDown, { capture: true });
+    element.removeEventListener("touchstart", handleTouchStart, { capture: true });
+  };
+}
+
+function createTerminalImageLinkProvider(term: XtermTerminal): ILinkProvider {
+  return {
+    provideLinks(bufferLineNumber, callback) {
+      callback(computeTerminalImagePathLinks(term, bufferLineNumber));
+    },
+  };
+}
+
+function computeTerminalImagePathLinks(term: XtermTerminal, bufferLineNumber: number): ILink[] | undefined {
+  const windowedLine = terminalPathWindow(term, bufferLineNumber - 1);
+  if (!windowedLine) {
+    return undefined;
+  }
+
+  const links: ILink[] = [];
+  terminalImagePathPattern.lastIndex = 0;
+  for (let match = terminalImagePathPattern.exec(windowedLine.text); match; match = terminalImagePathPattern.exec(windowedLine.text)) {
+    const leadingText = match[1] || "";
+    const filePath = match[2] || "";
+    const startIndex = match.index + leadingText.length;
+    const start = windowedLine.positions[startIndex];
+    const end = windowedLine.positions[startIndex + filePath.length - 1];
+    if (!start || !end) {
+      continue;
+    }
+    links.push({
+      range: {
+        start: { x: start.x + 1, y: start.y + 1 },
+        end: { x: end.x + 1, y: end.y + 1 },
+      },
+      text: filePath,
+      decorations: {
+        pointerCursor: true,
+        underline: true,
+      },
+      activate(event, text) {
+        openTerminalImagePreview(event, text);
+      },
+    });
+  }
+
+  return links.length ? links : undefined;
+}
+
+function terminalPathWindow(term: XtermTerminal, lineIndex: number) {
+  const buffer = term.buffer.active;
+  if (!buffer.getLine(lineIndex)) {
+    return null;
+  }
+
+  let startLineIndex = lineIndex;
+  while (startLineIndex > 0 && terminalLineCanContinuePath(term, startLineIndex - 1)) {
+    startLineIndex -= 1;
+  }
+
+  let endLineIndex = lineIndex;
+  while (endLineIndex + 1 < buffer.length && terminalLineCanContinuePath(term, endLineIndex + 1)) {
+    endLineIndex += 1;
+  }
+
+  const positions: Array<{ x: number; y: number }> = [];
+  let text = "";
+  for (let index = startLineIndex; index <= endLineIndex; index += 1) {
+    const line = buffer.getLine(index);
+    if (!line) {
+      continue;
+    }
+    const raw = line.translateToString(true);
+    const firstNonSpace = raw.search(/\S/);
+    const start = firstNonSpace === -1 ? 0 : firstNonSpace;
+    for (let column = start; column < raw.length; column += 1) {
+      text += raw[column] || "";
+      positions.push({ x: column, y: index });
+    }
+  }
+
+  return { text, positions };
+}
+
+function terminalLineCanContinuePath(term: XtermTerminal, lineIndex: number) {
+  const line = term.buffer.active.getLine(lineIndex);
+  if (!line) {
+    return false;
+  }
+  if (line.isWrapped) {
+    return true;
+  }
+  const text = line.translateToString(true).trim();
+  if (!text || /\s/.test(text) || /["'`<>]/.test(text)) {
+    return false;
+  }
+  if (/^(?:\/|[A-Za-z]:\\)/.test(text)) {
+    return true;
+  }
+  if (/^(?:\.{1,2}\/|[A-Za-z0-9._-])/.test(text)) {
+    return true;
+  }
+  return /[\\/]/.test(text) || /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(text);
+}
+
+function terminalImageLinkAtPoint(term: XtermTerminal, clientX: number, clientY: number) {
+  const position = terminalBufferPositionFromPoint(term, clientX, clientY);
+  if (!position) {
+    return { position: null, link: null, links: [] };
+  }
+  const links = computeTerminalImagePathLinks(term, position.y) || [];
+  return {
+    position,
+    link: links.find((link) => terminalLinkContainsPosition(term, link, position)) || null,
+    links,
+  };
+}
+
+function terminalBufferPositionFromPoint(term: XtermTerminal, clientX: number, clientY: number) {
+  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
+  if (!rows) {
+    return null;
+  }
+  const rowsRect = rows.getBoundingClientRect();
+  const cellWidth = rowsRect.width / term.cols;
+  const cellHeight = rowsRect.height / term.rows;
+  if (!cellWidth || !cellHeight) {
+    return null;
+  }
+  const x = Math.min(Math.max(Math.ceil((clientX - rowsRect.left) / cellWidth), 1), term.cols);
+  const viewportRow = Math.min(Math.max(Math.ceil((clientY - rowsRect.top) / cellHeight), 1), term.rows);
+  return {
+    x,
+    y: term.buffer.active.viewportY + viewportRow,
+  };
+}
+
+function terminalLinkContainsPosition(term: XtermTerminal, link: ILink, position: { x: number; y: number }) {
+  const lower = link.range.start.y * term.cols + link.range.start.x;
+  const upper = link.range.end.y * term.cols + link.range.end.x;
+  const current = position.y * term.cols + position.x;
+  return lower <= current && current <= upper;
+}
+
+function openTerminalImagePreview(event: MouseEvent, filePath: string) {
+  event.preventDefault();
+  openTerminalImagePreviewAtPoint(event.clientX, event.clientY, filePath);
+}
+
+function openTerminalImagePreviewAtPoint(clientX: number, clientY: number, filePath: string) {
+  const popover = document.querySelector<HTMLElement>("[data-testid='terminal-image-preview']");
+  const image = popover?.querySelector<HTMLImageElement>("[data-terminal-image-preview-image]");
+  const pathLabel = popover?.querySelector<HTMLElement>("[data-terminal-image-preview-path]");
+  const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
+  if (!popover || !image || !pathLabel || !wrap) {
+    return;
+  }
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const maxLeft = Math.max(8, wrapRect.width - 288);
+  const maxTop = Math.max(8, wrapRect.height - 328);
+  const left = Math.max(8, Math.min(clientX - wrapRect.left, maxLeft));
+  const top = Math.max(8, Math.min(clientY - wrapRect.top + 14, maxTop));
+  popover.style.setProperty("--terminal-image-popover-left", `${left}px`);
+  popover.style.setProperty("--terminal-image-popover-top", `${top}px`);
+  popover.dataset.state = "loading";
+  image.onload = () => {
+    popover.dataset.state = "loaded";
+  };
+  image.onerror = () => {
+    popover.dataset.state = "error";
+  };
+  image.src = terminalImagePreviewUrl(filePath);
+  image.alt = filePath;
+  pathLabel.textContent = filePath;
+  popover.hidden = false;
+}
+
+function closeTerminalImagePreview(popover: HTMLElement) {
+  const image = popover.querySelector<HTMLImageElement>("[data-terminal-image-preview-image]");
+  if (image) {
+    image.removeAttribute("src");
+    image.alt = "";
+  }
+  popover.hidden = true;
+}
+
+function terminalImagePreviewUrl(filePath: string) {
+  const url = new URL("/api/image-preview", location.origin);
+  url.searchParams.set("path", filePath);
+  if (!terminalImagePathIsAbsolute(filePath) && activeSession?.cwd) {
+    url.searchParams.set("cwd", activeSession.cwd);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function terminalImagePathIsAbsolute(filePath: string) {
+  return filePath.startsWith("/") || /^[A-Za-z]:\\/.test(filePath);
 }
 
 async function ensureXterm(payload: SessionPayload) {
@@ -2628,7 +2900,9 @@ async function ensureXterm(payload: SessionPayload) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon(openTerminalHttpLink));
+    terminalImageLinkProvider = term.registerLinkProvider(createTerminalImageLinkProvider(term));
     term.open(host);
+    bindTerminalImageTapHandler(term);
     xtermFit = fit;
     term.onData((text) => {
       if (!xtermSessionId) {
@@ -2718,6 +2992,10 @@ function trimTerminalHtmlToRows(html: string, rows: number) {
 
 function destroyXterm() {
   cancelTerminalScrollAnimation();
+  terminalImageTapCleanup?.();
+  terminalImageTapCleanup = null;
+  terminalImageLinkProvider?.dispose();
+  terminalImageLinkProvider = null;
   xterm?.dispose();
   xterm = null;
   xtermFit = null;
