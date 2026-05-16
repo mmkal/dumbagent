@@ -22,6 +22,7 @@ export type VoiceTranscriptMessage = {
 export type VoiceRecognitionResult = {
   transcript: string;
   final: boolean;
+  finalTranscript: string;
 };
 
 export type VoiceRecognizer = {
@@ -38,7 +39,7 @@ export type VoiceRecognizer = {
 
 export type VoiceSpeaker = {
   supported: boolean;
-  speak: (text: string) => void;
+  speak: (text: string, events?: { onEnd: () => void }) => void;
   stop: () => void;
 };
 
@@ -60,21 +61,30 @@ export type VoiceLoop = {
   subscribe: (listener: (state: VoiceLoopState) => void) => () => void;
 };
 
+export type VoiceSubmitMode = "send-phrase" | "continuous";
+export type VoiceReadbackMode = "enabled" | "disabled";
+
 export function createVoiceLoop(input: {
   recognizer: VoiceRecognizer;
   speaker: VoiceSpeaker;
   sendTranscript: (text: string) => Promise<void>;
   now: () => number;
   minReadbackDelayMs: number;
+  submitMode: VoiceSubmitMode;
+  readbackMode: VoiceReadbackMode;
 }) {
   const listeners = new Set<(state: VoiceLoopState) => void>();
   const providerLabel = input.recognizer.label || "browser";
-  const unsupportedMessage = "Voice capture requires HTTPS and microphone support";
+  const recognizerSupported = input.recognizer.supported;
+  const speakerSupported = input.readbackMode === "disabled" || input.speaker.supported;
+  const unsupportedMessage = recognizerSupported
+    ? "Voice readback requires speech synthesis support"
+    : "Voice capture requires HTTPS and microphone support";
   const state: VoiceLoopState = {
-    status: input.recognizer.supported && input.speaker.supported ? "idle" : "unsupported",
+    status: recognizerSupported && speakerSupported ? "idle" : "unsupported",
     transcript: "",
     providerLabel,
-    message: input.recognizer.supported && input.speaker.supported
+    message: recognizerSupported && speakerSupported
       ? `Voice ready (${providerLabel})`
       : unsupportedMessage,
     awaitingReadback: false,
@@ -85,6 +95,10 @@ export function createVoiceLoop(input: {
   let readbackSpokenFor = "";
   let cancelled = false;
   let ignoreRecognizerEvents = false;
+  let listening = false;
+  let sendQueue = Promise.resolve();
+  let observedSessionStatus: VoiceSessionPayload["status"] = "idle";
+  let speakingReadback = false;
 
   function emit() {
     for (const listener of listeners) {
@@ -92,34 +106,169 @@ export function createVoiceLoop(input: {
     }
   }
 
+  function readyMessage() {
+    return `Voice ready (${providerLabel})`;
+  }
+
+  function listeningMessage() {
+    if (listensForInterruptsOnly()) {
+      return `Listening for silence commands (${providerLabel})`;
+    }
+    return input.submitMode === "continuous"
+      ? `Listening continuously (${providerLabel}); pause to send`
+      : `Listening (${providerLabel}); say ok send to send`;
+  }
+
+  function listensForInterruptsOnly() {
+    return input.submitMode === "continuous"
+      && input.readbackMode === "enabled"
+      && (state.awaitingReadback || speakingReadback || observedSessionStatus === "busy");
+  }
+
+  function handleInterruptTranscript(transcript: string) {
+    if (!voiceInterruptTextFromTranscript(transcript)) {
+      return false;
+    }
+    input.speaker.stop();
+    speakingReadback = false;
+    state.awaitingReadback = false;
+    state.status = listening ? "listening" : "idle";
+    state.message = listening ? listeningMessage() : "Speech stopped";
+    emit();
+    return true;
+  }
+
   async function acceptTranscript(transcript: string) {
     const text = transcript.trim();
     if (!text || cancelled) {
       state.status = "idle";
-      state.message = text ? "Listening cancelled" : "No speech detected";
+      state.message = text
+        ? input.submitMode === "continuous" ? "Voice mode stopped" : "Listening cancelled"
+        : "No speech detected";
       emit();
       return;
     }
-    state.status = "speaking";
+    state.status = input.readbackMode === "enabled" ? "speaking" : "transcribing";
     state.transcript = text;
-    state.message = "Sending voice prompt";
-    state.awaitingReadback = true;
-    pendingSessionId = "";
-    promptSentAt = input.now();
-    promptPayloadUpdatedAt = "";
-    readbackSpokenFor = "";
+    state.message = input.submitMode === "continuous" ? "Sending voice segment" : "Sending voice prompt";
+    state.awaitingReadback = input.readbackMode === "enabled";
+    if (input.readbackMode === "enabled") {
+      pendingSessionId = "";
+      promptSentAt = input.now();
+      promptPayloadUpdatedAt = "";
+      readbackSpokenFor = "";
+    }
     emit();
     await input.sendTranscript(text);
-    input.speaker.speak(createAcknowledgement(text));
-    state.status = "idle";
-    state.message = "Voice prompt sent";
+    if (input.readbackMode === "enabled") {
+      if (input.submitMode !== "continuous") {
+        input.speaker.speak(createAcknowledgement(text));
+      }
+      state.status = listening ? "listening" : "idle";
+      state.message = "Voice prompt sent";
+      emit();
+      return;
+    }
+    state.status = listening ? "listening" : "idle";
+    state.message = listening ? listeningMessage() : "Voice segment sent";
     emit();
+  }
+
+  function queueContinuousTranscript(transcript: string) {
+    const text = transcript.trim();
+    if (!text || cancelled) {
+      return;
+    }
+    sendQueue = sendQueue
+      .then(() => acceptTranscript(text))
+      .catch((error) => {
+        listening = false;
+        input.recognizer.cancel();
+        state.status = "error";
+        state.message = String(error instanceof Error ? error.message : error);
+        state.awaitingReadback = false;
+        emit();
+      });
+  }
+
+  function startRecognizer() {
+    input.recognizer.start({
+      onResult(result) {
+        if (ignoreRecognizerEvents || cancelled) {
+          return;
+        }
+        if (input.submitMode === "continuous") {
+          state.transcript = result.transcript;
+          if (listensForInterruptsOnly()) {
+            state.status = speakingReadback ? "speaking" : "listening";
+            state.message = listeningMessage();
+            emit();
+            if (result.final) {
+              handleInterruptTranscript(result.finalTranscript || result.transcript);
+            }
+            return;
+          }
+          state.status = result.final && result.finalTranscript.trim() ? "transcribing" : "listening";
+          state.message = state.status === "transcribing" ? "Sending voice segment" : listeningMessage();
+          emit();
+          if (result.final) {
+            queueContinuousTranscript(result.finalTranscript);
+          }
+          return;
+        }
+
+        const sendText = voiceSendTextFromTranscript(result.transcript);
+        state.transcript = sendText || result.transcript;
+        state.status = sendText ? "transcribing" : "listening";
+        state.message = sendText ? "Sending voice prompt" : listeningMessage();
+        emit();
+        if (sendText) {
+          ignoreRecognizerEvents = true;
+          listening = false;
+          input.recognizer.cancel();
+          void acceptTranscript(sendText).catch((error) => {
+            state.status = "error";
+            state.message = String(error instanceof Error ? error.message : error);
+            state.awaitingReadback = false;
+            emit();
+          });
+        }
+      },
+      onError(message) {
+        if (ignoreRecognizerEvents || cancelled) {
+          return;
+        }
+        listening = false;
+        state.status = "error";
+        state.message = message;
+        state.awaitingReadback = false;
+        emit();
+      },
+      onEnd() {
+        if (ignoreRecognizerEvents || cancelled) {
+          return;
+        }
+        if (input.submitMode === "continuous" && listening) {
+          state.status = "listening";
+          state.message = "Restarting voice capture";
+          emit();
+          startRecognizer();
+          return;
+        }
+        if (state.status === "listening") {
+          listening = false;
+          state.status = "idle";
+          state.message = state.transcript ? "Say ok send to send" : readyMessage();
+          emit();
+        }
+      },
+    });
   }
 
   const loop: VoiceLoop = {
     state,
     startListening() {
-      if (!input.recognizer.supported || !input.speaker.supported) {
+      if (!recognizerSupported || !speakerSupported) {
         state.status = "unsupported";
         state.message = unsupportedMessage;
         emit();
@@ -127,77 +276,44 @@ export function createVoiceLoop(input: {
       }
       cancelled = false;
       ignoreRecognizerEvents = false;
+      listening = true;
       state.status = "listening";
       state.transcript = "";
-      state.message = `Listening (${providerLabel}); say ok send to send`;
+      state.message = listeningMessage();
       emit();
-      input.recognizer.start({
-        onResult(result) {
-          if (ignoreRecognizerEvents || cancelled) {
-            return;
-          }
-          const sendText = voiceSendTextFromTranscript(result.transcript);
-          state.transcript = sendText || result.transcript;
-          state.status = sendText ? "transcribing" : "listening";
-          state.message = sendText ? "Sending voice prompt" : `Listening (${providerLabel}); say ok send to send`;
-          emit();
-          if (sendText) {
-            ignoreRecognizerEvents = true;
-            input.recognizer.cancel();
-            void acceptTranscript(sendText).catch((error) => {
-              state.status = "error";
-              state.message = String(error instanceof Error ? error.message : error);
-              state.awaitingReadback = false;
-              emit();
-            });
-          }
-        },
-        onError(message) {
-          if (ignoreRecognizerEvents || cancelled) {
-            return;
-          }
-          state.status = "error";
-          state.message = message;
-          state.awaitingReadback = false;
-          emit();
-        },
-        onEnd() {
-          if (ignoreRecognizerEvents || cancelled) {
-            return;
-          }
-          if (state.status === "listening") {
-            state.status = "idle";
-            state.message = state.transcript ? "Say ok send to send" : `Voice ready (${providerLabel})`;
-            emit();
-          }
-        },
-      });
+      startRecognizer();
     },
     stopListening() {
-      if (state.status === "listening" || state.status === "transcribing") {
+      if (listening || state.status === "listening" || state.status === "transcribing") {
         cancelled = true;
+        listening = false;
         input.recognizer.cancel();
         state.status = "idle";
-        state.message = "Listening cancelled";
+        state.message = input.submitMode === "continuous" ? "Voice mode stopped" : "Listening cancelled";
         emit();
       }
     },
     cancelListening() {
       cancelled = true;
+      listening = false;
       input.recognizer.cancel();
       state.status = "idle";
-      state.message = "Listening cancelled";
+      state.message = input.submitMode === "continuous" ? "Voice mode stopped" : "Listening cancelled";
       emit();
     },
     stopSpeaking() {
       input.speaker.stop();
-      if (state.status === "speaking") {
-        state.status = "idle";
-      }
-      state.message = "Speech stopped";
+      speakingReadback = false;
+      state.awaitingReadback = false;
+      state.status = listening ? "listening" : "idle";
+      state.message = listening ? listeningMessage() : "Speech stopped";
       emit();
     },
     observePayload(payload) {
+      observedSessionStatus = payload.status;
+      if (input.readbackMode === "disabled") {
+        return;
+      }
       if (!state.awaitingReadback) {
         return;
       }
@@ -223,13 +339,21 @@ export function createVoiceLoop(input: {
       }
       readbackSpokenFor = `${payload.updatedAt}:${text}`;
       state.awaitingReadback = false;
+      speakingReadback = true;
       state.status = "speaking";
       state.message = "Reading result";
       emit();
-      input.speaker.speak(text);
-      state.status = "idle";
-      state.message = "Readback complete";
-      emit();
+      input.speaker.speak(text, {
+        onEnd() {
+          if (!speakingReadback) {
+            return;
+          }
+          speakingReadback = false;
+          state.status = listening ? "listening" : "idle";
+          state.message = listening ? listeningMessage() : "Readback complete";
+          emit();
+        },
+      });
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -251,9 +375,19 @@ export function voiceSendTextFromTranscript(transcript: string) {
   return transcript.slice(0, match.index).trim().replace(/[,\s]+$/, "");
 }
 
+export function voiceInterruptTextFromTranscript(transcript: string) {
+  const text = transcript.trim();
+  if (!text) {
+    return "";
+  }
+  const match = text.match(/\b(?:shut up|silence|stop talking|stop speaking|quiet)\b/i);
+  return match?.[0] || "";
+}
+
 export function createBrowserVoiceRecognizer(): VoiceRecognizer {
   const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   let recognition: any = null;
+  let lastFinalTranscript = "";
   return {
     supported: Boolean(SpeechRecognition),
     label: "browser",
@@ -262,19 +396,39 @@ export function createBrowserVoiceRecognizer(): VoiceRecognizer {
         handlers.onError("Speech recognition is not supported in this browser");
         return;
       }
+      lastFinalTranscript = "";
       recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = navigator.language || "en-US";
       recognition.onresult = (event: any) => {
-        let transcript = "";
-        let final = false;
+        const finalParts: string[] = [];
+        const interimParts: string[] = [];
         for (let index = 0; index < event.results.length; index += 1) {
           const result = event.results[index];
-          transcript += String(result?.[0]?.transcript || "");
-          final = final || Boolean(result?.isFinal);
+          const text = String(result?.[0]?.transcript || "").trim();
+          if (!text) {
+            continue;
+          }
+          if (result?.isFinal) {
+            finalParts.push(text);
+          } else {
+            interimParts.push(text);
+          }
         }
-        handlers.onResult({ transcript, final });
+        const finalTranscript = finalParts.join(" ").trim();
+        const transcript = [...finalParts, ...interimParts].join(" ").trim();
+        const nextFinalTranscript = finalTranscript && finalTranscript !== lastFinalTranscript
+          ? transcriptSuffix(finalTranscript, lastFinalTranscript)
+          : "";
+        if (nextFinalTranscript) {
+          lastFinalTranscript = finalTranscript;
+        }
+        handlers.onResult({
+          transcript,
+          final: Boolean(nextFinalTranscript),
+          finalTranscript: nextFinalTranscript,
+        });
       };
       recognition.onerror = (event: any) => {
         handlers.onError(String(event.error || "Speech recognition failed"));
@@ -292,6 +446,18 @@ export function createBrowserVoiceRecognizer(): VoiceRecognizer {
       recognition = null;
     },
   };
+}
+
+function transcriptSuffix(transcript: string, previousTranscript: string) {
+  const text = transcript.trim();
+  const previous = previousTranscript.trim();
+  if (!previous) {
+    return text;
+  }
+  if (!text.toLowerCase().startsWith(previous.toLowerCase())) {
+    return text;
+  }
+  return text.slice(previous.length).trim();
 }
 
 export function createPreferredBrowserVoiceRecognizer(): VoiceRecognizer {
@@ -468,13 +634,14 @@ function handleRealtimeTranscriptionEvent(
   if (event.type === "conversation.item.input_audio_transcription.delta") {
     const itemId = String(event.item_id || "current");
     updateRealtimeItemTranscript(session, itemId, `${session.itemTranscripts.get(itemId) || ""}${String(event.delta || "")}`);
-    handlers.onResult({ transcript: session.transcript, final: false });
+    handlers.onResult({ transcript: session.transcript, final: false, finalTranscript: "" });
     return;
   }
   if (event.type === "conversation.item.input_audio_transcription.completed") {
     const itemId = String(event.item_id || "current");
-    updateRealtimeItemTranscript(session, itemId, String(event.transcript || session.itemTranscripts.get(itemId) || ""));
-    handlers.onResult({ transcript: session.transcript, final: false });
+    const finalTranscript = String(event.transcript || session.itemTranscripts.get(itemId) || "").trim();
+    updateRealtimeItemTranscript(session, itemId, finalTranscript);
+    handlers.onResult({ transcript: session.transcript, final: true, finalTranscript });
     return;
   }
   if (event.type === "error") {
@@ -517,9 +684,12 @@ function closeRealtimeTranscriptionSession(session: RealtimeTranscriptionBrowser
 export function createBrowserVoiceSpeaker(): VoiceSpeaker {
   return {
     supported: "speechSynthesis" in window && "SpeechSynthesisUtterance" in window,
-    speak(text) {
+    speak(text, events) {
       window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.onend = () => events?.onEnd();
+      utterance.onerror = () => events?.onEnd();
+      window.speechSynthesis.speak(utterance);
     },
     stop() {
       window.speechSynthesis.cancel();

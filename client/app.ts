@@ -277,6 +277,8 @@ declare global {
       recognizer?: VoiceRecognizer;
       speaker?: VoiceSpeaker;
       minReadbackDelayMs?: number;
+      submitMode?: "send-phrase" | "continuous";
+      readbackMode?: "enabled" | "disabled";
       now?: () => number;
     };
   }
@@ -2097,6 +2099,8 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
     speaker: window.__tuiuiVoiceTest?.speaker || createBrowserVoiceSpeaker(),
     now: window.__tuiuiVoiceTest?.now || (() => Date.now()),
     minReadbackDelayMs: Number(window.__tuiuiVoiceTest?.minReadbackDelayMs || 700),
+    submitMode: window.__tuiuiVoiceTest?.submitMode || "continuous",
+    readbackMode: window.__tuiuiVoiceTest?.readbackMode || "enabled",
     async sendTranscript(text) {
       setPromptboxValue(textarea, text);
       await clientApi.sessions.send({ sessionId, text, submit: true });

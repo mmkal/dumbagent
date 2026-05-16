@@ -4,6 +4,7 @@ import {
   createFallbackVoiceRecognizer,
   createReadbackText,
   createVoiceLoop,
+  voiceInterruptTextFromTranscript,
   voiceSendTextFromTranscript,
   type VoiceRecognizer,
   type VoiceSpeaker,
@@ -19,13 +20,15 @@ test("voice loop sends final transcripts and reads back after the session return
     speaker: fakeSpeaker(spoken),
     now: () => now,
     minReadbackDelayMs: 0,
+    submitMode: "send-phrase",
+    readbackMode: "enabled",
     async sendTranscript(text) {
       sent.push(text);
     },
   });
 
   loop.startListening();
-  recognizer.emit({ transcript: "what is one plus two ok send", final: false });
+  recognizer.emit({ transcript: "what is one plus two ok send", final: false, finalTranscript: "" });
   await Promise.resolve();
 
   expect(sent).toEqual(["what is one plus two"]);
@@ -75,12 +78,14 @@ test("voice loop waits for a fresh provider assistant message before readback", 
     speaker: fakeSpeaker(spoken),
     now: () => now,
     minReadbackDelayMs: 0,
+    submitMode: "send-phrase",
+    readbackMode: "enabled",
     async sendTranscript() {
     },
   });
 
   loop.startListening();
-  recognizer.emit({ transcript: "what is the status okay send", final: false });
+  recognizer.emit({ transcript: "what is the status okay send", final: false, finalTranscript: "" });
   await Promise.resolve();
 
   now = Date.parse("2026-05-11T10:00:02.000Z");
@@ -141,13 +146,15 @@ test("voice loop waits for the ok send phrase before sending captured text", asy
     speaker: fakeSpeaker([]),
     now: () => 1,
     minReadbackDelayMs: 0,
+    submitMode: "send-phrase",
+    readbackMode: "enabled",
     async sendTranscript(text) {
       sent.push(text);
     },
   });
 
   loop.startListening();
-  recognizer.emit({ transcript: "draft prompt", final: false });
+  recognizer.emit({ transcript: "draft prompt", final: false, finalTranscript: "" });
   await Promise.resolve();
 
   expect(sent).toEqual([]);
@@ -156,7 +163,7 @@ test("voice loop waits for the ok send phrase before sending captured text", asy
     transcript: "draft prompt",
   });
 
-  recognizer.emit({ transcript: "draft prompt ok send", final: false });
+  recognizer.emit({ transcript: "draft prompt ok send", final: false, finalTranscript: "" });
   await Promise.resolve();
 
   expect(sent).toEqual(["draft prompt"]);
@@ -166,10 +173,191 @@ test("voice loop waits for the ok send phrase before sending captured text", asy
   });
 });
 
+test("continuous voice loop sends finalized speech segments without a send phrase", async () => {
+  const sent: string[] = [];
+  const spoken: string[] = [];
+  const recognizer = fakeRecognizer("Realtime");
+  const loop = createVoiceLoop({
+    recognizer,
+    speaker: fakeSpeaker(spoken),
+    now: () => 1,
+    minReadbackDelayMs: 0,
+    submitMode: "continuous",
+    readbackMode: "disabled",
+    async sendTranscript(text) {
+      sent.push(text);
+    },
+  });
+
+  loop.startListening();
+  recognizer.emit({ transcript: "draft prompt", final: false, finalTranscript: "" });
+  await Promise.resolve();
+
+  expect(sent).toEqual([]);
+  expect(loop.state).toMatchObject({
+    status: "listening",
+    transcript: "draft prompt",
+    awaitingReadback: false,
+  });
+
+  recognizer.emit({ transcript: "draft prompt", final: true, finalTranscript: "draft prompt" });
+  await flushVoiceQueue();
+
+  expect(sent).toEqual(["draft prompt"]);
+  expect(spoken).toEqual([]);
+  expect(loop.state).toMatchObject({
+    status: "listening",
+    awaitingReadback: false,
+  });
+
+  recognizer.emit({ transcript: "draft prompt next prompt", final: true, finalTranscript: "next prompt" });
+  await flushVoiceQueue();
+
+  expect(sent).toEqual(["draft prompt", "next prompt"]);
+  expect(loop.state.message).toContain("Listening continuously");
+});
+
+test("continuous readback mode ignores normal speech while busy and accepts silence commands", async () => {
+  let now = Date.parse("2026-05-11T10:00:00.000Z");
+  const sent: string[] = [];
+  const spoken: string[] = [];
+  const recognizer = fakeRecognizer("Realtime");
+  const loop = createVoiceLoop({
+    recognizer,
+    speaker: fakeSpeaker(spoken),
+    now: () => now,
+    minReadbackDelayMs: 0,
+    submitMode: "continuous",
+    readbackMode: "enabled",
+    async sendTranscript(text) {
+      sent.push(text);
+    },
+  });
+
+  loop.startListening();
+  recognizer.emit({ transcript: "first prompt", final: true, finalTranscript: "first prompt" });
+  await flushVoiceQueue();
+
+  expect(sent).toEqual(["first prompt"]);
+  expect(spoken).toEqual([]);
+  expect(loop.state).toMatchObject({
+    awaitingReadback: true,
+  });
+
+  loop.observePayload({
+    id: "session-1",
+    status: "busy",
+    updatedAt: "2026-05-11T10:00:01.000Z",
+    renderedText: "working",
+    sdk: {
+      provider: "codex",
+      summary: null,
+    },
+  });
+  recognizer.emit({ transcript: "do not send this", final: true, finalTranscript: "do not send this" });
+  await flushVoiceQueue();
+
+  expect(sent).toEqual(["first prompt"]);
+  expect(loop.state.message).toContain("Listening for silence commands");
+
+  recognizer.emit({ transcript: "silence", final: true, finalTranscript: "silence" });
+  await flushVoiceQueue();
+  now += 1_000;
+  loop.observePayload({
+    id: "session-1",
+    status: "idle",
+    updatedAt: "2026-05-11T10:00:02.000Z",
+    renderedText: "",
+    sdk: {
+      provider: "codex",
+      summary: {
+        latestUserText: "first prompt",
+        latestAssistantText: "answer that should stay silent",
+        transcript: [
+          message("user", "first prompt", "2026-05-11T10:00:00.100Z"),
+          message("assistant", "answer that should stay silent", "2026-05-11T10:00:02.000Z"),
+        ],
+      },
+    },
+  });
+
+  expect(spoken).toEqual(["[stop]"]);
+
+  recognizer.emit({ transcript: "second prompt", final: true, finalTranscript: "second prompt" });
+  await flushVoiceQueue();
+
+  expect(sent).toEqual(["first prompt", "second prompt"]);
+});
+
+test("continuous readback mode only resumes normal input after speech ends or is interrupted", async () => {
+  let now = Date.parse("2026-05-11T10:00:00.000Z");
+  const sent: string[] = [];
+  const spoken: string[] = [];
+  const recognizer = fakeRecognizer("Realtime");
+  const speaker = fakeSpeaker(spoken, { autoEnd: false });
+  const loop = createVoiceLoop({
+    recognizer,
+    speaker,
+    now: () => now,
+    minReadbackDelayMs: 0,
+    submitMode: "continuous",
+    readbackMode: "enabled",
+    async sendTranscript(text) {
+      sent.push(text);
+    },
+  });
+
+  loop.startListening();
+  recognizer.emit({ transcript: "first prompt", final: true, finalTranscript: "first prompt" });
+  await flushVoiceQueue();
+  now += 1_000;
+  loop.observePayload({
+    id: "session-1",
+    status: "idle",
+    updatedAt: "2026-05-11T10:00:02.000Z",
+    renderedText: "",
+    sdk: {
+      provider: "codex",
+      summary: {
+        latestUserText: "first prompt",
+        latestAssistantText: "spoken answer",
+        transcript: [
+          message("user", "first prompt", "2026-05-11T10:00:00.100Z"),
+          message("assistant", "spoken answer", "2026-05-11T10:00:02.000Z"),
+        ],
+      },
+    },
+  });
+
+  expect(spoken).toEqual(["spoken answer"]);
+  expect(loop.state).toMatchObject({
+    status: "speaking",
+  });
+
+  recognizer.emit({ transcript: "do not send while speaking", final: true, finalTranscript: "do not send while speaking" });
+  await flushVoiceQueue();
+  expect(sent).toEqual(["first prompt"]);
+
+  recognizer.emit({ transcript: "shut up", final: true, finalTranscript: "shut up" });
+  await flushVoiceQueue();
+  expect(spoken).toEqual(["spoken answer", "[stop]"]);
+  expect(loop.state.message).toContain("Listening continuously");
+
+  recognizer.emit({ transcript: "second prompt", final: true, finalTranscript: "second prompt" });
+  await flushVoiceQueue();
+  expect(sent).toEqual(["first prompt", "second prompt"]);
+});
+
 test("voice send phrase strips ok send variants", () => {
   expect(voiceSendTextFromTranscript("check status ok send")).toBe("check status");
   expect(voiceSendTextFromTranscript("check status okay, send")).toBe("check status");
   expect(voiceSendTextFromTranscript("check status")).toBe("");
+});
+
+test("voice interrupt phrase detects silence commands", () => {
+  expect(voiceInterruptTextFromTranscript("please shut up now")).toBe("shut up");
+  expect(voiceInterruptTextFromTranscript("silence")).toBe("silence");
+  expect(voiceInterruptTextFromTranscript("send this to the agent")).toBe("");
 });
 
 test("voice loop can be tested without a microphone or system speech", () => {
@@ -180,6 +368,8 @@ test("voice loop can be tested without a microphone or system speech", () => {
     speaker: fakeSpeaker(spoken),
     now: () => 1,
     minReadbackDelayMs: 0,
+    submitMode: "send-phrase",
+    readbackMode: "enabled",
     async sendTranscript() {
       throw new Error("cancelled transcripts should not send");
     },
@@ -187,7 +377,7 @@ test("voice loop can be tested without a microphone or system speech", () => {
 
   loop.startListening();
   loop.cancelListening();
-  recognizer.emit({ transcript: "ignore this", final: true });
+  recognizer.emit({ transcript: "ignore this", final: true, finalTranscript: "ignore this" });
 
   expect(spoken).toEqual([]);
   expect(loop.state).toMatchObject({
@@ -200,7 +390,7 @@ test("voice recognizer falls back when realtime setup fails before transcription
   const primary = fakeRecognizer("Realtime");
   const fallback = fakeRecognizer("browser");
   const recognizer = createFallbackVoiceRecognizer(primary, fallback);
-  const results: Array<{ transcript: string; final: boolean }> = [];
+  const results: Array<{ transcript: string; final: boolean; finalTranscript: string }> = [];
   const errors: string[] = [];
 
   recognizer.start({
@@ -215,11 +405,11 @@ test("voice recognizer falls back when realtime setup fails before transcription
   });
 
   primary.fail("OPENAI_API_KEY is not configured");
-  fallback.emit({ transcript: "tell codex to check the PR", final: true });
+  fallback.emit({ transcript: "tell codex to check the PR", final: true, finalTranscript: "tell codex to check the PR" });
 
   expect(errors).toEqual([]);
   expect(results).toEqual([
-    { transcript: "tell codex to check the PR", final: true },
+    { transcript: "tell codex to check the PR", final: true, finalTranscript: "tell codex to check the PR" },
   ]);
   expect(recognizer).toMatchObject({
     supported: true,
@@ -316,7 +506,7 @@ function message(role: string, text: string, createdAt: string) {
 function fakeRecognizer(label = "browser") {
   let handlers: Parameters<VoiceRecognizer["start"]>[0] | null = null;
   const recognizer: VoiceRecognizer & {
-    emit: (result: { transcript: string; final: boolean }) => void;
+    emit: (result: { transcript: string; final: boolean; finalTranscript: string }) => void;
     fail: (message: string) => void;
   } = {
     supported: true,
@@ -339,14 +529,31 @@ function fakeRecognizer(label = "browser") {
   return recognizer;
 }
 
-function fakeSpeaker(spoken: string[]): VoiceSpeaker {
+function fakeSpeaker(spoken: string[], options: { autoEnd?: boolean } = {}): VoiceSpeaker & { end: () => void } {
+  let onEnd: (() => void) | null = null;
   return {
     supported: true,
-    speak(text) {
+    speak(text, events) {
       spoken.push(text);
+      onEnd = events?.onEnd || null;
+      if (options.autoEnd !== false) {
+        onEnd?.();
+        onEnd = null;
+      }
     },
     stop() {
       spoken.push("[stop]");
+      onEnd = null;
+    },
+    end() {
+      onEnd?.();
+      onEnd = null;
     },
   };
+}
+
+async function flushVoiceQueue() {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
 }

@@ -824,20 +824,13 @@ test("sends named key chords separately from the composer", async ({ page, ctx }
   await expect.poll(async () => (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text).toBe("\r");
 });
 
-test("voice input sends a transcript after ok send and reads back the idle result without a real microphone", async ({ page, ctx }) => {
-  const sdkRefreshRequests: string[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().includes("/rpc/sessions/sdkRefresh")) {
-      sdkRefreshRequests.push(request.url());
-    }
-  });
-
+test("voice input sends finalized speech continuously without a real microphone", async ({ page, ctx }) => {
   await page.addInitScript(() => {
     const spoken: string[] = [];
     let handlers: any = null;
     (window as any).__voiceSpoken = spoken;
     (window as any).__voiceEmit = (transcript: string, final = true) => {
-      handlers?.onResult({ transcript, final });
+      handlers?.onResult({ transcript, final, finalTranscript: final ? transcript : "" });
     };
     (window as any).__tuiuiVoiceTest = {
       minReadbackDelayMs: 0,
@@ -854,8 +847,9 @@ test("voice input sends a transcript after ok send and reads back the idle resul
       },
       speaker: {
         supported: true,
-        speak(text: string) {
+        speak(text: string, events?: { onEnd: () => void }) {
           spoken.push(text);
+          events?.onEnd();
         },
         stop() {
           spoken.push("[stop]");
@@ -870,24 +864,18 @@ test("voice input sends a transcript after ok send and reads back the idle resul
   await expect(page.getByTestId("voice-status")).toContainText("Listening");
   await expect(page.getByRole("button", { name: "Cancel voice input" })).toBeVisible();
   await page.evaluate(() => {
-    (window as any).__voiceEmit("what is one plus two ok send", false);
+    (window as any).__voiceEmit("what is one plus two");
   });
 
   await expect.poll(async () => {
     return (await fetchSessionPayload(page)).stdinEvents.at(-1)?.text;
   }).toBe("what is one plus two");
   await expect(page.getByTestId("rendered-terminal")).toContainText("three");
+  await expect(page.getByRole("button", { name: "Cancel voice input" })).toBeVisible();
   await expect.poll(async () => {
     return await page.evaluate(() => (window as any).__voiceSpoken);
   }).toEqual(expect.arrayContaining([expect.stringContaining("three")]));
-  expect(sdkRefreshRequests.length).toBeGreaterThan(1);
-  await expect.poll(async () => {
-    return await page.evaluate(() => (window as any).__voiceSpoken);
-  }).not.toEqual(expect.arrayContaining([expect.stringContaining("penultimate answer")]));
-  await expect.poll(async () => {
-    return await page.evaluate(() => (window as any).__voiceSpoken[0]);
-  }).toContain("Sent: what is one plus two");
-  await expect(page.getByTestId("voice-status")).toContainText("Readback complete");
+  await expect(page.getByTestId("voice-status")).toContainText("Listening continuously");
 });
 
 test("disables voice controls when browser voice APIs are unavailable", async ({ page, ctx }) => {
