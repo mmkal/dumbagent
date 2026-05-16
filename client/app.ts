@@ -461,7 +461,13 @@ function renderIdleNotificationControl() {
 }
 
 function idleNotificationControlIcon(enabled: boolean) {
-  return enabled ? "🔔" : "🔕";
+  return `
+    <svg class="idle-notification-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M10.3 21a2 2 0 0 0 3.4 0"></path>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"></path>
+      ${enabled ? "" : `<path class="idle-notification-icon-slash" d="M4 4l16 16"></path>`}
+    </svg>
+  `;
 }
 
 function bindIdleNotificationControls() {
@@ -500,7 +506,7 @@ function disableIdleNotifications() {
 function updateIdleNotificationControls() {
   const state = idleNotifications.getControlState();
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-action='toggle-idle-notifications']")) {
-    button.textContent = idleNotificationControlIcon(state.enabled);
+    button.innerHTML = idleNotificationControlIcon(state.enabled);
     button.title = state.description;
     button.dataset.notificationPermission = state.permission;
     button.setAttribute("aria-pressed", String(state.enabled));

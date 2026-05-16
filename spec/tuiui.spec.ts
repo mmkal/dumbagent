@@ -76,13 +76,15 @@ test("requests idle notification permission only after the explicit control is c
 
   await page.goto(ctx.baseUrl);
 
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔕");
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon")).toBeVisible();
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon-slash")).toBeVisible();
   await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: off");
   expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(0);
 
   await page.getByTestId("idle-notification-toggle").click();
 
-  await expect(page.getByTestId("idle-notification-toggle")).toHaveText("🔔");
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon")).toBeVisible();
+  await expect(page.getByTestId("idle-notification-toggle").locator(".idle-notification-icon-slash")).toHaveCount(0);
   await expect(page.getByTestId("idle-notification-toggle")).toHaveAttribute("aria-label", "Idle alerts: browser");
   expect(await page.evaluate(() => (window as any).__tuiuiNotificationTest.requests)).toBe(1);
   expect(await page.evaluate(() => localStorage.getItem("tuiui-browser-idle-notifications-enabled"))).toBe("1");
@@ -1180,6 +1182,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
         horizontalScrolls: doc.scrollWidth > doc.clientWidth + 1,
         screenOverflowY: getComputedStyle(screen).overflowY,
         terminalViewportOverflowY: terminalViewport ? getComputedStyle(terminalViewport).overflowY : "",
+        scrollButtonUserSelect: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).userSelect,
       };
     });
   }).toMatchObject({
@@ -1189,6 +1192,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     horizontalScrolls: false,
     screenOverflowY: "hidden",
     terminalViewportOverflowY: "hidden",
+    scrollButtonUserSelect: "none",
   });
 
   await expect(page.getByRole("button", { name: "Scroll terminal up" })).toBeVisible();
@@ -1217,6 +1221,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
       composerBorder: getComputedStyle(document.querySelector<HTMLElement>(".composer")!).borderTopWidth,
       screenTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".screen")!).touchAction,
       scrollButtonTouchAction: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).touchAction,
+      scrollButtonUserSelect: getComputedStyle(document.querySelector<HTMLElement>(".terminal-scroll-button")!).userSelect,
       terminalFontSize: getComputedStyle(document.querySelector<HTMLElement>(".terminal-xterm-wrap")!).fontSize,
       textareaFontSize: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).fontSize,
       textareaTouchAction: getComputedStyle(document.querySelector<HTMLElement>("textarea")!).touchAction,
@@ -1229,6 +1234,7 @@ test("keeps mobile session chrome compact without document scrolling", async ({ 
     composerBorder: "0px",
     screenTouchAction: "manipulation",
     scrollButtonTouchAction: "manipulation",
+    scrollButtonUserSelect: "none",
     terminalFontSize: "11px",
     textareaFontSize: "16px",
     textareaTouchAction: "manipulation",

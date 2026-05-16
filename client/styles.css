@@ -149,6 +149,21 @@ button:disabled {
   white-space: nowrap;
 }
 
+.idle-notification-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.idle-notification-icon-slash {
+  stroke-width: 2.3;
+}
+
 .idle-notification-toggle[aria-pressed="true"][data-notification-permission="granted"] {
   border-color: #647028;
   background: #d8f36a;
@@ -1375,6 +1390,9 @@ textarea:focus {
   color: #c8d2df;
   font-size: 11px;
   touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .screen {
