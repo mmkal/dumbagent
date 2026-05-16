@@ -2908,7 +2908,7 @@ function updateTerminalImageHints(term: XtermTerminal) {
       }
       seen.add(key);
       const viewportRow = link.range.end.y - term.buffer.active.viewportY;
-      const iconSize = 12;
+      const iconSize = 14;
       const left = Math.max(0, Math.min(
         rowsRect.left - wrapRect.left + link.range.end.x * cellWidth + 1,
         wrapRect.width - iconSize,

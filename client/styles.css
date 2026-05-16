@@ -1498,8 +1498,8 @@ pre {
   top: var(--terminal-image-hint-top);
   display: grid;
   place-items: center;
-  width: 12px;
-  min-height: 12px;
+  width: 14px;
+  min-height: 14px;
   border: 0;
   background: transparent;
   color: #ffffff;
@@ -1515,8 +1515,8 @@ pre {
 
 .terminal-image-hint svg {
   display: block;
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 11px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
