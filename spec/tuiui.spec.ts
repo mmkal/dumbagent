@@ -134,7 +134,10 @@ test("updates the session status indicator to idle without a page refresh", asyn
   await page.getByRole("textbox", { name: "Command" }).press("Enter");
 
   await expect(page.getByTestId("rendered-terminal")).toContainText("colored");
-  await expect(page.getByTestId("session-status")).toHaveText("idle", { timeout: 3_000 });
+  const status = page.getByTestId("session-status");
+  await expect(status).toHaveAttribute("data-state", "idle", { timeout: 3_000 });
+  await expect(status).toHaveAttribute("aria-label", "Session status: idle");
+  await expect(status).toHaveCSS("background-color", "rgb(122, 223, 147)");
 });
 
 test("shows a compact recovery command for a missing session", async ({ page, ctx }) => {
@@ -759,6 +762,7 @@ test("groups recent sessions with jsonata expressions from the title details", a
   await expect(page.locator(".agent-session-button")).toHaveCount(3);
   await page.locator("[data-testid='recent-session-group-config'] > summary").click();
   await page.getByTestId("recent-session-group-input").fill("status\ncwd");
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem("tuiui-recent-session-groups"))).toBe("status\ncwd");
 
   await expect(page.getByTestId("recent-session-group-error")).toBeHidden();
   const projectADisplay = "~/project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary";
@@ -784,6 +788,19 @@ test("groups recent sessions with jsonata expressions from the title details", a
     groupLabelIsConstrained: true,
   });
   await page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup }).click();
+  await expect(page.getByRole("button", { name: /Resume Codex session Build UI/ })).toBeVisible();
+  await expect.poll(async () => {
+    return await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("tuiui-recent-session-group-open-state") || "{}");
+      return Object.entries(state).some(([key, value]) => key.includes("[cwd,status]") && value === true);
+    });
+  }).toBe(true);
+
+  await page.reload();
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("3 active in 24h");
+  await expect(page.getByTestId("recent-session-group-config")).toHaveAttribute("open", "");
+  await expect(page.getByTestId("recent-session-group-input")).toHaveValue("[cwd,status]");
+  await expect(page.locator(".recent-session-group[data-depth='0'] > summary").filter({ hasText: busyProjectAGroup })).toContainText("1 session");
   await expect(page.getByRole("button", { name: /Resume Codex session Build UI/ })).toBeVisible();
 
   await page.getByTestId("recent-session-group-input").fill("cwd[");

@@ -234,9 +234,16 @@ type RecentSessionGroupRenderResult = {
 };
 
 type RecentSessionGroup = {
+  storageKey: string;
+  storageKeyParts: string[];
   name: string;
   sessions: RecentAgentSession[];
   children: RecentSessionGroup[];
+};
+
+type RecentSessionGroupOpenState = {
+  isOpen: (storageKey: string, defaultOpen: boolean) => boolean;
+  setOpen: (storageKey: string, open: boolean) => void;
 };
 
 type SessionListItem = {
@@ -329,6 +336,8 @@ let homeIdleNotificationDisplayDirs: string[] = [];
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
 const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
+const recentSessionGroupConfigOpenStorageKey = "tuiui-recent-session-group-config-open";
+const recentSessionGroupOpenStorageKey = "tuiui-recent-session-group-open-state";
 let terminalFontSize = readTerminalFontSize();
 
 const idleNotifications = new BrowserIdleNotifications({
@@ -728,6 +737,63 @@ function useLocalStorageState(key: string, initialValue: string) {
   };
 }
 
+function createRecentSessionGroupOpenState(key: string): RecentSessionGroupOpenState {
+  let value = readLocalStorageBooleanRecord(key);
+
+  return {
+    isOpen(storageKey: string, defaultOpen: boolean) {
+      if (!storageKey) {
+        return defaultOpen;
+      }
+      if (Object.prototype.hasOwnProperty.call(value, storageKey)) {
+        return value[storageKey] === true;
+      }
+      return defaultOpen;
+    },
+    setOpen(storageKey: string, open: boolean) {
+      if (!storageKey) {
+        return;
+      }
+      value = { ...value, [storageKey]: open };
+      writeLocalStorageBooleanRecord(key, value);
+    },
+  };
+}
+
+function readLocalStorageBooleanRecord(key: string): Record<string, boolean> {
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) {
+      return {};
+    }
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const value: Record<string, boolean> = {};
+    for (const [recordKey, recordValue] of Object.entries(parsed)) {
+      if (typeof recordValue === "boolean") {
+        value[recordKey] = recordValue;
+      }
+    }
+    return value;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalStorageBooleanRecord(key: string, value: Record<string, boolean>) {
+  try {
+    const entries = Object.entries(value);
+    if (entries.length) {
+      localStorage.setItem(key, JSON.stringify(Object.fromEntries(entries)));
+      return;
+    }
+    localStorage.removeItem(key);
+  } catch {
+  }
+}
+
 function promptboxStorageKey(sessionId: string) {
   return `tuiui-promptbox-${encodeURIComponent(sessionId)}`;
 }
@@ -812,6 +878,8 @@ async function renderHome() {
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
   const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
+  const recentSessionGroupConfigOpenState = useLocalStorageState(recentSessionGroupConfigOpenStorageKey, "");
+  const recentSessionGroupOpenState = createRecentSessionGroupOpenState(recentSessionGroupOpenStorageKey);
   const launchCommandOrder = ["codex", "claude", "opencode"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
@@ -860,7 +928,7 @@ async function renderHome() {
       </section>
       <section class="recent-agents" aria-label="Recent agent sessions" data-testid="recent-agents">
         <header>
-          <details class="recent-session-group-config" data-testid="recent-session-group-config">
+          <details class="recent-session-group-config" data-testid="recent-session-group-config"${recentSessionGroupConfigOpenState.getValue() ? " open" : ""}>
             <summary><strong>Recent Sessions</strong></summary>
             <textarea
               data-recent-session-groups-input
@@ -891,6 +959,7 @@ async function renderHome() {
   }
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
+  const recentSessionGroupConfig = document.querySelector<HTMLDetailsElement>("[data-testid='recent-session-group-config']")!;
   const recentSessionGroupInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
   const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
   const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
@@ -904,6 +973,14 @@ async function renderHome() {
     }
     renderRecentAgentSessions(loadedRecentAgentSessions);
     bindRecentAgentSessionButtons(loadedRecentAgentSessions);
+    bindRecentSessionGroupDetails();
+  });
+
+  recentSessionGroupConfig.addEventListener("toggle", () => {
+    recentSessionGroupConfigOpenState.setValue(recentSessionGroupConfig.open ? "1" : "");
+  });
+  recentSessionGroupConfig.querySelector("summary")?.addEventListener("click", () => {
+    recentSessionGroupConfigOpenState.setValue(recentSessionGroupConfig.open ? "" : "1");
   });
 
   cwdInput.addEventListener("input", () => {
@@ -956,6 +1033,7 @@ async function renderHome() {
       observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
       renderRecentAgentSessions(recentAgentSessions);
       bindRecentAgentSessionButtons(recentAgentSessions);
+      bindRecentSessionGroupDetails();
     } catch {
       renderRecentAgentSessionFailure();
     }
@@ -971,6 +1049,7 @@ async function renderHome() {
       recentAgentSessions,
       displayHomeDirs,
       recentSessionGroupState.getValue(),
+      recentSessionGroupOpenState,
     );
     count.textContent = recentAgentSessions.length ? `${recentAgentSessions.length} active in 24h` : "None";
     list.innerHTML = rendered.html;
@@ -1005,6 +1084,17 @@ async function renderHome() {
           fakeAgent: "",
           coordinator: false,
         });
+      });
+    }
+  }
+
+  function bindRecentSessionGroupDetails() {
+    for (const details of document.querySelectorAll<HTMLDetailsElement>("[data-recent-session-group-key]")) {
+      details.addEventListener("toggle", () => {
+        recentSessionGroupOpenState.setOpen(details.dataset.recentSessionGroupKey || "", details.open);
+      });
+      details.querySelector("summary")?.addEventListener("click", () => {
+        recentSessionGroupOpenState.setOpen(details.dataset.recentSessionGroupKey || "", !details.open);
       });
     }
   }
@@ -1376,6 +1466,7 @@ function renderRecentAgentSessionContent(
   recentAgentSessions: RecentAgentSession[],
   displayHomeDirs: string[],
   groupInput: string,
+  groupOpenState: RecentSessionGroupOpenState,
 ): RecentSessionGroupRenderResult {
   const parsed = parseRecentSessionGroupDefinitions(groupInput);
   if (!recentAgentSessions.length) {
@@ -1391,9 +1482,10 @@ function renderRecentAgentSessionContent(
   try {
     return {
       html: renderRecentSessionGroups(
-        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, displayHomeDirs, 0),
+        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, displayHomeDirs, 0, []),
         displayHomeDirs,
         0,
+        groupOpenState,
       ),
       error: "",
     };
@@ -1431,6 +1523,7 @@ function groupRecentAgentSessions(
   definitions: RecentSessionGroupDefinition[],
   displayHomeDirs: string[],
   definitionIndex: number,
+  parentStorageKeyParts: string[],
 ): RecentSessionGroup[] {
   if (definitionIndex >= definitions.length) {
     return [];
@@ -1448,16 +1541,24 @@ function groupRecentAgentSessions(
     }
     const name = formatRecentSessionGroupValue(rawValue, displayHomeDirs);
     const key = recentSessionGroupValueKey(rawValue);
+    const storageKeyParts = [...parentStorageKeyParts, `${definition.lineNumber}:${definition.expression}:${key}`];
+    const storageKey = JSON.stringify(storageKeyParts);
     let group = groupsByKey.get(key);
     if (!group) {
-      group = { name, sessions: [], children: [] };
+      group = { storageKey, storageKeyParts, name, sessions: [], children: [] };
       groupsByKey.set(key, group);
       groups.push(group);
     }
     group.sessions.push(session);
   }
   for (const group of groups) {
-    group.children = groupRecentAgentSessions(group.sessions, definitions, displayHomeDirs, definitionIndex + 1);
+    group.children = groupRecentAgentSessions(
+      group.sessions,
+      definitions,
+      displayHomeDirs,
+      definitionIndex + 1,
+      group.storageKeyParts,
+    );
   }
   return groups;
 }
@@ -1473,11 +1574,17 @@ function renderRecentSessionGroups(
   groups: RecentSessionGroup[],
   displayHomeDirs: string[],
   depth: number,
+  groupOpenState: RecentSessionGroupOpenState,
 ): string {
   return `
     <div class="recent-session-groups" data-depth="${depth}">
       ${groups.map((group) => `
-        <details class="recent-session-group" data-depth="${depth}"${depth === 0 && groups.length === 1 ? " open" : ""}>
+        <details
+          class="recent-session-group"
+          data-depth="${depth}"
+          data-recent-session-group-key="${escapeAttr(group.storageKey)}"
+          ${groupOpenState.isOpen(group.storageKey, depth === 0 && groups.length === 1) ? "open" : ""}
+        >
           <summary>
             <span class="recent-session-group-title">
               <code>${escapeHtml(group.name)}</code>
@@ -1485,7 +1592,7 @@ function renderRecentSessionGroups(
             <span class="recent-session-group-count">${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}</span>
           </summary>
           ${group.children.length
-            ? renderRecentSessionGroups(group.children, displayHomeDirs, depth + 1)
+            ? renderRecentSessionGroups(group.children, displayHomeDirs, depth + 1, groupOpenState)
             : renderRecentAgentSessionCards(group.sessions, displayHomeDirs)}
         </details>
       `).join("")}
@@ -1567,6 +1674,24 @@ function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[]
   `).join("");
 }
 
+function renderSessionStatusIndicator(status: SessionPayload["status"]) {
+  return `
+    <span
+      class="status-pill"
+      role="status"
+      aria-live="polite"
+      aria-label="${escapeAttr(sessionStatusLabel(status))}"
+      title="${escapeAttr(status)}"
+      data-state="${escapeAttr(status)}"
+      data-testid="session-status"
+    ></span>
+  `;
+}
+
+function sessionStatusLabel(status: SessionPayload["status"]) {
+  return `Session status: ${status}`;
+}
+
 async function renderSession(sessionId: string) {
   if (activeSession?.id !== sessionId) {
     renderer = "terminal";
@@ -1580,7 +1705,7 @@ async function renderSession(sessionId: string) {
       <header class="topbar session-appbar">
         <a class="brand" href="/">tuiui</a>
         <code class="command app-title" title="${escapeAttr([payload.command, ...payload.args].join(" "))}" data-testid="session-command">${escapeHtml(payload.title || payload.command)}</code>
-        <span class="status-pill" data-state="${payload.status}" data-testid="session-status">${payload.status}</span>
+        ${renderSessionStatusIndicator(payload.status)}
         ${renderIdleNotificationControl()}
         <details class="session-menu">
           <summary class="menu-button" role="button" aria-label="Session menu">☰</summary>
@@ -2327,8 +2452,10 @@ function renderSessionPayload(
 
   const status = document.querySelector<HTMLElement>("[data-testid='session-status']");
   if (status) {
-    status.textContent = payload.status;
     status.dataset.state = payload.status;
+    status.textContent = "";
+    status.title = payload.status;
+    status.setAttribute("aria-label", sessionStatusLabel(payload.status));
   }
   const command = document.querySelector<HTMLElement>("[data-testid='session-command']");
   if (command) {
