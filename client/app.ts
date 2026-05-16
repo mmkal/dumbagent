@@ -316,6 +316,8 @@ let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
 let terminalImageLinkProvider: { dispose(): void } | null = null;
 let terminalImageTapCleanup: (() => void) | null = null;
+let terminalImageHintsCleanup: (() => void) | null = null;
+let terminalImageHintAnimationFrame: number | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
 let voiceReadbackTimer: number | null = null;
@@ -2560,6 +2562,7 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
       <div class="terminal-xterm-wrap" data-testid="rendered-terminal">
         <div id="xterm-terminal" class="terminal-host"></div>
         <pre class="terminal-text-snapshot" aria-hidden="true"></pre>
+        <div class="terminal-image-hints" data-terminal-image-hints></div>
         <div id="terminal-image-popover" class="terminal-image-popover xterm-hover" data-testid="terminal-image-preview" hidden>
           <button type="button" class="terminal-image-popover-close" data-terminal-image-preview-close aria-label="Close image preview">×</button>
           <img data-terminal-image-preview-image alt="" />
@@ -2674,6 +2677,138 @@ function bindTerminalImageTapHandler(term: XtermTerminal) {
     element.removeEventListener("mousedown", handleMouseDown, { capture: true });
     element.removeEventListener("touchstart", handleTouchStart, { capture: true });
   };
+}
+
+function bindTerminalImageHints(term: XtermTerminal) {
+  terminalImageHintsCleanup?.();
+  terminalImageHintsCleanup = null;
+
+  const hintLayer = document.querySelector<HTMLElement>("[data-terminal-image-hints]");
+  if (!hintLayer) {
+    return;
+  }
+
+  const activateHint = (event: Event, point: { clientX: number; clientY: number }) => {
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-terminal-image-hint-path]")
+      : null;
+    const filePath = target?.dataset.terminalImageHintPath || "";
+    if (!target || !filePath) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    openTerminalImagePreviewAtPoint(point.clientX, point.clientY, filePath);
+  };
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    activateHint(event, event);
+  };
+  const handleMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    activateHint(event, event);
+  };
+  const handleTouchStart = (event: TouchEvent) => {
+    const touch = event.changedTouches[0] || event.touches[0];
+    if (!touch) {
+      return;
+    }
+    activateHint(event, touch);
+  };
+
+  hintLayer.addEventListener("pointerdown", handlePointerDown, { capture: true });
+  hintLayer.addEventListener("mousedown", handleMouseDown, { capture: true });
+  hintLayer.addEventListener("touchstart", handleTouchStart, { capture: true, passive: false });
+  const scrollDisposable = term.onScroll(() => scheduleTerminalImageHintUpdate(term));
+  const renderDisposable = term.onRender(() => scheduleTerminalImageHintUpdate(term));
+  terminalImageHintsCleanup = () => {
+    hintLayer.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+    hintLayer.removeEventListener("mousedown", handleMouseDown, { capture: true });
+    hintLayer.removeEventListener("touchstart", handleTouchStart, { capture: true });
+    scrollDisposable.dispose();
+    renderDisposable.dispose();
+    hintLayer.innerHTML = "";
+  };
+  scheduleTerminalImageHintUpdate(term);
+}
+
+function scheduleTerminalImageHintUpdate(term: XtermTerminal) {
+  if (terminalImageHintAnimationFrame !== null) {
+    window.cancelAnimationFrame(terminalImageHintAnimationFrame);
+  }
+  terminalImageHintAnimationFrame = window.requestAnimationFrame(() => {
+    terminalImageHintAnimationFrame = null;
+    updateTerminalImageHints(term);
+  });
+}
+
+function updateTerminalImageHints(term: XtermTerminal) {
+  const hintLayer = document.querySelector<HTMLElement>("[data-terminal-image-hints]");
+  const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
+  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
+  if (!hintLayer || !wrap || !rows || !term.element || xterm !== term) {
+    return;
+  }
+
+  const rowsRect = rows.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const cellWidth = rowsRect.width / term.cols;
+  const cellHeight = rowsRect.height / term.rows;
+  if (!cellWidth || !cellHeight) {
+    hintLayer.innerHTML = "";
+    return;
+  }
+
+  const seen = new Set<string>();
+  const visibleStart = term.buffer.active.viewportY + 1;
+  const visibleEnd = visibleStart + term.rows - 1;
+  const buttons: string[] = [];
+  for (let bufferLineNumber = visibleStart; bufferLineNumber <= visibleEnd; bufferLineNumber += 1) {
+    const links = computeTerminalImagePathLinks(term, bufferLineNumber) || [];
+    for (const link of links) {
+      if (link.range.end.y < visibleStart || link.range.end.y > visibleEnd) {
+        continue;
+      }
+      const key = `${link.range.start.y}:${link.range.start.x}:${link.range.end.y}:${link.range.end.x}:${link.text}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const viewportRow = link.range.end.y - term.buffer.active.viewportY;
+      const iconSize = 12;
+      const left = Math.max(0, Math.min(
+        rowsRect.left - wrapRect.left + link.range.end.x * cellWidth + 1,
+        wrapRect.width - iconSize,
+      ));
+      const top = Math.max(0, Math.min(
+        rowsRect.top - wrapRect.top + (viewportRow - 1) * cellHeight - 2,
+        wrapRect.height - iconSize,
+      ));
+      buttons.push(`
+        <button
+          type="button"
+          class="terminal-image-hint"
+          title="Preview image"
+          aria-label="Preview image"
+          data-terminal-image-hint-path="${escapeAttr(link.text)}"
+          style="--terminal-image-hint-left: ${left}px; --terminal-image-hint-top: ${top}px;"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M2.5 3.5h11v9h-11z"></path>
+            <path d="M4.25 10.75 6.4 8.2l1.5 1.65 1.75-2.1 2.1 3"></path>
+            <circle cx="5.4" cy="6" r="1"></circle>
+          </svg>
+        </button>
+      `);
+    }
+  }
+  hintLayer.innerHTML = buttons.slice(0, 40).join("");
 }
 
 function createTerminalImageLinkProvider(term: XtermTerminal): ILinkProvider {
@@ -2903,6 +3038,7 @@ async function ensureXterm(payload: SessionPayload) {
     terminalImageLinkProvider = term.registerLinkProvider(createTerminalImageLinkProvider(term));
     term.open(host);
     bindTerminalImageTapHandler(term);
+    bindTerminalImageHints(term);
     xtermFit = fit;
     term.onData((text) => {
       if (!xtermSessionId) {
@@ -2938,14 +3074,17 @@ async function syncXterm(payload: SessionPayload) {
     }
     xtermLastStdoutEventId = payload.snapshotEventId || newestId;
     xtermScreenVersion = payload.screenVersion;
+    scheduleTerminalImageHintUpdate(term);
     return;
   }
 
   if (newestId === 0 || newestId === xtermLastStdoutEventId) {
+    scheduleTerminalImageHintUpdate(term);
     return;
   }
 
   if (newestId < xtermLastStdoutEventId) {
+    scheduleTerminalImageHintUpdate(term);
     return;
   }
 
@@ -2960,6 +3099,7 @@ async function syncXterm(payload: SessionPayload) {
     await writeXterm(term, event.chunk);
     xtermLastStdoutEventId = event.id;
   }
+  scheduleTerminalImageHintUpdate(term);
 }
 
 async function writeXterm(term: XtermTerminal, text: string) {
@@ -2994,6 +3134,12 @@ function destroyXterm() {
   cancelTerminalScrollAnimation();
   terminalImageTapCleanup?.();
   terminalImageTapCleanup = null;
+  terminalImageHintsCleanup?.();
+  terminalImageHintsCleanup = null;
+  if (terminalImageHintAnimationFrame !== null) {
+    window.cancelAnimationFrame(terminalImageHintAnimationFrame);
+    terminalImageHintAnimationFrame = null;
+  }
   terminalImageLinkProvider?.dispose();
   terminalImageLinkProvider = null;
   xterm?.dispose();

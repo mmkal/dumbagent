@@ -1484,6 +1484,45 @@ pre {
   display: none;
 }
 
+.terminal-image-hints {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.terminal-image-hint {
+  position: absolute;
+  left: var(--terminal-image-hint-left);
+  top: var(--terminal-image-hint-top);
+  display: grid;
+  place-items: center;
+  width: 12px;
+  min-height: 12px;
+  border: 0;
+  background: transparent;
+  color: #ffffff;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.terminal-image-hint:hover {
+  background: transparent;
+  color: #eef2f7;
+  filter: none;
+}
+
+.terminal-image-hint svg {
+  display: block;
+  width: 9px;
+  height: 9px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+}
+
 .terminal-image-popover {
   position: absolute;
   left: var(--terminal-image-popover-left, 12px);
