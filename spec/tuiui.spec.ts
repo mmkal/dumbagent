@@ -684,7 +684,8 @@ test("renders home before recent agent sessions finish loading", async ({ page, 
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByRole("textbox", { name: "Command" })).toBeVisible();
-  await expect(page.getByTestId("session-count")).toBeVisible();
+  await expect(page.getByTestId("recent-agents")).toBeVisible();
+  await expect(page.locator(".sessions")).toHaveCount(0);
   await expect(page.getByTestId("recent-agent-count")).toHaveText("Loading");
 
   releaseRecentSessions();
@@ -814,6 +815,48 @@ test("groups recent sessions with jsonata expressions from the title details", a
   await expect(page.getByTestId("recent-session-group-error")).toHaveCSS("color", "rgb(255, 138, 138)");
   await expect(page.locator(".recent-session-group")).toHaveCount(0);
   await expect(page.locator(".agent-session-button")).toHaveCount(3);
+});
+
+test("archives recent sessions from a swipe-revealed action", async ({ page, ctx }) => {
+  const messageAt = new Date().toISOString();
+  writeRecentCodexFixtureState(ctx, {
+    threadId: "codex-demo-recents",
+    title: "Demo recents",
+    latestUserText: "Make a clean demo",
+    lastUserText: "Hide the setup noise",
+    latestAssistantText: "Ready for recording.",
+    messageAt,
+  });
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(ctx.baseUrl);
+
+  const card = page.getByRole("button", { name: /Resume Codex session Demo recents/ });
+  await expect(card).toBeVisible();
+  const row = page.locator("[data-agent-session-swipe-row]").filter({ has: card });
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("recent session card was not laid out");
+  }
+
+  await dragTouch(page, { x: box.x + box.width - 12, y: box.y + box.height / 2 }, { x: box.x + box.width - 96, y: box.y + box.height / 2 });
+  await expect(row).toHaveAttribute("data-swiped", "true");
+  await dragTouch(page, { x: box.x + box.width - 96, y: box.y + box.height / 2 }, { x: box.x + box.width - 12, y: box.y + box.height / 2 });
+  await expect(row).not.toHaveAttribute("data-swiped", "true");
+
+  await dragTouch(page, { x: box.x + box.width - 12, y: box.y + box.height / 2 }, { x: box.x + box.width - 96, y: box.y + box.height / 2 });
+  await expect(row).toHaveAttribute("data-swiped", "true");
+  await card.click();
+  await expect(row).not.toHaveAttribute("data-swiped", "true");
+  await expect(page).toHaveURL(ctx.baseUrl + "/");
+
+  await dragTouch(page, { x: box.x + box.width - 12, y: box.y + box.height / 2 }, { x: box.x + box.width - 96, y: box.y + box.height / 2 });
+  await page.getByRole("button", { name: /Archive Codex session Demo recents/ }).click();
+  await expect(page.getByRole("button", { name: /Resume Codex session Demo recents/ })).toHaveCount(0);
+  await expect.poll(async () => (await fetchRecentAgentSessions(page)).map((session: any) => session.id)).not.toContain("codex-demo-recents");
+  expect(fs.existsSync(path.join(ctx.env.HOME || "", ".codex", "sessions", "2026", "05", "11", "rollout-codex-demo-recents.jsonl"))).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Resume Codex session Demo recents/ })).toHaveCount(0);
 });
 
 test("loads home when a recent provider database cannot be opened", async ({ page }) => {
@@ -1597,8 +1640,7 @@ test("archives a session from the hamburger menu and hides it from Home", async 
   await page.getByRole("button", { name: "Archive" }).click();
 
   await expect(page).toHaveURL(ctx.baseUrl + "/");
-  await expect(page.getByTestId("session-count")).toHaveText("0 sessions");
-  await expect(page.locator(".sessions")).toContainText("No sessions");
+  await expect(page.locator(".sessions")).toHaveCount(0);
   await expect.poll(async () => {
     return await page.evaluate(async () => await fetch("/api/sessions").then((response) => response.json()));
   }).toEqual([]);

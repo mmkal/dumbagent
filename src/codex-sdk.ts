@@ -194,6 +194,34 @@ export function discardCodexThreadFromDatabasePath(databasePath: string, threadI
   }
 }
 
+export function archiveCodexThreadFromDatabasePath(databasePath: string, threadId: string, archivedAt: number) {
+  if (!threadId) {
+    return false;
+  }
+  const resolvedPath = resolveStoredCodexStateDatabasePath(databasePath);
+  if (!fs.existsSync(resolvedPath)) {
+    return false;
+  }
+  const database = new Database(resolvedPath, { strict: true });
+  try {
+    database.exec("pragma busy_timeout = 1000");
+    const columns = new Set((database.query("pragma table_info(threads)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (!columns.has("archived")) {
+      return false;
+    }
+    const result = columns.has("archived_at")
+      ? database.query("update threads set archived = 1, archived_at = $archivedAt where id = $threadId").run({
+        threadId,
+        archivedAt,
+      })
+      : database.query("update threads set archived = 1 where id = $threadId").run({ threadId });
+    return Number(result.changes || 0) > 0;
+  } finally {
+    database.close();
+  }
+}
+
 export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs: number) {
   const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
   return threads

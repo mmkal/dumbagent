@@ -19,6 +19,7 @@ import { createFakeAgent, parseRequest, type AgentName, type FakeAgent } from "f
 import { z } from "zod";
 import homepage from "./public/index.html";
 import {
+  archiveCodexThreadFromDatabasePath,
   buildCodexSidecarSummary,
   buildCodexSummary,
   codexHomeDirFromStateDatabasePath,
@@ -43,6 +44,7 @@ import {
 } from "./src/claude-sdk.ts";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
 import {
+  archiveOpenCodeSessionFromDatabasePath,
   buildOpenCodeSummary,
   buildOpenCodeSidecarSummary,
   createOpenCodeSummaryPrompt,
@@ -249,6 +251,10 @@ const createSessionBodySchema = z.object({
   coordinator: z.boolean().optional(),
 });
 const sessionIdInputSchema = z.object({ sessionId: z.string() });
+const agentSessionArchiveInputSchema = z.object({
+  provider: z.enum(["opencode", "codex", "claude"]),
+  sessionId: z.string(),
+});
 const sendSessionInputSchema = sessionIdInputSchema.extend({
   text: z.string().optional(),
   submit: z.boolean().optional(),
@@ -261,6 +267,7 @@ const resizeSessionInputSchema = sessionIdInputSchema.extend({
 const stdoutSessionInputSchema = sessionIdInputSchema.extend({ after: z.number().optional() });
 
 type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
+type AgentSessionArchiveInput = z.infer<typeof agentSessionArchiveInputSchema>;
 type SessionIdInput = z.infer<typeof sessionIdInputSchema>;
 type SendSessionInput = z.infer<typeof sendSessionInputSchema>;
 type KeySessionInput = z.infer<typeof keySessionInputSchema>;
@@ -371,6 +378,7 @@ function createAppRouter(state: ServerState) {
     commands: orpc.handler(() => commandPresetsPayload()),
     agentSessions: {
       recent: orpc.handler(() => readRecentAgentSessions()),
+      archive: orpc.input(agentSessionArchiveInputSchema).handler(({ input }) => archiveRecentAgentSession(input)),
     },
     codexSessions: {
       recent: orpc.handler(() => readRecentCodexSessions()),
@@ -418,6 +426,10 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
 
   if (request.method === "GET" && url.pathname === "/api/agent-sessions/recent") {
     return Response.json(await readRecentAgentSessions());
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent-sessions/archive") {
+    return await jsonOrRpcErrorAsync(async () => archiveRecentAgentSession(await request.json() as AgentSessionArchiveInput));
   }
 
   if (request.method === "GET" && url.pathname === "/api/codex-sessions/recent") {
@@ -1887,6 +1899,22 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
     .flat()
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt))
     .slice(0, 24);
+}
+
+async function archiveRecentAgentSession(input: AgentSessionArchiveInput) {
+  const archivedAtMs = Date.now();
+  let archived = false;
+  if (input.provider === "codex") {
+    archived = archiveCodexThreadFromDatabasePath(resolveCodexStateDatabasePathForEnv(process.env), input.sessionId, archivedAtMs);
+  } else if (input.provider === "opencode") {
+    archived = archiveOpenCodeSessionFromDatabasePath(openCodeDatabasePathForEnv(process.env), input.sessionId, archivedAtMs);
+  } else if (input.provider === "claude") {
+    archived = discardClaudeSessionTranscripts(claudeConfigDirForEnv(process.env), input.sessionId);
+  }
+  if (!archived) {
+    throw new ORPCError("NOT_FOUND", { message: "Recent session not found" });
+  }
+  return { ok: true, archivedAtMs };
 }
 
 function realpathIfPossible(value: string) {

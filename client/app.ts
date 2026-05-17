@@ -941,7 +941,6 @@ async function renderHome() {
     <main class="layout home-layout">
       <header class="topbar">
         <a class="brand" href="/">tuiui</a>
-        <span class="muted" data-testid="session-count">${sessions.length} sessions</span>
         <a class="view-switch-link" href="/" data-action="open-coordinator">Coordinator</a>
         <a class="view-switch-link" href="/factory-floor" data-action="open-factory-floor" aria-label="Factory floor">🏭</a>
         ${renderIdleNotificationControl()}
@@ -997,9 +996,6 @@ async function renderHome() {
           <p class="empty">Loading recent sessions</p>
         </div>
       </section>
-      <section class="sessions" aria-label="Sessions">
-        ${sessions.length ? sessions.map(renderSessionLink).join("") : `<p class="empty">No sessions</p>`}
-      </section>
     </main>
   `;
   bindIdleNotificationControls();
@@ -1023,7 +1019,7 @@ async function renderHome() {
       return;
     }
     renderRecentAgentSessions(loadedRecentAgentSessions);
-    bindRecentAgentSessionButtons(loadedRecentAgentSessions);
+    bindRecentAgentSessionControls(loadedRecentAgentSessions);
     bindRecentSessionGroupDetails();
   });
 
@@ -1083,7 +1079,7 @@ async function renderHome() {
       loadedRecentAgentSessions = recentAgentSessions;
       observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
       renderRecentAgentSessions(recentAgentSessions);
-      bindRecentAgentSessionButtons(recentAgentSessions);
+      bindRecentAgentSessionControls(recentAgentSessions);
       bindRecentSessionGroupDetails();
     } catch {
       renderRecentAgentSessionFailure();
@@ -1118,10 +1114,19 @@ async function renderHome() {
     renderRecentSessionGroupError("");
   }
 
-  function bindRecentAgentSessionButtons(recentAgentSessions: RecentAgentSession[]) {
+  function bindRecentAgentSessionControls(recentAgentSessions: RecentAgentSession[]) {
     const recentAgentSessionsByKey = new Map(recentAgentSessions.map((session) => [`${session.provider}:${session.id}`, session]));
     for (const button of document.querySelectorAll<HTMLButtonElement>("[data-agent-session-id]")) {
       button.addEventListener("click", async () => {
+        const row = button.closest<HTMLElement>("[data-agent-session-swipe-row]");
+        if (row?.dataset.ignoreNextClick) {
+          delete row.dataset.ignoreNextClick;
+          return;
+        }
+        if (row?.dataset.swiped || document.querySelector("[data-agent-session-swipe-row][data-swiped='true']")) {
+          clearRecentAgentSwipeRows();
+          return;
+        }
         const session = recentAgentSessionsByKey.get(button.dataset.agentSessionId || "");
         if (!session) {
           return;
@@ -1137,6 +1142,30 @@ async function renderHome() {
         });
       });
     }
+    for (const row of document.querySelectorAll<HTMLElement>("[data-agent-session-swipe-row]")) {
+      bindRecentAgentSwipeRow(row);
+    }
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-action='archive-agent-session']")) {
+      button.addEventListener("click", async () => {
+        const session = recentAgentSessionsByKey.get(button.dataset.agentSessionKey || "");
+        if (!session) {
+          return;
+        }
+        button.disabled = true;
+        try {
+          await clientApi.agentSessions.archive({ provider: session.provider, sessionId: session.id });
+          loadedRecentAgentSessions = recentAgentSessions.filter((candidate) => {
+            return candidate.provider !== session.provider || candidate.id !== session.id;
+          });
+          renderRecentAgentSessions(loadedRecentAgentSessions);
+          bindRecentAgentSessionControls(loadedRecentAgentSessions);
+          bindRecentSessionGroupDetails();
+        } catch (error) {
+          button.disabled = false;
+          showRequestErrorToast("Archive recent session failed", error, "archive-agent-session-error-toast");
+        }
+      });
+    }
   }
 
   function bindRecentSessionGroupDetails() {
@@ -1148,6 +1177,57 @@ async function renderHome() {
         recentSessionGroupOpenState.setOpen(details.dataset.recentSessionGroupKey || "", !details.open);
       });
     }
+  }
+
+  function bindRecentAgentSwipeRow(row: HTMLElement) {
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    row.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      startX = event.clientX;
+      startY = event.clientY;
+      tracking = true;
+    });
+    row.addEventListener("pointerup", (event) => {
+      if (!tracking) {
+        return;
+      }
+      tracking = false;
+      const deltaX = event.clientX - startX;
+      const deltaY = event.clientY - startY;
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        return;
+      }
+      if (deltaX < -36) {
+        ignoreNextRecentAgentSwipeClick(row);
+        clearRecentAgentSwipeRows(row);
+        row.dataset.swiped = "true";
+      } else if (deltaX > 20) {
+        ignoreNextRecentAgentSwipeClick(row);
+        delete row.dataset.swiped;
+      }
+    });
+    row.addEventListener("pointercancel", () => {
+      tracking = false;
+    });
+  }
+
+  function clearRecentAgentSwipeRows(except?: HTMLElement) {
+    for (const row of document.querySelectorAll<HTMLElement>("[data-agent-session-swipe-row][data-swiped='true']")) {
+      if (row !== except) {
+        delete row.dataset.swiped;
+      }
+    }
+  }
+
+  function ignoreNextRecentAgentSwipeClick(row: HTMLElement) {
+    row.dataset.ignoreNextClick = "true";
+    window.setTimeout(() => {
+      delete row.dataset.ignoreNextClick;
+    }, 120);
   }
 
   async function submitLaunchForm() {
@@ -1697,31 +1777,41 @@ function formatRecentSessionGroupError(error: unknown) {
 }
 
 function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[], displayHomeDirs: string[]) {
+  const archiveHint = "Swipe left to archive";
   return recentAgentSessions.map((session) => `
-    <button
-      type="button"
-      class="agent-session-button"
-      data-agent-session-id="${escapeAttr(`${session.provider}:${session.id}`)}"
-      aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
-      title="${escapeAttr([session.command, ...session.args].join(" "))}"
-    >
-      ${renderRecentSessionTitle(session)}
-      ${renderRecentUserPreviewRows(session)}
-      <span class="agent-session-preview">
-        <span class="agent-session-preview-label">assistant</span>
-        <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
-      </span>
-      <span class="agent-session-card-footer">
-        <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
-        <span class="agent-session-card-badges">
-          <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
-            <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
-            ${escapeHtml(formatRecentSessionStatus(session))}
-          </span>
-          <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+    <div class="agent-session-swipe-row" data-agent-session-swipe-row>
+      <button
+        type="button"
+        class="agent-session-button"
+        data-agent-session-id="${escapeAttr(`${session.provider}:${session.id}`)}"
+        aria-label="${escapeAttr(`Resume ${providerLabel(session.provider)} session ${session.title}`)}"
+        title="${escapeAttr(`${archiveHint}. ${[session.command, ...session.args].join(" ")}`)}"
+      >
+        ${renderRecentSessionTitle(session)}
+        ${renderRecentUserPreviewRows(session)}
+        <span class="agent-session-preview">
+          <span class="agent-session-preview-label">assistant</span>
+          <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
         </span>
-      </span>
-    </button>
+        <span class="agent-session-card-footer">
+          <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
+          <span class="agent-session-card-badges">
+            <span class="agent-session-status" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-label="${escapeAttr(`Session ${formatRecentSessionStatus(session)}`)}">
+              <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
+              ${escapeHtml(formatRecentSessionStatus(session))}
+            </span>
+            <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
+          </span>
+        </span>
+      </button>
+      <button
+        type="button"
+        class="agent-session-archive-button"
+        data-action="archive-agent-session"
+        data-agent-session-key="${escapeAttr(`${session.provider}:${session.id}`)}"
+        aria-label="${escapeAttr(`Archive ${providerLabel(session.provider)} session ${session.title}`)}"
+      >Archive</button>
+    </div>
   `).join("");
 }
 

@@ -237,6 +237,23 @@ export function readRecentOpenCodeSessionsFromDatabasePath(databasePath: string,
   }
 }
 
+export function archiveOpenCodeSessionFromDatabasePath(databasePath: string, sessionId: string, archivedAtMs: number) {
+  if (!sessionId || !fs.existsSync(databasePath)) {
+    return false;
+  }
+  const database = new Database(databasePath, { strict: true });
+  try {
+    const result = database.query(`
+      update session
+      set time_archived = $archivedAtMs
+      where id = $sessionId
+    `).run({ archivedAtMs, sessionId });
+    return Number(result.changes || 0) > 0;
+  } finally {
+    database.close();
+  }
+}
+
 export function recentOpenCodeSessionsFromRows(
   rows: Array<{ session: any; messages: any[] }>,
   nowMs: number,

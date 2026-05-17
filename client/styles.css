@@ -206,8 +206,7 @@ button:disabled {
 }
 
 .launcher,
-.recent-agents,
-.sessions {
+.recent-agents {
   background: transparent;
 }
 
@@ -505,7 +504,7 @@ textarea:focus {
 }
 
 .recent-session-group > .recent-session-groups,
-.recent-session-group > .agent-session-button {
+.recent-session-group > .agent-session-swipe-row {
   margin: 0 0 6px;
 }
 
@@ -515,15 +514,51 @@ textarea:focus {
   border-left: 1px solid #252c36;
 }
 
+.agent-session-swipe-row {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #4d2327;
+  touch-action: pan-y;
+}
+
 .agent-session-button {
+  position: relative;
+  z-index: 1;
   display: grid;
   gap: 7px;
+  width: 100%;
   min-height: 0;
   padding: 11px;
   border-color: #3a4350;
   background: #20262e;
   color: #dce5ef;
   text-align: left;
+  transition: transform 160ms ease;
+}
+
+.agent-session-swipe-row[data-swiped="true"] .agent-session-button {
+  transform: translateX(-86px);
+}
+
+.agent-session-archive-button {
+  position: absolute;
+  inset: 0 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 86px;
+  border: 0;
+  border-radius: 0;
+  background: #8f2934;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.agent-session-archive-button:disabled {
+  opacity: 0.65;
 }
 
 .agent-session-title,
