@@ -89,6 +89,7 @@ export type RecentAgentSession = {
   latestAssistantText: string;
   messageCount: number;
   status: "busy" | "idle";
+  archived: boolean;
   command: string;
   args: string[];
 };
@@ -213,10 +214,10 @@ export function readRecentOpenCodeSessionsFromDatabasePath(databasePath: string,
         directory,
         title,
         time_created,
-        time_updated
+        time_updated,
+        time_archived
       from session
-      where time_archived is null
-        and time_updated >= $cutoffMs
+      where time_updated >= $cutoffMs
       order by time_updated desc
       limit 500
     `).all({ cutoffMs }) as Array<{
@@ -225,6 +226,7 @@ export function readRecentOpenCodeSessionsFromDatabasePath(databasePath: string,
       title: string;
       time_created: number;
       time_updated: number;
+      time_archived: number | null;
     }>;
     return recentOpenCodeSessionsFromRows(sessions.map((session) => {
       return {
@@ -290,6 +292,7 @@ export function recentOpenCodeSessionsFromRows(
         latestAssistantText: preview.latestAssistantText,
         messageCount: visibleMessages.length,
         status: lastMessage.role === "user" ? "busy" : "idle",
+        archived: Boolean(row.session.time_archived),
         command: "opencode",
         args: ["--session", String(row.session.id || "")],
       };

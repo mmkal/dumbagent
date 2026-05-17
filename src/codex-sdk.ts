@@ -20,6 +20,7 @@ export type CodexThreadRow = {
   reasoning_effort: string;
   created_at_ms: number | null;
   updated_at_ms: number | null;
+  archived?: number;
 };
 
 type ResolveCodexThreadInput = {
@@ -140,10 +141,10 @@ function readRecentCodexThreadsFromDatabasePath(databasePath: string, nowMs: num
         model,
         reasoning_effort,
         created_at_ms,
-        updated_at_ms
+        updated_at_ms,
+        archived
       from threads
-      where archived = 0
-        and coalesce(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000) >= $cutoffMs
+      where coalesce(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000) >= $cutoffMs
       order by coalesce(updated_at_ms, updated_at * 1000) desc
       limit 500
     `).all({ cutoffMs }) as CodexThreadRow[];
@@ -254,6 +255,7 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         latestAssistantText: preview.latestAssistantText,
         messageCount: messages.length,
         status: lastMessage.role === "user" ? "busy" : "idle",
+        archived: Boolean(thread.archived),
         command: "codex",
         args: ["resume", thread.id],
       };

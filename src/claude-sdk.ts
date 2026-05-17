@@ -87,6 +87,7 @@ export async function recentClaudeSessionsFromSdkSessions(
       latestAssistantText: preview.latestAssistantText,
       messageCount: visibleMessages.length,
       status: lastMessage.role === "user" ? "busy" : "idle",
+      archived: false,
       command: "claude",
       args: ["--resume", session.sessionId],
     };

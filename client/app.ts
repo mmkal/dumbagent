@@ -211,6 +211,7 @@ type RecentAgentSession = {
   latestAssistantText: string;
   messageCount: number;
   status: "busy" | "idle";
+  archived: boolean;
   command: string;
   args: string[];
 };
@@ -231,6 +232,7 @@ type RecentSessionGroupParseResult = {
 type RecentSessionGroupRenderResult = {
   html: string;
   error: string;
+  sessions: RecentAgentSession[];
 };
 
 type RecentSessionGroup = {
@@ -337,6 +339,8 @@ let homeIdleNotificationDisplayDirs: string[] = [];
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
 const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
+const recentSessionFilterStorageKey = "tuiui-recent-session-filter";
+const defaultRecentSessionFilterExpression = 'status != "archived"';
 const recentSessionGroupConfigOpenStorageKey = "tuiui-recent-session-group-config-open";
 const recentSessionGroupOpenStorageKey = "tuiui-recent-session-group-open-state";
 let terminalFontSize = readTerminalFontSize();
@@ -575,7 +579,9 @@ function observeHomeIdleNotificationSessions(
 ) {
   idleNotifications.observe([
     ...sessions.map((session) => sessionListItemIdleNotification(session, displayHomeDirs)),
-    ...recentAgentSessions.map((session) => recentAgentSessionIdleNotification(session, displayHomeDirs)),
+    ...recentAgentSessions
+      .filter((session) => !session.archived)
+      .map((session) => recentAgentSessionIdleNotification(session, displayHomeDirs)),
   ]);
 }
 
@@ -712,7 +718,7 @@ function recentAgentSessionIdleNotification(
     title: session.title || session.id,
     cwd: formatPathForDisplay(session.cwd, displayHomeDirs),
     task: session.latestUserText || session.initialUserText || session.command,
-    status: formatRecentSessionStatus(session),
+    status: session.status,
     routePath: "",
   };
 }
@@ -929,6 +935,7 @@ async function renderHome() {
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
   const recentSessionGroupState = useLocalStorageState(recentSessionGroupStorageKey, "");
+  const recentSessionFilterState = useLocalStorageState(recentSessionFilterStorageKey, defaultRecentSessionFilterExpression);
   const recentSessionGroupConfigOpenState = useLocalStorageState(recentSessionGroupConfigOpenStorageKey, "");
   const recentSessionGroupOpenState = createRecentSessionGroupOpenState(recentSessionGroupOpenStorageKey);
   const launchCommandOrder = ["codex", "claude", "opencode"];
@@ -988,6 +995,14 @@ async function renderHome() {
               spellcheck="false"
               placeholder="cwd"
             >${escapeHtml(recentSessionGroupState.getValue())}</textarea>
+            <textarea
+              data-recent-session-filter-input
+              data-testid="recent-session-filter-input"
+              aria-label="Recent session filter"
+              rows="2"
+              spellcheck="false"
+              placeholder="${escapeAttr(defaultRecentSessionFilterExpression)}"
+            >${escapeHtml(recentSessionFilterState.getValue() || defaultRecentSessionFilterExpression)}</textarea>
           </details>
           <span data-testid="recent-agent-count">Loading</span>
         </header>
@@ -1008,6 +1023,7 @@ async function renderHome() {
   const form = document.getElementById("launch-form") as HTMLFormElement;
   const recentSessionGroupConfig = document.querySelector<HTMLDetailsElement>("[data-testid='recent-session-group-config']")!;
   const recentSessionGroupInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-groups-input]")!;
+  const recentSessionFilterInput = document.querySelector<HTMLTextAreaElement>("[data-recent-session-filter-input]")!;
   const commandInput = form.elements.namedItem("commandLine") as HTMLInputElement;
   const cwdInput = form.elements.namedItem("cwd") as HTMLInputElement;
   const fakeAgentInput = form.elements.namedItem("fakeagent") as HTMLInputElement;
@@ -1015,6 +1031,16 @@ async function renderHome() {
 
   recentSessionGroupInput.addEventListener("input", () => {
     recentSessionGroupState.setValue(recentSessionGroupInput.value);
+    if (!loadedRecentAgentSessions) {
+      return;
+    }
+    renderRecentAgentSessions(loadedRecentAgentSessions);
+    bindRecentAgentSessionControls(loadedRecentAgentSessions);
+    bindRecentSessionGroupDetails();
+  });
+
+  recentSessionFilterInput.addEventListener("input", () => {
+    recentSessionFilterState.setValue(recentSessionFilterInput.value);
     if (!loadedRecentAgentSessions) {
       return;
     }
@@ -1096,9 +1122,10 @@ async function renderHome() {
       recentAgentSessions,
       displayHomeDirs,
       recentSessionGroupState.getValue(),
+      recentSessionFilterState.getValue() || defaultRecentSessionFilterExpression,
       recentSessionGroupOpenState,
     );
-    count.textContent = recentAgentSessions.length ? `${recentAgentSessions.length} active in 24h` : "None";
+    count.textContent = rendered.sessions.length ? `${rendered.sessions.length} active in 24h` : "None";
     list.innerHTML = rendered.html;
     renderRecentSessionGroupError(rendered.error);
   }
@@ -1597,34 +1624,63 @@ function renderRecentAgentSessionContent(
   recentAgentSessions: RecentAgentSession[],
   displayHomeDirs: string[],
   groupInput: string,
+  filterInput: string,
   groupOpenState: RecentSessionGroupOpenState,
 ): RecentSessionGroupRenderResult {
-  const parsed = parseRecentSessionGroupDefinitions(groupInput);
-  if (!recentAgentSessions.length) {
-    return { html: `<p class="empty">No recent sessions</p>`, error: parsed.error };
+  const groupParsed = parseRecentSessionGroupDefinitions(groupInput);
+  const filterParsed = parseRecentSessionFilterExpression(filterInput);
+  let filteredSessions = recentAgentSessions;
+  if (!filterParsed.error) {
+    try {
+      filteredSessions = recentAgentSessions.filter((session) => {
+        return Boolean(filterParsed.compiled.evaluate(recentSessionForJsonata(session, displayHomeDirs)));
+      });
+    } catch (error) {
+      return {
+        html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+        error: formatRecentSessionGroupError(error),
+        sessions: recentAgentSessions,
+      };
+    }
   }
-  if (parsed.error || !parsed.definitions.length) {
+  const error = filterParsed.error || groupParsed.error;
+  if (!filteredSessions.length) {
+    return { html: `<p class="empty">No recent sessions</p>`, error, sessions: filteredSessions };
+  }
+  if (error || !groupParsed.definitions.length) {
     return {
-      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
-      error: parsed.error,
+      html: renderRecentAgentSessionCards(filteredSessions, displayHomeDirs),
+      error,
+      sessions: filteredSessions,
     };
   }
 
   try {
     return {
       html: renderRecentSessionGroups(
-        groupRecentAgentSessions(recentAgentSessions, parsed.definitions, displayHomeDirs, 0, []),
+        groupRecentAgentSessions(filteredSessions, groupParsed.definitions, displayHomeDirs, 0, []),
         displayHomeDirs,
         0,
         groupOpenState,
       ),
       error: "",
+      sessions: filteredSessions,
     };
   } catch (error) {
     return {
-      html: renderRecentAgentSessionCards(recentAgentSessions, displayHomeDirs),
+      html: renderRecentAgentSessionCards(filteredSessions, displayHomeDirs),
       error: formatRecentSessionGroupError(error),
+      sessions: filteredSessions,
     };
+  }
+}
+
+function parseRecentSessionFilterExpression(input: string) {
+  const expression = input.trim() || defaultRecentSessionFilterExpression;
+  try {
+    return { compiled: jsonata(expression), error: "" };
+  } catch (error) {
+    return { compiled: jsonata("true"), error: `Filter: ${formatRecentSessionGroupError(error)}` };
   }
 }
 
@@ -1698,6 +1754,7 @@ function recentSessionForJsonata(session: RecentAgentSession, displayHomeDirs: s
   return {
     ...session,
     cwd: formatPathForDisplay(session.cwd, displayHomeDirs),
+    status: formatRecentSessionStatus(session),
   };
 }
 
@@ -5004,6 +5061,9 @@ function providerLabel(provider: RecentAgentSession["provider"]) {
 }
 
 function formatRecentSessionStatus(session: RecentAgentSession) {
+  if (session.archived) {
+    return "archived";
+  }
   if (session.status === "busy" || session.status === "idle") {
     return session.status;
   }

@@ -434,6 +434,10 @@ textarea:focus {
   font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.recent-session-group-config textarea + textarea {
+  min-height: 50px;
+}
+
 .recent-agents > header > span {
   justify-self: end;
   color: #9ca8b6;
@@ -1400,6 +1404,10 @@ textarea:focus {
 
 .status-dot[data-state="exited"] {
   background: #f28b8b;
+}
+
+.status-dot[data-state="archived"] {
+  background: #7f8b9a;
 }
 
 .main-surface {

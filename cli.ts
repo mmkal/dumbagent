@@ -1895,10 +1895,15 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
     readRecentProviderSessions(() => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePath, nowMs)),
     claudeSessions,
   ]);
+  const locallyArchivedSessions = readRecentAgentArchiveKeys();
   return results
     .flat()
+    .map((session) => ({
+      ...session,
+      archived: session.archived || locallyArchivedSessions.has(recentAgentArchiveKey(session.provider, session.id)),
+    }))
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt))
-    .slice(0, 24);
+    .slice(0, 100);
 }
 
 async function archiveRecentAgentSession(input: AgentSessionArchiveInput) {
@@ -1909,12 +1914,42 @@ async function archiveRecentAgentSession(input: AgentSessionArchiveInput) {
   } else if (input.provider === "opencode") {
     archived = archiveOpenCodeSessionFromDatabasePath(openCodeDatabasePathForEnv(process.env), input.sessionId, archivedAtMs);
   } else if (input.provider === "claude") {
-    archived = discardClaudeSessionTranscripts(claudeConfigDirForEnv(process.env), input.sessionId);
+    archived = true;
   }
-  if (!archived) {
+  const locallyArchived = archiveRecentAgentSessionLocally(input.provider, input.sessionId);
+  if (!archived && !locallyArchived) {
     throw new ORPCError("NOT_FOUND", { message: "Recent session not found" });
   }
   return { ok: true, archivedAtMs };
+}
+
+function recentAgentArchiveKey(provider: AgentProvider, sessionId: string) {
+  return `${provider}:${sessionId}`;
+}
+
+function archiveRecentAgentSessionLocally(provider: AgentProvider, sessionId: string) {
+  if (!sessionId) {
+    return false;
+  }
+  const archivePath = recentAgentArchivePath();
+  fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+  const values = readRecentAgentArchiveKeys();
+  values.add(recentAgentArchiveKey(provider, sessionId));
+  fs.writeFileSync(archivePath, JSON.stringify([...values].sort(), null, 2));
+  return true;
+}
+
+function readRecentAgentArchiveKeys() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(recentAgentArchivePath(), "utf8"));
+    return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function recentAgentArchivePath() {
+  return path.join(String(process.env.HOME || os.homedir()), ".tuiui", "recent-agent-archive.json");
 }
 
 function realpathIfPossible(value: string) {

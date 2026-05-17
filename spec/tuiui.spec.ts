@@ -756,6 +756,24 @@ test("groups recent sessions with jsonata expressions from the title details", a
             command: "opencode",
             args: ["run", "opencode-review"],
           },
+          {
+            provider: "codex",
+            id: "codex-archived",
+            title: "Archived",
+            cwd: projectB,
+            updatedAt: now,
+            lastMessageAt: now,
+            lastMessageText: "Archive it",
+            initialUserText: "Archive it",
+            latestUserText: "Archive it",
+            userMessageCount: 1,
+            latestAssistantText: "Archived.",
+            messageCount: 2,
+            status: "idle",
+            archived: true,
+            command: "codex",
+            args: ["resume", "codex-archived"],
+          },
         ],
       }),
     });
@@ -767,6 +785,15 @@ test("groups recent sessions with jsonata expressions from the title details", a
   await expect(page.locator(".recent-session-group")).toHaveCount(0);
   await expect(page.locator(".agent-session-button")).toHaveCount(3);
   await page.locator("[data-testid='recent-session-group-config'] > summary").click();
+  await expect(page.getByTestId("recent-session-filter-input")).toHaveValue('status != "archived"');
+  await page.getByTestId("recent-session-filter-input").fill("true");
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("4 active in 24h");
+  await expect(page.getByRole("button", { name: /Resume Codex session Archived/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Resume Codex session Archived/ })).toContainText("archived");
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem("tuiui-recent-session-filter"))).toBe("true");
+  await page.getByTestId("recent-session-filter-input").fill('status != "archived"');
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("3 active in 24h");
+  await expect(page.getByRole("button", { name: /Resume Codex session Archived/ })).toHaveCount(0);
   await page.getByTestId("recent-session-group-input").fill("status\ncwd");
   await expect.poll(async () => await page.evaluate(() => localStorage.getItem("tuiui-recent-session-groups"))).toBe("status\ncwd");
 
@@ -852,11 +879,17 @@ test("archives recent sessions from a swipe-revealed action", async ({ page, ctx
   await dragTouch(page, { x: box.x + box.width - 12, y: box.y + box.height / 2 }, { x: box.x + box.width - 96, y: box.y + box.height / 2 });
   await page.getByRole("button", { name: /Archive Codex session Demo recents/ }).click();
   await expect(page.getByRole("button", { name: /Resume Codex session Demo recents/ })).toHaveCount(0);
-  await expect.poll(async () => (await fetchRecentAgentSessions(page)).map((session: any) => session.id)).not.toContain("codex-demo-recents");
+  await expect.poll(async () => {
+    const recentSessions = await fetchRecentAgentSessions(page);
+    return recentSessions.find((session: any) => session.id === "codex-demo-recents");
+  }).toMatchObject({ archived: true });
   expect(fs.existsSync(path.join(ctx.env.HOME || "", ".codex", "sessions", "2026", "05", "11", "rollout-codex-demo-recents.jsonl"))).toBe(true);
 
   await page.reload();
   await expect(page.getByRole("button", { name: /Resume Codex session Demo recents/ })).toHaveCount(0);
+  await page.locator("[data-testid='recent-session-group-config'] > summary").click();
+  await page.getByTestId("recent-session-filter-input").fill("true");
+  await expect(page.getByRole("button", { name: /Resume Codex session Demo recents/ })).toBeVisible();
 });
 
 test("loads home when a recent provider database cannot be opened", async ({ page }) => {
