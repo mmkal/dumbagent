@@ -87,6 +87,53 @@ export const agents = {
       }
     },
   },
+  pi: {
+    command: 'pi',
+    args: [
+      '--provider', 'fakeagent',
+      '--model', 'fake-model',
+      '--api-key', 'fake-key',
+      '--no-context-files',
+      '--no-extensions',
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-themes',
+      '--offline',
+      '--no-session',
+    ],
+    spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
+    getEnv(port) {
+      const dir = `/tmp/fakeagent-pi-home-${port}`
+      const sessionDir = `/tmp/fakeagent-pi-sessions-${port}`
+      mkdirSync(dir, {recursive: true})
+      mkdirSync(sessionDir, {recursive: true})
+      writeFileSync(`${dir}/models.json`, JSON.stringify({
+        providers: {
+          fakeagent: {
+            baseUrl: `http://localhost:${port}/v1`,
+            api: 'openai-completions',
+            apiKey: 'FAKEAGENT_PI_API_KEY',
+            models: [{
+              id: 'fake-model',
+              name: 'Fake Model',
+              reasoning: false,
+              input: ['text'],
+              contextWindow: 128000,
+              maxTokens: 8192,
+              cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+            }],
+          },
+        },
+      }, null, 2) + '\n')
+      return {
+        FAKEAGENT_PI_API_KEY: 'fake-key',
+        PI_CODING_AGENT_DIR: dir,
+        PI_CODING_AGENT_SESSION_DIR: sessionDir,
+        PI_OFFLINE: '1',
+        PI_SKIP_VERSION_CHECK: '1',
+      }
+    },
+  },
 } satisfies Record<string, AgentConfig>
 
 export type AgentName = keyof typeof agents
