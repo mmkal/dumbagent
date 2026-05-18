@@ -73,6 +73,7 @@ export async function recentClaudeSessionsFromSdkSessions(
     }
     const preview = recentSessionPreviewFromMessages(visibleMessages);
     const initialUserText = preview.initialUserText || recentSessionPreviewText(String(session.firstPrompt || ""));
+    const initialUserAt = preview.initialUserAt || new Date(Number(session.createdAt || session.lastModified || lastMessageMs)).toISOString();
     return {
       provider: "claude",
       id: session.sessionId,
@@ -82,9 +83,12 @@ export async function recentClaudeSessionsFromSdkSessions(
       lastMessageAt: new Date(lastMessageMs).toISOString(),
       lastMessageText: lastMessage.text.slice(0, 240),
       initialUserText,
+      initialUserAt,
       latestUserText: preview.latestUserText || initialUserText,
+      latestUserAt: preview.latestUserAt || initialUserAt,
       userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
       latestAssistantText: preview.latestAssistantText,
+      latestAssistantAt: preview.latestAssistantAt,
       messageCount: visibleMessages.length,
       status: lastMessage.role === "user" ? "busy" : "idle",
       archived: false,

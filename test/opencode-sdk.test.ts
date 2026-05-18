@@ -89,9 +89,12 @@ test("formats recent session previews from the first paragraph", () => {
 
   expect(recentSessionPreviewFromMessages(summary.transcript)).toMatchObject({
     initialUserText: "first line second line",
+    initialUserAt: expect.any(String),
     latestUserText: "last user line last continuation",
+    latestUserAt: expect.any(String),
     userMessageCount: 2,
     latestAssistantText: "assistant line assistant continuation",
+    latestAssistantAt: expect.any(String),
   });
 });
 

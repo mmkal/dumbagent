@@ -84,9 +84,12 @@ export type RecentAgentSession = {
   lastMessageAt: string;
   lastMessageText: string;
   initialUserText: string;
+  initialUserAt?: string;
   latestUserText: string;
+  latestUserAt?: string;
   userMessageCount: number;
   latestAssistantText: string;
+  latestAssistantAt?: string;
   messageCount: number;
   status: "busy" | "idle";
   archived: boolean;
@@ -287,9 +290,12 @@ export function recentOpenCodeSessionsFromRows(
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
         initialUserText: preview.initialUserText,
+        initialUserAt: preview.initialUserAt,
         latestUserText: preview.latestUserText,
+        latestUserAt: preview.latestUserAt,
         userMessageCount: preview.userMessageCount,
         latestAssistantText: preview.latestAssistantText,
+        latestAssistantAt: preview.latestAssistantAt,
         messageCount: visibleMessages.length,
         status: lastMessage.role === "user" ? "busy" : "idle",
         archived: Boolean(row.session.time_archived),
@@ -303,14 +309,26 @@ export function recentOpenCodeSessionsFromRows(
 
 export function recentSessionPreviewFromMessages(messages: AgentSessionSummary["transcript"]) {
   const ordered = messages
-    .slice()
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      const leftMs = Date.parse(left.message.createdAt);
+      const rightMs = Date.parse(right.message.createdAt);
+      if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
+        return leftMs - rightMs;
+      }
+      return left.index - right.index;
+    })
+    .map((item) => item.message);
   const userMessages = ordered.filter((message) => message.role === "user");
+  const assistantMessage = [...ordered].reverse().find((message) => message.role === "assistant");
   return {
     initialUserText: recentSessionPreviewText(userMessages[0]?.text || ""),
+    initialUserAt: userMessages[0]?.createdAt || "",
     latestUserText: recentSessionPreviewText(userMessages.at(-1)?.text || ""),
+    latestUserAt: userMessages.at(-1)?.createdAt || "",
     userMessageCount: userMessages.length,
-    latestAssistantText: recentSessionPreviewText([...ordered].reverse().find((message) => message.role === "assistant")?.text || ""),
+    latestAssistantText: recentSessionPreviewText(assistantMessage?.text || ""),
+    latestAssistantAt: assistantMessage?.createdAt || "",
   };
 }
 

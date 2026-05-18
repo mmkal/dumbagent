@@ -695,6 +695,54 @@ test("renders home before recent agent sessions finish loading", async ({ page, 
   await expect(page.getByRole("button", { name: /Resume Codex session Async Codex/ })).toBeVisible();
 });
 
+test("orders recent session preview rows by message timestamp", async ({ page, ctx }) => {
+  const firstUserAt = "2026-05-18T10:00:00.000Z";
+  const latestAssistantAt = "2026-05-18T10:01:00.000Z";
+  const latestUserAt = "2026-05-18T10:02:00.000Z";
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: [{
+          provider: "codex",
+          id: "timestamp-ordered-codex-thread",
+          title: "Timestamp ordered Codex",
+          cwd: ctx.workspaceDir,
+          updatedAt: latestUserAt,
+          lastMessageAt: latestUserAt,
+          lastMessageText: "new prompt while the old assistant answer is still visible",
+          initialUserText: "first prompt",
+          initialUserAt: firstUserAt,
+          latestUserText: "new prompt while the old assistant answer is still visible",
+          latestUserAt,
+          userMessageCount: 2,
+          latestAssistantText: "answer to the first prompt",
+          latestAssistantAt,
+          messageCount: 3,
+          status: "busy",
+          command: "codex",
+          args: ["resume", "timestamp-ordered-codex-thread"],
+        }],
+      }),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+
+  const card = page.getByRole("button", { name: /Resume Codex session Timestamp ordered Codex/ });
+  await expect(card).toBeVisible();
+  await expect.poll(async () => {
+    return await card.locator(".agent-session-preview").evaluateAll((rows) => {
+      return rows.map((row) => (row.textContent || "").replace(/\s+/g, " ").trim());
+    });
+  }).toEqual([
+    "user (first) first prompt",
+    "assistant answer to the first prompt",
+    "user (last) new prompt while the old assistant answer is still visible",
+  ]);
+});
+
 test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
   const now = new Date().toISOString();
   const projectA = path.join(ctx.env.HOME!, "project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary");

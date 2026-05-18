@@ -241,6 +241,7 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
       const preview = recentSessionPreviewFromMessages(messages);
       const firstUserMessage = String(thread.first_user_message || "");
       const initialUserText = preview.initialUserText || (isCodexInternalUserText(firstUserMessage) ? "" : recentSessionPreviewText(firstUserMessage));
+      const initialUserAt = preview.initialUserAt || new Date(codexCreatedAt(thread)).toISOString();
       return {
         provider: "codex",
         id: thread.id,
@@ -250,9 +251,12 @@ export function recentCodexSessionsFromThreads(threads: CodexThreadRow[], nowMs:
         lastMessageAt: new Date(lastMessageMs).toISOString(),
         lastMessageText: lastMessage.text.slice(0, 240),
         initialUserText,
+        initialUserAt,
         latestUserText: preview.latestUserText || initialUserText,
+        latestUserAt: preview.latestUserAt || initialUserAt,
         userMessageCount: Math.max(preview.userMessageCount, initialUserText ? 1 : 0),
         latestAssistantText: preview.latestAssistantText,
+        latestAssistantAt: preview.latestAssistantAt,
         messageCount: messages.length,
         status: lastMessage.role === "user" ? "busy" : "idle",
         archived: Boolean(thread.archived),

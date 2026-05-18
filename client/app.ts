@@ -206,9 +206,12 @@ type RecentAgentSession = {
   lastMessageAt: string;
   lastMessageText: string;
   initialUserText: string;
+  initialUserAt?: string;
   latestUserText: string;
+  latestUserAt?: string;
   userMessageCount: number;
   latestAssistantText: string;
+  latestAssistantAt?: string;
   messageCount: number;
   status: "busy" | "idle";
   archived: boolean;
@@ -1845,11 +1848,7 @@ function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[]
         title="${escapeAttr(`${archiveHint}. ${[session.command, ...session.args].join(" ")}`)}"
       >
         ${renderRecentSessionTitle(session)}
-        ${renderRecentUserPreviewRows(session)}
-        <span class="agent-session-preview">
-          <span class="agent-session-preview-label">assistant</span>
-          <span>${escapeHtml(formatRecentSessionLine(session.latestAssistantText, "No assistant message"))}</span>
-        </span>
+        ${renderRecentSessionPreviewRows(session)}
         <span class="agent-session-card-footer">
           <code>${escapeHtml(formatAgentSessionMeta(session, displayHomeDirs))}</code>
           <span class="agent-session-card-badges">
@@ -4995,25 +4994,66 @@ function renderRecentSessionTitle(session: RecentAgentSession) {
   return `<strong class="agent-session-title">${escapeHtml(title)}</strong>`;
 }
 
-function renderRecentUserPreviewRows(session: RecentAgentSession) {
+function renderRecentSessionPreviewRows(session: RecentAgentSession) {
+  const rows: Array<{
+    label: string;
+    text: string;
+    empty: string;
+    timestamp: string;
+    fallbackOrder: number;
+  }> = [];
   if (session.userMessageCount > 1 && formatRecentSessionLine(session.latestUserText, "")) {
-    return `
-      <span class="agent-session-preview">
-        <span class="agent-session-preview-label">user (first)</span>
-        <span>${escapeHtml(formatRecentSessionLine(session.initialUserText, "No user message"))}</span>
-      </span>
-      <span class="agent-session-preview">
-        <span class="agent-session-preview-label">user (last)</span>
-        <span>${escapeHtml(formatRecentSessionLine(session.latestUserText, "No user message"))}</span>
-      </span>
-    `;
+    rows.push({
+      label: "user (first)",
+      text: session.initialUserText,
+      empty: "No user message",
+      timestamp: session.initialUserAt || "",
+      fallbackOrder: 0,
+    });
+    rows.push({
+      label: "user (last)",
+      text: session.latestUserText,
+      empty: "No user message",
+      timestamp: session.latestUserAt || "",
+      fallbackOrder: 1,
+    });
+  } else {
+    rows.push({
+      label: "user",
+      text: session.initialUserText || session.latestUserText,
+      empty: "No user message",
+      timestamp: session.initialUserAt || session.latestUserAt || "",
+      fallbackOrder: 0,
+    });
   }
-  return `
-    <span class="agent-session-preview">
-      <span class="agent-session-preview-label">user</span>
-      <span>${escapeHtml(formatRecentSessionLine(session.initialUserText || session.latestUserText, "No user message"))}</span>
-    </span>
-  `;
+  rows.push({
+    label: "assistant",
+    text: session.latestAssistantText,
+    empty: "No assistant message",
+    timestamp: session.latestAssistantAt || "",
+    fallbackOrder: 2,
+  });
+  return rows
+    .sort((left, right) => compareRecentPreviewRows(left, right))
+    .map((row) => `
+      <span class="agent-session-preview">
+        <span class="agent-session-preview-label">${escapeHtml(row.label)}</span>
+        <span>${escapeHtml(formatRecentSessionLine(row.text, row.empty))}</span>
+      </span>
+    `)
+    .join("");
+}
+
+function compareRecentPreviewRows(
+  left: { timestamp: string; fallbackOrder: number },
+  right: { timestamp: string; fallbackOrder: number },
+) {
+  const leftMs = Date.parse(left.timestamp);
+  const rightMs = Date.parse(right.timestamp);
+  if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
+    return leftMs - rightMs;
+  }
+  return left.fallbackOrder - right.fallbackOrder;
 }
 
 function textIsBasicallySame(left: string, right: string) {
