@@ -1,11 +1,16 @@
 import type {SpawnOptions} from 'node:child_process'
-import {mkdirSync, writeFileSync, realpathSync} from 'node:fs'
+import {createHash} from 'node:crypto'
+import {mkdirSync, realpathSync, writeFileSync} from 'node:fs'
 
 export interface AgentConfig {
   command: string
   args?: string[]
   spawnOptions?: SpawnOptions
   getEnv(port: number): Record<string, string>
+}
+
+function hashText(text: string) {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12)
 }
 
 export const agents = {
@@ -98,30 +103,33 @@ export const agents = {
       '--no-skills',
       '--no-prompt-templates',
       '--no-themes',
-      '--offline',
       '--no-session',
     ],
     spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
     getEnv(port) {
-      const dir = `/tmp/fakeagent-pi-home-${port}`
-      const sessionDir = `/tmp/fakeagent-pi-sessions-${port}`
+      const providerConfig = {
+        api: 'openai-completions',
+        apiKey: 'FAKEAGENT_PI_API_KEY',
+        models: [{
+          id: 'fake-model',
+          name: 'Fake Model',
+          reasoning: false,
+          input: ['text'],
+          contextWindow: 128000,
+          maxTokens: 8192,
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+        }],
+      }
+      const profileHash = hashText(JSON.stringify(providerConfig))
+      const dir = `/tmp/fakeagent-pi-home-${profileHash}`
+      const sessionDir = `/tmp/fakeagent-pi-sessions-${profileHash}`
       mkdirSync(dir, {recursive: true})
       mkdirSync(sessionDir, {recursive: true})
       writeFileSync(`${dir}/models.json`, JSON.stringify({
         providers: {
           fakeagent: {
             baseUrl: `http://localhost:${port}/v1`,
-            api: 'openai-completions',
-            apiKey: 'FAKEAGENT_PI_API_KEY',
-            models: [{
-              id: 'fake-model',
-              name: 'Fake Model',
-              reasoning: false,
-              input: ['text'],
-              contextWindow: 128000,
-              maxTokens: 8192,
-              cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-            }],
+            ...providerConfig,
           },
         },
       }, null, 2) + '\n')
@@ -129,8 +137,8 @@ export const agents = {
         FAKEAGENT_PI_API_KEY: 'fake-key',
         PI_CODING_AGENT_DIR: dir,
         PI_CODING_AGENT_SESSION_DIR: sessionDir,
-        PI_OFFLINE: '1',
         PI_SKIP_VERSION_CHECK: '1',
+        PI_TELEMETRY: '0',
       }
     },
   },
