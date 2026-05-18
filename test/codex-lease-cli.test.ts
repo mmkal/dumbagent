@@ -55,7 +55,7 @@ test("codex resume terminates the existing wrapper-owned session before starting
   }
 });
 
-test("web UI codex resume terminates the existing wrapper-owned session before starting the managed resume", async () => {
+test("web UI codex resume refuses to terminate an existing wrapper-owned session", async () => {
   using fixture = createFakeCodexFixture();
   const sessionId = "019e9999-1111-7222-8333-bbbbbbbbbbbb";
 
@@ -91,8 +91,9 @@ test("web UI codex resume terminates the existing wrapper-owned session before s
       TUIUI_STATE_DB: fixture.stateDb,
     }, port);
 
-    await fetchJson<{ id: string }>(`http://127.0.0.1:${port}/api/sessions`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         command: "codex",
         args: ["resume", sessionId],
@@ -106,13 +107,13 @@ test("web UI codex resume terminates the existing wrapper-owned session before s
       }),
     });
 
-    await waitForFile(fixture.firstTerminatedPath);
-    await waitForFile(fixture.resumedPath);
-    await waitForExit(first);
-    expect(JSON.parse(fs.readFileSync(fixture.resumedPath, "utf8"))).toMatchObject({
-      args: ["resume", sessionId],
-      terminatedBeforeResumeStarted: true,
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "That Codex session is already active in another terminal. TUI UI will not terminate it from a recent-session card.",
     });
+    expect(fs.existsSync(fixture.firstTerminatedPath)).toBe(false);
+    expect(fs.existsSync(fixture.resumedPath)).toBe(false);
+    expect(first.exitCode).toBe(null);
   } finally {
     killIfRunning(first);
     if (server) {

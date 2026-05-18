@@ -65,7 +65,7 @@ import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-scree
 import { analyzeTerminalBlocks, type TerminalBlockModel } from "./src/terminal-blocks.ts";
 import { composerSubmitChunks, usesLfCrSubmit } from "./src/terminal-input.ts";
 import { formatCommandLine, parseCommandLine } from "./src/command-line.ts";
-import { terminateOwnersForRecoveryCommand } from "./src/codex-lease.ts";
+import { cleanupStaleOwners, terminateOwnersForRecoveryCommand } from "./src/codex-lease.ts";
 import {
   createTmuxBackend,
   reconnectTmuxBackend,
@@ -445,7 +445,7 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   if (request.method === "POST" && url.pathname === "/api/sessions") {
-    return Response.json(await createSessionPayload(await request.json() as CreateSessionBody));
+    return await jsonOrRpcErrorAsync(async () => createSessionPayload(await request.json() as CreateSessionBody));
   }
 
   const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/([^/]+))?$/);
@@ -774,6 +774,11 @@ async function createSessionPayload(body: CreateSessionBody) {
   if (coordinator) {
     env.TUIUI_COORDINATOR_MCP_TOKEN = state.coordinator.mcpToken;
   }
+  const existingResume = existingSessionForCodexResumeLaunch(command, args, body.cwd || process.cwd());
+  if (existingResume) {
+    return { id: existingResume.id, url: `${baseUrl}/sessions/${existingResume.id}` };
+  }
+  assertNoExternalOwnerForCodexResumeLaunch(command, args);
   const session = await createSession({
     id: createSessionId(),
     command,
@@ -1856,6 +1861,11 @@ async function createTestingFakeAgent() {
       if (/four plus five/i.test(text)) {
         return parsed.respond.text("nine");
       }
+      const delayMatch = text.match(/\bdelay:(\d+)ms\b/i);
+      if (delayMatch) {
+        await delay(Number(delayMatch[1]));
+        return parsed.respond.text(`delayed fakeagent response after ${delayMatch[1]}ms`);
+      }
       if (/read .*hello/i.test(text)) {
         return parsed.respond.toolCall("read", { filePath: path.join("/tmp/fakeagent-test", "hello.txt") });
       }
@@ -1884,26 +1894,98 @@ function readRecentCodexSessions() {
 
 async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
   const nowMs = Date.now();
-  const codexDatabasePath = resolveCodexStateDatabasePathForEnv(process.env);
+  const codexDatabasePaths = recentCodexDatabasePaths();
   const openCodeDatabasePath = openCodeDatabasePathForEnv(process.env);
   const claudeConfigDir = claudeConfigDirForEnv(process.env);
   const claudeSessions = readRecentProviderSessions(async () => await readRecentClaudeSessions(claudeConfigDir, nowMs));
   // Let the async Claude SDK scan start before the synchronous SQLite readers block the event loop.
   await Promise.resolve();
   const results = await Promise.all([
-    readRecentProviderSessions(() => readRecentCodexSessionsFromDatabasePath(codexDatabasePath, nowMs)),
+    Promise.all(codexDatabasePaths.map((databasePath) => {
+      return readRecentProviderSessions(() => readRecentCodexSessionsFromDatabasePath(databasePath, nowMs));
+    })).then((sessions) => dedupeRecentAgentSessions(sessions.flat())),
     readRecentProviderSessions(() => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePath, nowMs)),
     claudeSessions,
   ]);
   const locallyArchivedSessions = readRecentAgentArchiveKeys();
   return results
     .flat()
-    .map((session) => ({
+    .map((session) => annotateRecentAgentSessionOwnership({
       ...session,
       archived: session.archived || locallyArchivedSessions.has(recentAgentArchiveKey(session.provider, session.id)),
     }))
     .sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt))
     .slice(0, 100);
+}
+
+function recentCodexDatabasePaths() {
+  return [...new Set([
+    resolveCodexStateDatabasePathForEnv(process.env),
+    ...[...state.sessions.values()]
+      .filter((session) => session.sdk.provider === "codex" && session.sdk.baseUrl)
+      .map((session) => session.sdk.baseUrl),
+  ])];
+}
+
+function dedupeRecentAgentSessions(sessions: RecentAgentSession[]) {
+  const byKey = new Map<string, RecentAgentSession>();
+  for (const session of sessions) {
+    const key = `${session.provider}:${session.id}`;
+    const existing = byKey.get(key);
+    if (!existing || Date.parse(session.lastMessageAt) > Date.parse(existing.lastMessageAt)) {
+      byKey.set(key, session);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function annotateRecentAgentSessionOwnership(session: RecentAgentSession): RecentAgentSession {
+  const recoveryCommand = codexResumeRecoveryCommand(session.command, session.args);
+  if (!recoveryCommand) {
+    return session;
+  }
+  const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
+  const activeTuiSessionId = ownerInfo.activeTuiSessionId || fallbackActiveTuiSessionIdForRecentCodexSession(session);
+  if (!ownerInfo.activeOwnerCount && !activeTuiSessionId) {
+    return session;
+  }
+  return {
+    ...session,
+    activeOwnerCount: ownerInfo.activeOwnerCount,
+    activeTuiSessionId,
+  };
+}
+
+function fallbackActiveTuiSessionIdForRecentCodexSession(session: RecentAgentSession) {
+  if (session.provider !== "codex" || session.status !== "busy") {
+    return "";
+  }
+  const candidates = runningCodexSessionsForCwd(session.cwd).filter((candidate) => {
+    return candidate.sdk.externalSessionId === session.id;
+  });
+  return candidates.length === 1 ? candidates[0]!.id : "";
+}
+
+function runningCodexSessionsForCwd(cwd: string) {
+  return [...state.sessions.values()].filter((candidate) => {
+    return candidate.lifecycle === "running" &&
+      runtimeSessionLooksLikeCodex(candidate) &&
+      sameResolvedPath(candidate.cwd, cwd) &&
+      runtimeSessionStatus(candidate) !== "exited";
+  });
+}
+
+function runtimeSessionLooksLikeCodex(session: RuntimeSession) {
+  return session.sdk.provider === "codex" ||
+    isCodexCommand(session.command) ||
+    session.args.some((arg) => path.basename(String(arg)).toLowerCase() === "codex");
+}
+
+function sameResolvedPath(left: unknown, right: string) {
+  if (!left) {
+    return false;
+  }
+  return realpathIfPossible(String(left)) === realpathIfPossible(right);
 }
 
 async function archiveRecentAgentSession(input: AgentSessionArchiveInput) {
@@ -2125,6 +2207,10 @@ async function terminateExistingCodexResumeOwners(command: string, args: string[
   if (fakeAgent || !isCodexCommand(command) || !findCodexResumeId(args)) {
     return;
   }
+  assertNoExternalOwnerForCodexResumeLaunch(command, args);
+  if (existingSessionForCodexResumeLaunch(command, args, "")) {
+    return;
+  }
   await terminateOwnersForRecoveryCommand(state.sessionStore, formatCommandLine("codex", args));
 }
 
@@ -2135,6 +2221,58 @@ function findCodexResumeId(args: string[]) {
   }
   const candidate = args[index + 1] || "";
   return candidate && !candidate.startsWith("-") ? candidate : "";
+}
+
+function existingSessionForCodexResumeLaunch(command: string, args: string[], cwd: string) {
+  const recoveryCommand = codexResumeRecoveryCommand(command, args);
+  if (!recoveryCommand) {
+    return null;
+  }
+  const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
+  const activeOwnerSession = ownerInfo.activeTuiSessionId ? state.sessions.get(ownerInfo.activeTuiSessionId) || null : null;
+  if (activeOwnerSession) {
+    return activeOwnerSession;
+  }
+  if (!cwd) {
+    return null;
+  }
+  const candidates = runningCodexSessionsForCwd(cwd);
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+function assertNoExternalOwnerForCodexResumeLaunch(command: string, args: string[]) {
+  const recoveryCommand = codexResumeRecoveryCommand(command, args);
+  if (!recoveryCommand) {
+    return;
+  }
+  const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
+  if (!ownerInfo.externalOwnerCount) {
+    return;
+  }
+  throw new ORPCError("CONFLICT", {
+    message: "That Codex session is already active in another terminal. TUI UI will not terminate it from a recent-session card.",
+  });
+}
+
+function codexResumeRecoveryCommand(command: string, args: string[]) {
+  if (!isCodexCommand(command) || !findCodexResumeId(args)) {
+    return "";
+  }
+  return formatCommandLine("codex", args);
+}
+
+function activeSessionOwnerInfoForRecoveryCommand(recoveryCommand: string) {
+  cleanupStaleOwners(state.sessionStore);
+  const owners = state.sessionStore.getSessionProcessOwnersForRecoveryCommand(recoveryCommand);
+  const activeTuiSessionId = owners
+    .map((owner) => owner.sessionId)
+    .find((sessionId) => state.sessions.get(sessionId)?.lifecycle === "running") || "";
+  const externalOwnerCount = owners.filter((owner) => state.sessions.get(owner.sessionId)?.lifecycle !== "running").length;
+  return {
+    activeOwnerCount: owners.length,
+    activeTuiSessionId,
+    externalOwnerCount,
+  };
 }
 
 async function refreshSessionSdk(session: RuntimeSession) {

@@ -93,6 +93,8 @@ export type RecentAgentSession = {
   messageCount: number;
   status: "busy" | "idle";
   archived: boolean;
+  activeOwnerCount?: number;
+  activeTuiSessionId?: string;
   command: string;
   args: string[];
 };

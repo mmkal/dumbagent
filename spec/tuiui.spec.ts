@@ -1940,6 +1940,68 @@ test("resolves a fakeagent-backed Codex TUI into SDK summary YAML", async ({ pag
   });
 });
 
+test("reopens the running fakeagent-backed Codex session from Home while it is answering", async ({ page }) => {
+  test.skip(!commandExists("codex"), "codex is not installed");
+  await using ctx = await createContext();
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("checkbox", { name: "fakeagent" }).check();
+  await page.getByRole("button", { name: "codex", exact: true }).click();
+  await expectReadyFakeCodex(page);
+  const sessionUrl = page.url();
+  const launchedPayload = await fetchSessionPayload(page);
+  expect(launchedPayload).toMatchObject({
+    lifecycle: "running",
+  });
+
+  await page.getByRole("textbox", { name: "Send stdin" }).fill("delay:4000ms tell me a medium length story");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await page.getByRole("link", { name: "tuiui" }).click();
+  await expect(page).toHaveURL(ctx.baseUrl + "/");
+  await expect.poll(async () => {
+    const sessions = await fetchRecentAgentSessions(page);
+    return sessions.find((session: any) => {
+      return session.provider === "codex" && session.latestUserText.includes("delay:4000ms");
+    });
+  }).toMatchObject({
+    activeTuiSessionId: launchedPayload.id,
+  });
+  const card = page.getByRole("button", { name: /Resume Codex session/ }).filter({ hasText: "delay:4000ms" });
+  await expect(card).toBeVisible();
+  await card.click();
+
+  await expect(page).toHaveURL(sessionUrl);
+  await expect(page.getByTestId("rendered-terminal")).not.toContainText("Conversation interrupted");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("delayed fakeagent response after 4000ms", { timeout: 10_000 });
+  const payload = await fetchSessionPayload(page);
+  expect(payload).toMatchObject({ id: launchedPayload.id });
+});
+
+test("does not route an unrelated recent Codex card to the current TUI session", async ({ page }) => {
+  test.skip(!commandExists("codex"), "codex is not installed");
+  await using ctx = await createContext();
+
+  await launchFakeCodex(page, ctx);
+  const currentSessionUrl = page.url();
+  writeRecentCodexFixtureState(ctx, {
+    threadId: "unrelated-busy-codex-thread",
+    title: "Unrelated Busy Codex",
+    latestUserText: "continue an unrelated busy Codex session",
+    lastUserText: "is the unrelated session still running",
+    latestAssistantText: "",
+    messageAt: new Date().toISOString(),
+  });
+
+  await page.getByRole("link", { name: "tuiui" }).click();
+  await expect(page).toHaveURL(ctx.baseUrl + "/");
+  const card = page.getByRole("button", { name: /Resume Codex session Unrelated Busy Codex/ });
+  await expect(card).toBeVisible();
+  await card.click();
+
+  await expect(page).not.toHaveURL(currentSessionUrl);
+});
+
 test("shows a toast instead of an unhandled rejection when session brief fetch fails", async ({ page, ctx }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => {

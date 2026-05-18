@@ -215,6 +215,8 @@ type RecentAgentSession = {
   messageCount: number;
   status: "busy" | "idle";
   archived: boolean;
+  activeOwnerCount?: number;
+  activeTuiSessionId?: string;
   command: string;
   args: string[];
 };
@@ -1161,6 +1163,20 @@ async function renderHome() {
         if (!session) {
           return;
         }
+        if (session.activeTuiSessionId) {
+          history.pushState({}, "", `/sessions/${session.activeTuiSessionId}`);
+          await renderRoute();
+          return;
+        }
+        if (session.activeOwnerCount) {
+          showToast({
+            id: "recent-session-active-owner",
+            title: "Session already active",
+            message: "This Codex session is active in another terminal, so TUI UI did not resume it here.",
+            durationMs: 4_000,
+          });
+          return;
+        }
         commandInput.value = [session.command, ...session.args].join(" ");
         setLaunchCwd(session.cwd || currentLaunchCwd());
         await launchSession({
@@ -1503,6 +1519,20 @@ async function renderFactoryFloorHome() {
       button.addEventListener("click", async () => {
         const session = recentAgentSessionsByKey.get(button.dataset.agentSessionId || "");
         if (!session) {
+          return;
+        }
+        if (session.activeTuiSessionId) {
+          history.pushState({}, "", `/sessions/${session.activeTuiSessionId}`);
+          await renderRoute();
+          return;
+        }
+        if (session.activeOwnerCount) {
+          showToast({
+            id: "recent-session-active-owner",
+            title: "Session already active",
+            message: "This Codex session is active in another terminal, so TUI UI did not resume it here.",
+            durationMs: 4_000,
+          });
           return;
         }
         commandInput.value = [session.command, ...session.args].join(" ");
@@ -1856,6 +1886,7 @@ function renderRecentAgentSessionCards(recentAgentSessions: RecentAgentSession[]
               <span class="status-dot" data-state="${escapeAttr(formatRecentSessionStatus(session))}" aria-hidden="true"></span>
               ${escapeHtml(formatRecentSessionStatus(session))}
             </span>
+            ${session.activeOwnerCount ? `<span class="provider-pill" data-provider="codex">${escapeHtml(session.activeTuiSessionId ? "active" : "active elsewhere")}</span>` : ""}
             <span class="provider-pill" data-provider="${escapeAttr(session.provider)}">${escapeHtml(providerLabel(session.provider))}</span>
           </span>
         </span>
