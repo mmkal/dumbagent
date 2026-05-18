@@ -1,9 +1,9 @@
 import {test, expect} from 'vitest'
-import {createFakeAgent, parseRequest} from '../src/index.ts'
+import {createDumbAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('codex exec gets fake response', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       return parsed.respond.text('three')
@@ -11,7 +11,7 @@ test('codex exec gets fake response', async () => {
   })
 
   const child = api.spawn('codex', ['exec', '--skip-git-repo-check', '--json', 'what is one plus two'], {
-    cwd: '/tmp/fakeagent-test',
+    cwd: '/tmp/dumbagent-test',
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 10_000)
@@ -20,7 +20,7 @@ test('codex exec gets fake response', async () => {
 }, 15_000)
 
 test('codex TUI text response', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       return parsed.respond.text('three')
@@ -34,7 +34,7 @@ test('codex TUI text response', async () => {
 }, 25_000)
 
 test('codex TUI tool use', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       const hasToolResult = parsed.body.input?.some?.((i: any) => i.type === 'function_call_output')
@@ -42,7 +42,7 @@ test('codex TUI tool use', async () => {
         return parsed.respond.text('the file says hi')
       }
       if (parsed.lastMessage.match(/read hello/)) {
-        return parsed.respond.toolCall('shell', {command: ['cat', '/tmp/fakeagent-test/hello.txt']})
+        return parsed.respond.toolCall('shell', {command: ['cat', '/tmp/dumbagent-test/hello.txt']})
       }
       return parsed.respond.text('')
     },

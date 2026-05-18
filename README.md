@@ -1,4 +1,4 @@
-# fakeagent
+# dumbagent
 
 Fake API server for testing tools that use coding agent CLIs (Claude Code, OpenAI Codex, opencode, Pi). Intercepts LLM requests, gives you deterministic instant responses.
 
@@ -9,7 +9,7 @@ You built a tool that spawns `claude` or `codex` as a subprocess. You want to te
 ## Install
 
 ```sh
-npm install fakeagent
+npm install dumbagent
 ```
 
 ## Usage
@@ -17,18 +17,18 @@ npm install fakeagent
 ### Directly
 
 ```sh
-npx fakeagent codex
-npx fakeagent opencode
-npx fakeagent claude
-npx fakeagent pi
+npx dumbagent codex
+npx dumbagent opencode
+npx dumbagent claude
+npx dumbagent pi
 ```
 
 By default the wrapped agent talks to a local fake API that returns the bundled sarcastic responder preset.
 
-Set `FAKEAGENT_PRESET=eliza` to use the bundled ELIZA responder instead.
+Set `DUMBAGENT_PRESET=eliza` to use the bundled ELIZA responder instead.
 
 ```sh
-FAKEAGENT_PRESET=eliza npx fakeagent claude
+DUMBAGENT_PRESET=eliza npx dumbagent claude
 ```
 
 The default CLI also recognizes `tool:["readFile","<path>"]` and replies with the wrapped agent's read-file tool call shape.
@@ -36,9 +36,9 @@ The default CLI also recognizes `tool:["readFile","<path>"]` and replies with th
 ### In tests
 
 ```ts
-import {createFakeAgent, parseRequest} from 'fakeagent'
+import {createDumbAgent, parseRequest} from 'dumbagent'
 
-const api = await createFakeAgent({
+const api = await createDumbAgent({
   async fetch(request) {
     const parsed = await parseRequest(request)
     if (parsed.lastMessage.match(/review.*pr/i)) {
@@ -62,9 +62,9 @@ await api[Symbol.asyncDispose]()
 
 ```ts
 // fake-claude.ts
-import {createFakeAgent, parseRequest} from 'fakeagent'
+import {createDumbAgent, parseRequest} from 'dumbagent'
 
-const api = await createFakeAgent({
+const api = await createDumbAgent({
   async fetch(request) {
     const parsed = await parseRequest(request)
     if (parsed.lastMessage.match(/one plus two/)) {
@@ -95,12 +95,12 @@ node fake-claude.ts pi          # same for pi
 
 ## API
 
-### `createFakeAgent(options)`
+### `createDumbAgent(options)`
 
 Starts an HTTP (+ WebSocket) server on a random port.
 
 ```ts
-const api = await createFakeAgent({
+const api = await createDumbAgent({
   port: 8080, // optional, default: random
   fetch(request) { // standard Request -> Response
     return new Response('hello')
@@ -108,7 +108,7 @@ const api = await createFakeAgent({
 })
 ```
 
-Returns `FakeAgent` (implements `AsyncDisposable`):
+Returns `DumbAgent` (implements `AsyncDisposable`):
 - `api.port` - server port
 - `api.spawn(agent, args?, options?)` - spawn agent CLI as child process
 - `api.createCli()` - returns `{run()}`, reads agent name from `process.argv`
@@ -136,7 +136,7 @@ parsed.body                     // raw parsed JSON
 For explicit protocol control:
 
 ```ts
-import {responses} from 'fakeagent'
+import {responses} from 'dumbagent'
 
 responses.openai.text('hello')     // OpenAI chat completion Response
 responses.anthropic.text('hello')  // Anthropic message Response

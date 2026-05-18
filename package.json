@@ -1,10 +1,10 @@
 {
-  "name": "fakeagent",
+  "name": "dumbagent",
   "version": "0.0.0",
   "description": "Fake API server for testing tools that use coding agent CLIs",
   "type": "module",
   "bin": {
-    "fakeagent": "./src/cli.ts"
+    "dumbagent": "./src/cli.ts"
   },
   "exports": {
     ".": {
@@ -14,7 +14,7 @@
   },
   "publishConfig": {
     "bin": {
-      "fakeagent": "./dist/cli.js"
+      "dumbagent": "./dist/cli.js"
     },
     "exports": {
       ".": {

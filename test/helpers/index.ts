@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process'
-import type {FakeAgent} from '../../src/api.ts'
+import type {DumbAgent} from '../../src/api.ts'
 import type {AgentName} from '../../src/agents.ts'
 
 export {waitForExit} from './spawn.ts'
@@ -24,7 +24,7 @@ export interface SpawnTuiOptions {
  * Spawn an agent CLI in a real PTY and return a handle for interacting with it.
  */
 export async function spawnTui(
-  api: FakeAgent,
+  api: DumbAgent,
   agent: AgentName,
   options?: SpawnTuiOptions,
 ): Promise<TuiHandle> {

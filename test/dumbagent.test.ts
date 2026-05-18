@@ -1,8 +1,8 @@
 import {test, expect} from 'vitest'
-import {createFakeAgent, parseRequest, responses} from '../src/index.ts'
+import {createDumbAgent, parseRequest, responses} from '../src/index.ts'
 
 test('responds to registered pattern with openai text response', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.openai?.lastMessage.match(/one plus two/)) {
@@ -29,7 +29,7 @@ test('responds to registered pattern with openai text response', async () => {
 })
 
 test('matches against last user message only', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.openai?.lastMessage.match(/hello/)) {
@@ -59,7 +59,7 @@ test('matches against last user message only', async () => {
 })
 
 test('unmatched request returns error', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     fetch() {
       return Response.json({error: {message: 'No matching handler'}}, {status: 400})
     },
@@ -83,7 +83,7 @@ test('unmatched request returns error', async () => {
 
 test('fetch handler has access to full request body', async () => {
   let capturedModel = ''
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       capturedModel = parsed.body.model
@@ -109,7 +109,7 @@ test('fetch handler has access to full request body', async () => {
 })
 
 test('anthropic lastMessage matches last user message', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.anthropic?.lastMessage.match(/hello/)) {
@@ -138,7 +138,7 @@ test('anthropic lastMessage matches last user message', async () => {
 })
 
 test('parseRequest detects protocol from URL path', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       // Return which protocol was detected so we can assert from outside
@@ -165,7 +165,7 @@ test('parseRequest detects protocol from URL path', async () => {
 })
 
 test('dual-protocol handler returns correct format per protocol', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.openai?.lastMessage.match(/hi/)) return responses.openai.text('openai-response')
@@ -192,7 +192,7 @@ test('dual-protocol handler returns correct format per protocol', async () => {
 })
 
 test('matches only matches the last user message, not conversation history', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.anthropic?.lastMessage.match(/one plus two/)) {
@@ -230,7 +230,7 @@ test('matches only matches the last user message, not conversation history', asy
 })
 
 test('parsed.lastMessage and parsed.respond work across protocols', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.lastMessage.match(/one plus two/)) {
@@ -268,7 +268,7 @@ test('parsed.lastMessage and parsed.respond work across protocols', async () => 
 })
 
 test('getSpawnArgs returns command and env for agent', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     fetch: () => new Response('not found', {status: 404}),
   })
 
@@ -282,7 +282,7 @@ test('getSpawnArgs returns command and env for agent', async () => {
 })
 
 test('respond.toolCall returns correct format per protocol', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       return parsed.respond.toolCall('read_file', {path: '/tmp/foo.txt'})

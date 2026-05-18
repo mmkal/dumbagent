@@ -1,6 +1,6 @@
 import {parseRequest} from '../api.ts'
 
-// Adapted from ../tuiui/src/fakeagent-response.ts.
+// Adapted from tuiui's agent response preset.
 // Kept local so the default CLI can run without depending on the TUI app.
 export async function sarcasticResponder(request: Request): Promise<Response> {
   const parsed = await parseRequest(request)
@@ -10,7 +10,7 @@ export async function sarcasticResponder(request: Request): Promise<Response> {
 export function formatSarcasticResponse(text: string) {
   const cleanText = stripXmlBlocks(text).trim()
   if (!cleanText) {
-    return 'fakeagent ready'
+    return 'dumbagent ready'
   }
   return `"${spongebobCase(cleanText.slice(0, 50))}" do you hear yourself`
 }

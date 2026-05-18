@@ -3,7 +3,7 @@ import {spawn as nodeSpawn, type ChildProcess, type SpawnOptions} from 'node:chi
 import {WebSocketServer, WebSocket} from 'ws'
 import {agents, type AgentName, type AgentConfig} from './agents.ts'
 
-export interface FakeAgent extends AsyncDisposable {
+export interface DumbAgent extends AsyncDisposable {
   port: number
   spawn(agent: AgentName, args?: string[], options?: SpawnOptions): ChildProcess
   getSpawnArgs(agent: AgentName): {command: string; args: string[]; env: Record<string, string>; spawnOptions: SpawnOptions}
@@ -194,7 +194,7 @@ export async function parseRequest(request: Request): Promise<ParsedRequest> {
   }
 }
 
-export interface CreateFakeAgentOptions {
+export interface CreateDumbAgentOptions {
   port?: number
   fetch(request: Request): Response | Promise<Response>
 }
@@ -302,7 +302,7 @@ function jsonToSSE(json: any): Response {
   ])
 }
 
-export async function createFakeAgent(options: CreateFakeAgentOptions): Promise<FakeAgent> {
+export async function createDumbAgent(options: CreateDumbAgentOptions): Promise<DumbAgent> {
   const server = http.createServer(async (req, res) => {
     try {
       // Health check — claude sends HEAD / on startup

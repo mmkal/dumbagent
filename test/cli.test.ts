@@ -8,7 +8,7 @@ import {waitForExit} from './helpers/index.ts'
 const repoRoot = new URL('..', import.meta.url).pathname
 
 test('node src/cli.ts codex serves the sarcastic preset', async () => {
-  await using shims = await fakeAgentCommandShims()
+  await using shims = await dumbAgentCommandShims()
 
   const child = spawn(process.execPath, ['src/cli.ts', 'codex', 'exec', '--json', 'hello from codex'], {
     cwd: repoRoot,
@@ -24,7 +24,7 @@ test('node src/cli.ts codex serves the sarcastic preset', async () => {
 })
 
 test('node src/cli.ts opencode serves the sarcastic preset', async () => {
-  await using shims = await fakeAgentCommandShims()
+  await using shims = await dumbAgentCommandShims()
 
   const child = spawn(process.execPath, ['src/cli.ts', 'opencode', 'run', 'hello from opencode'], {
     cwd: repoRoot,
@@ -40,7 +40,7 @@ test('node src/cli.ts opencode serves the sarcastic preset', async () => {
 })
 
 test('node src/cli.ts claude serves the sarcastic preset', async () => {
-  await using shims = await fakeAgentCommandShims()
+  await using shims = await dumbAgentCommandShims()
 
   const child = spawn(process.execPath, ['src/cli.ts', 'claude', '-p', 'hello from claude'], {
     cwd: repoRoot,
@@ -56,7 +56,7 @@ test('node src/cli.ts claude serves the sarcastic preset', async () => {
 })
 
 test('node src/cli.ts pi serves the sarcastic preset', async () => {
-  await using shims = await fakeAgentCommandShims()
+  await using shims = await dumbAgentCommandShims()
 
   const child = spawn(process.execPath, ['src/cli.ts', 'pi', '-p', 'hello from pi'], {
     cwd: repoRoot,
@@ -71,12 +71,12 @@ test('node src/cli.ts pi serves the sarcastic preset', async () => {
   expect(stdout).toContain('do you hear yourself')
 })
 
-test('FAKEAGENT_PRESET=eliza selects the ELIZA preset', async () => {
-  await using shims = await fakeAgentCommandShims()
+test('DUMBAGENT_PRESET=eliza selects the ELIZA preset', async () => {
+  await using shims = await dumbAgentCommandShims()
 
   const child = spawn(process.execPath, ['src/cli.ts', 'claude', '-p', 'I need help'], {
     cwd: repoRoot,
-    env: {...process.env, FAKEAGENT_PRESET: 'eliza', PATH: `${shims.dir}:${process.env.PATH}`},
+    env: {...process.env, DUMBAGENT_PRESET: 'eliza', PATH: `${shims.dir}:${process.env.PATH}`},
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -87,14 +87,14 @@ test('FAKEAGENT_PRESET=eliza selects the ELIZA preset', async () => {
   expect(stdout).not.toContain('do you hear yourself')
 })
 
-async function fakeAgentCommandShims() {
-  const dir = await mkdtemp(join(tmpdir(), 'fakeagent-cli-shims-'))
+async function dumbAgentCommandShims() {
+  const dir = await mkdtemp(join(tmpdir(), 'dumbagent-cli-shims-'))
   const shimPath = join(dir, 'agent-shim.mjs')
   await writeFile(shimPath, agentShimSource())
   await chmod(shimPath, 0o755)
   for (const command of ['codex', 'opencode', 'claude', 'pi']) {
     const commandPath = join(dir, command)
-    await writeFile(commandPath, `#!/usr/bin/env sh\nFAKEAGENT_SHIM_COMMAND="${command}" exec "${process.execPath}" "${shimPath}" "$@"\n`)
+    await writeFile(commandPath, `#!/usr/bin/env sh\nDUMBAGENT_SHIM_COMMAND="${command}" exec "${process.execPath}" "${shimPath}" "$@"\n`)
     await chmod(commandPath, 0o755)
   }
 
@@ -110,7 +110,7 @@ function agentShimSource() {
   return String.raw`#!/usr/bin/env node
 import {readFile} from 'node:fs/promises'
 
-const command = process.env.FAKEAGENT_SHIM_COMMAND
+const command = process.env.DUMBAGENT_SHIM_COMMAND
 const args = process.argv.slice(2)
 const prompt = promptFromArgs(args)
 
@@ -129,7 +129,7 @@ if (command === 'codex') {
 
 if (command === 'opencode') {
   const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT)
-  const baseUrl = config.provider.fakeagent.api
+  const baseUrl = config.provider.dumbagent.api
   const response = await fetch(baseUrl + '/chat/completions', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -153,7 +153,7 @@ if (command === 'claude') {
 
 if (command === 'pi') {
   const config = JSON.parse(await readFile(process.env.PI_CODING_AGENT_DIR + '/models.json', 'utf8'))
-  const baseUrl = config.providers.fakeagent.baseUrl
+  const baseUrl = config.providers.dumbagent.baseUrl
   const response = await fetch(baseUrl + '/chat/completions', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},

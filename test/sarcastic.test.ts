@@ -6,7 +6,7 @@ test('formats the sarcastic preset as a SpongeBob-style callout', () => {
 
   expect(response).toMatch(/^".+" do you hear yourself$/)
   expect(response.toLowerCase()).toContain('hello from a confusing echo')
-  expect(response).not.toContain('fakeagent heard')
+  expect(response).not.toContain('dumbagent heard')
 })
 
 test('limits the sarcastic callout quote to the first 50 characters', () => {

@@ -1,6 +1,6 @@
 import {parseRequest, type ParsedRequest} from './api.ts'
 
-export type FakeAgentFetch = (request: Request) => Response | Promise<Response>
+export type DumbAgentFetch = (request: Request) => Response | Promise<Response>
 
 export type SimulatedToolCommand = {
   type: 'readFile'
@@ -37,7 +37,7 @@ export function simulateToolCall(parsed: ParsedRequest, command: SimulatedToolCo
   return parsed.respond.toolCall(toolCall.name, toolCall.args)
 }
 
-export function withSimulatedToolCalls(fetch: FakeAgentFetch): FakeAgentFetch {
+export function withSimulatedToolCalls(fetch: DumbAgentFetch): DumbAgentFetch {
   return async (request) => {
     const parsed = await parseRequest(request.clone())
     const toolResult = extractToolResult(parsed)

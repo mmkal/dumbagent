@@ -4,7 +4,7 @@
 //   PTY_COMMAND: command to spawn (required)
 //   PTY_ARGS: JSON array of args (default: "[]")
 //   PTY_SUBMIT: how to submit — "cr" or "lf-cr" (default: "cr")
-//   PTY_CWD: working directory (default: /tmp/fakeagent-test)
+//   PTY_CWD: working directory (default: /tmp/dumbagent-test)
 
 const command = process.env.PTY_COMMAND!
 if (!command) {
@@ -48,7 +48,7 @@ const proc = Bun.spawn([command, ...args], {
       checkWaiters()
     },
   },
-  cwd: process.env.PTY_CWD || '/tmp/fakeagent-test',
+  cwd: process.env.PTY_CWD || '/tmp/dumbagent-test',
 })
 
 const server = Bun.serve({

@@ -11,7 +11,7 @@ import {parseRequest} from '../api.ts'
  * - removed DOM rendering, timers, and Array.prototype mutation;
  * - preserved the response tables, synonyms, wildcard handling, and word reflection;
  * - removed the one-off emotional overrides so "i am sad" rotates through the broader "i am" rule;
- * - added FakeAgent Request/Response helpers.
+ * - added DumbAgent Request/Response helpers.
  *
  * MIT License
  *

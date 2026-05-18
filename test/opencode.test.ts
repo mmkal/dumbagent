@@ -1,10 +1,10 @@
 import {test, expect} from 'vitest'
-import {createFakeAgent, parseRequest} from '../src/index.ts'
+import {createDumbAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('opencode run gets fake response', async () => {
   let capturedLastMessage = ''
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       capturedLastMessage = parsed.lastMessage
@@ -13,7 +13,7 @@ test('opencode run gets fake response', async () => {
   })
 
   const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'default', '--pure'], {
-    cwd: '/tmp/fakeagent-test',
+    cwd: '/tmp/dumbagent-test',
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
@@ -22,7 +22,7 @@ test('opencode run gets fake response', async () => {
 }, 10_000)
 
 test('opencode TUI text response', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       return parsed.respond.text('three')
@@ -36,7 +36,7 @@ test('opencode TUI text response', async () => {
 }, 20_000)
 
 test('opencode TUI tool use', async () => {
-  await using api = await createFakeAgent({
+  await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
       if (parsed.systemPrompt.match(/title generator/)) {
@@ -47,7 +47,7 @@ test('opencode TUI tool use', async () => {
         return parsed.respond.text('the file says hi')
       }
       if (parsed.lastMessage.match(/read hello/)) {
-        return parsed.respond.toolCall('read', {filePath: '/tmp/fakeagent-test/hello.txt'})
+        return parsed.respond.toolCall('read', {filePath: '/tmp/dumbagent-test/hello.txt'})
       }
       return parsed.respond.text('')
     },
