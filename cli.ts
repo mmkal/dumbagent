@@ -2228,6 +2228,7 @@ function existingSessionForCodexResumeLaunch(command: string, args: string[], cw
   if (!recoveryCommand) {
     return null;
   }
+  const resumeId = findCodexResumeId(args);
   const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
   const activeOwnerSession = ownerInfo.activeTuiSessionId ? state.sessions.get(ownerInfo.activeTuiSessionId) || null : null;
   if (activeOwnerSession) {
@@ -2236,7 +2237,9 @@ function existingSessionForCodexResumeLaunch(command: string, args: string[], cw
   if (!cwd) {
     return null;
   }
-  const candidates = runningCodexSessionsForCwd(cwd);
+  const candidates = runningCodexSessionsForCwd(cwd).filter((candidate) => {
+    return candidate.sdk.externalSessionId === resumeId;
+  });
   return candidates.length === 1 ? candidates[0]! : null;
 }
 

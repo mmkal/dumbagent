@@ -743,6 +743,44 @@ test("orders recent session preview rows by message timestamp", async ({ page, c
   ]);
 });
 
+test("refreshes stale empty recent sessions when the home tab regains focus", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  let recentSessions: any[] = [];
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ json: recentSessions }),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("None");
+  await expect(page.getByTestId("recent-agent-list")).toContainText("No recent sessions");
+
+  recentSessions = [{
+    provider: "codex",
+    id: "focus-refreshed-codex-thread",
+    title: "Focus refreshed Codex",
+    cwd: ctx.workspaceDir,
+    updatedAt: now,
+    lastMessageAt: now,
+    lastMessageText: "The session appeared after the page had already rendered empty recents.",
+    initialUserText: "Refresh stale home recents",
+    latestUserText: "Refresh stale home recents",
+    userMessageCount: 1,
+    latestAssistantText: "Refreshed the home recent sessions.",
+    messageCount: 2,
+    status: "idle",
+    command: "codex",
+    args: ["resume", "focus-refreshed-codex-thread"],
+  }];
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("1 active in 24h");
+  await expect(page.getByRole("button", { name: /Resume Codex session Focus refreshed Codex/ })).toBeVisible();
+});
+
 test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
   const now = new Date().toISOString();
   const projectA = path.join(ctx.env.HOME!, "project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary");

@@ -339,6 +339,8 @@ let voiceReadbackTimer: number | null = null;
 let composerAttachments: ComposerAttachment[] = [];
 let sessionIdleRefreshTimer: number | null = null;
 let homeIdleNotificationPollTimer: number | null = null;
+let homeRecentAgentSessionRefreshTimer: number | null = null;
+let homeRecentAgentSessionRefreshAbortController: AbortController | null = null;
 let homeIdleNotificationDisplayDirs: string[] = [];
 
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
@@ -608,6 +610,31 @@ function stopHomeIdleNotificationPolling() {
   homeIdleNotificationPollTimer = null;
 }
 
+function startHomeRecentAgentSessionRefresh(refresh: () => void) {
+  stopHomeRecentAgentSessionRefresh();
+  homeRecentAgentSessionRefreshAbortController = new AbortController();
+  homeRecentAgentSessionRefreshTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") {
+      refresh();
+    }
+  }, 10_000);
+  window.addEventListener("focus", refresh, { signal: homeRecentAgentSessionRefreshAbortController.signal });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      refresh();
+    }
+  }, { signal: homeRecentAgentSessionRefreshAbortController.signal });
+}
+
+function stopHomeRecentAgentSessionRefresh() {
+  if (homeRecentAgentSessionRefreshTimer !== null) {
+    window.clearInterval(homeRecentAgentSessionRefreshTimer);
+    homeRecentAgentSessionRefreshTimer = null;
+  }
+  homeRecentAgentSessionRefreshAbortController?.abort();
+  homeRecentAgentSessionRefreshAbortController = null;
+}
+
 async function pollHomeIdleNotificationSessions(displayHomeDirs: string[]) {
   if (!idleNotifications.isEnabled()) {
     stopHomeIdleNotificationPolling();
@@ -867,6 +894,7 @@ async function renderRoute() {
   stopTerminalAutoResize();
   clearSessionIdleRefreshTimer();
   stopHomeIdleNotificationPolling();
+  stopHomeRecentAgentSessionRefresh();
   destroyXterm();
   activeSession = null;
   destroyDataEditor();
@@ -948,6 +976,7 @@ async function renderHome() {
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
   let loadedRecentAgentSessions: RecentAgentSession[] | null = null;
+  let recentAgentSessionsLoad: Promise<void> | null = null;
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -1099,7 +1128,17 @@ async function renderHome() {
     await submitLaunchForm();
   });
 
-  void loadRecentAgentSessions();
+  refreshRecentAgentSessions();
+  startHomeRecentAgentSessionRefresh(refreshRecentAgentSessions);
+
+  function refreshRecentAgentSessions() {
+    if (recentAgentSessionsLoad) {
+      return;
+    }
+    recentAgentSessionsLoad = loadRecentAgentSessions().finally(() => {
+      recentAgentSessionsLoad = null;
+    });
+  }
 
   async function loadRecentAgentSessions() {
     try {
