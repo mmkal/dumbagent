@@ -956,12 +956,33 @@ async function fetchSessionRecovery(sessionId: string) {
   }
 }
 
+function renderHomeMenu(activeSessionCount: number) {
+  return `
+    <details class="session-menu home-menu">
+      <summary class="menu-button" role="button" aria-label="Home menu">☰</summary>
+      <div class="floating-overlay session-menu-overlay">
+        <button type="button" class="floating-overlay-backdrop" data-action="close-session-menu" aria-label="Close home menu"></button>
+        <div class="floating-overlay-card menu-panel" role="dialog" aria-label="Home menu">
+          <div class="menu-fact">
+            <span>Active sessions</span>
+            <code data-testid="home-session-count">${escapeHtml(`${formatCount(activeSessionCount, "session")} active`)}</code>
+          </div>
+          <div class="toolbar" role="group" aria-label="Home controls">
+            <button type="button" class="icon-button" data-action="refetch-home-sessions">Refetch sessions</button>
+          </div>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 async function renderHome() {
-  const [cwd, sessions, commands] = await Promise.all([
+  const [cwd, initialSessions, commands] = await Promise.all([
     clientApi.cwd(),
     clientApi.sessions.list(),
     clientApi.commands(),
   ]);
+  let sessions = initialSessions;
   const displayHomeDirs = homeDirsForDisplay(cwd);
   homeIdleNotificationDisplayDirs = displayHomeDirs;
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
@@ -977,6 +998,8 @@ async function renderHome() {
     .filter((command): command is CommandPreset => Boolean(command));
   let loadedRecentAgentSessions: RecentAgentSession[] | null = null;
   let recentAgentSessionsLoad: Promise<void> | null = null;
+  let recentAgentSessionLoadId = 0;
+  let homeSessionsRefetchLoad: Promise<void> | null = null;
 
   app.innerHTML = `
     <main class="layout home-layout">
@@ -985,6 +1008,7 @@ async function renderHome() {
         <a class="view-switch-link" href="/" data-action="open-coordinator">Coordinator</a>
         <a class="view-switch-link" href="/factory-floor" data-action="open-factory-floor" aria-label="Factory floor">🏭</a>
         ${renderIdleNotificationControl()}
+        ${renderHomeMenu(sessions.length)}
       </header>
       <section class="launcher" aria-label="Launch session">
         <form id="launch-form" class="launch-form">
@@ -1049,6 +1073,12 @@ async function renderHome() {
   `;
   bindIdleNotificationControls();
   startHomeIdleNotificationPolling(displayHomeDirs);
+  document.querySelector<HTMLButtonElement>("[data-action='close-session-menu']")?.addEventListener("click", () => {
+    closeSessionMenu();
+  });
+  document.querySelector<HTMLButtonElement>("[data-action='refetch-home-sessions']")?.addEventListener("click", () => {
+    void refetchHomeSessionsFromMenu();
+  });
   const factoryFloorLink = app.querySelector<HTMLAnchorElement>("[data-action='open-factory-floor']");
   if (factoryFloorLink) {
     bindClientRouteLink(factoryFloorLink, "/factory-floor");
@@ -1132,18 +1162,20 @@ async function renderHome() {
   startHomeRecentAgentSessionRefresh(refreshRecentAgentSessions);
 
   function refreshRecentAgentSessions() {
-    if (recentAgentSessionsLoad) {
+    if (recentAgentSessionsLoad || homeSessionsRefetchLoad) {
       return;
     }
-    recentAgentSessionsLoad = loadRecentAgentSessions().finally(() => {
+    const loadId = recentAgentSessionLoadId + 1;
+    recentAgentSessionLoadId = loadId;
+    recentAgentSessionsLoad = loadRecentAgentSessions(loadId).finally(() => {
       recentAgentSessionsLoad = null;
     });
   }
 
-  async function loadRecentAgentSessions() {
+  async function loadRecentAgentSessions(loadId: number) {
     try {
       const recentAgentSessions = await clientApi.agentSessions.recent();
-      if (!form.isConnected) {
+      if (!form.isConnected || loadId !== recentAgentSessionLoadId) {
         return;
       }
       loadedRecentAgentSessions = recentAgentSessions;
@@ -1152,7 +1184,96 @@ async function renderHome() {
       bindRecentAgentSessionControls(recentAgentSessions);
       bindRecentSessionGroupDetails();
     } catch {
+      if (loadId !== recentAgentSessionLoadId) {
+        return;
+      }
       renderRecentAgentSessionFailure();
+    }
+  }
+
+  function refetchHomeSessionsFromMenu() {
+    if (homeSessionsRefetchLoad) {
+      return homeSessionsRefetchLoad;
+    }
+    const loadId = recentAgentSessionLoadId + 1;
+    recentAgentSessionLoadId = loadId;
+    homeSessionsRefetchLoad = loadHomeSessionsFromMenu(loadId).finally(() => {
+      homeSessionsRefetchLoad = null;
+    });
+    return homeSessionsRefetchLoad;
+  }
+
+  async function loadHomeSessionsFromMenu(loadId: number) {
+    const button = document.querySelector<HTMLButtonElement>("[data-action='refetch-home-sessions']");
+    if (button) {
+      button.disabled = true;
+    }
+    showToast({
+      id: "home-session-refetch",
+      title: "Refetching sessions",
+      message: "Loading active sessions...",
+      durationMs: 12_000,
+      testId: "home-session-refetch-toast",
+    });
+    try {
+      sessions = await clientApi.sessions.list();
+      if (!form.isConnected || loadId !== recentAgentSessionLoadId) {
+        return;
+      }
+      updateHomeSessionCount(sessions.length);
+      showToast({
+        id: "home-session-refetch",
+        title: "Active sessions loaded",
+        message: `${formatCount(sessions.length, "active session")} found. Loading recent agent sessions...`,
+        durationMs: 12_000,
+        testId: "home-session-refetch-toast",
+      });
+
+      const recentAgentSessions = await clientApi.agentSessions.recent();
+      if (!form.isConnected || loadId !== recentAgentSessionLoadId) {
+        return;
+      }
+      loadedRecentAgentSessions = recentAgentSessions;
+      observeHomeIdleNotificationSessions(sessions, recentAgentSessions, displayHomeDirs);
+      renderRecentAgentSessions(recentAgentSessions);
+      bindRecentAgentSessionControls(recentAgentSessions);
+      bindRecentSessionGroupDetails();
+      const rendered = renderRecentAgentSessionContent(
+        recentAgentSessions,
+        displayHomeDirs,
+        recentSessionGroupState.getValue(),
+        recentSessionFilterState.getValue() || defaultRecentSessionFilterExpression,
+        recentSessionGroupOpenState,
+      );
+      showToast({
+        id: "home-session-refetch",
+        title: "Sessions refetched",
+        message: `${formatCount(sessions.length, "active session")} found. ${formatCount(recentAgentSessions.length, "recent session")} loaded, ${formatCount(rendered.sessions.length, "visible recent session")}.`,
+        tone: "success",
+        durationMs: 8_000,
+        testId: "home-session-refetch-toast",
+      });
+      closeSessionMenu();
+    } catch (error) {
+      showToast({
+        id: "home-session-refetch",
+        title: "Refetch sessions failed",
+        message: String(error instanceof Error ? error.message : error),
+        tone: "error",
+        durationMs: 10_000,
+        testId: "home-session-refetch-toast",
+      });
+    } finally {
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  function updateHomeSessionCount(count: number) {
+    const value = document.querySelector<HTMLElement>("[data-testid='home-session-count']");
+    if (value) {
+      value.textContent = `${formatCount(count, "session")} active`;
     }
   }
 
@@ -5044,6 +5165,10 @@ function formatPathForDisplay(value: string, homeDirs: string[]) {
     }
   }
   return path;
+}
+
+function formatCount(count: number, singular: string) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function expandDisplayPath(value: string, homeDirs: string[]) {

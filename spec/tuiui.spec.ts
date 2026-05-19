@@ -781,6 +781,93 @@ test("refreshes stale empty recent sessions when the home tab regains focus", as
   await expect(page.getByRole("button", { name: /Resume Codex session Focus refreshed Codex/ })).toBeVisible();
 });
 
+test("refetches home sessions from the hamburger menu with mobile progress toasts", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  let releaseManualSessions!: () => void;
+  let releaseManualRecentSessions!: () => void;
+  const manualSessionsReady = new Promise<void>((resolve) => {
+    releaseManualSessions = resolve;
+  });
+  const manualRecentSessionsReady = new Promise<void>((resolve) => {
+    releaseManualRecentSessions = resolve;
+  });
+  let sessionListRequests = 0;
+  let recentSessionRequests = 0;
+  const activeSessions = [{
+    id: "tuiui_refetched_home",
+    title: "Refetched live session",
+    command: "codex",
+    args: [],
+    cwd: ctx.workspaceDir,
+    updatedAt: now,
+    lifecycle: "running",
+    status: "idle",
+  }];
+  const recentSessions = [{
+    provider: "codex",
+    id: "refetched-codex-thread",
+    title: "Refetched Codex",
+    cwd: ctx.workspaceDir,
+    updatedAt: now,
+    lastMessageAt: now,
+    lastMessageText: "The manual home refetch loaded this session.",
+    initialUserText: "Refetch missing home sessions",
+    latestUserText: "Refetch missing home sessions",
+    userMessageCount: 1,
+    latestAssistantText: "Manual refetch is visible.",
+    messageCount: 2,
+    status: "idle",
+    archived: false,
+    command: "codex",
+    args: ["resume", "refetched-codex-thread"],
+  }];
+
+  await page.route("**/rpc/sessions/list", async (route) => {
+    sessionListRequests += 1;
+    if (sessionListRequests > 1) {
+      await manualSessionsReady;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody(sessionListRequests > 1 ? activeSessions : []),
+    });
+  });
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    recentSessionRequests += 1;
+    if (recentSessionRequests > 1) {
+      await manualRecentSessionsReady;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody(recentSessionRequests > 1 ? recentSessions : []),
+    });
+  });
+
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(ctx.baseUrl);
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("None");
+
+  await page.getByRole("button", { name: "Home menu" }).click();
+  await expect(page.getByTestId("home-session-count")).toHaveText("0 sessions active");
+  const refetch = page.getByRole("button", { name: "Refetch sessions" });
+  await refetch.click();
+  await expect(refetch).toBeDisabled();
+  await expect(page.getByTestId("home-session-refetch-toast")).toContainText("Loading active sessions");
+
+  releaseManualSessions();
+  await expect(page.getByTestId("home-session-refetch-toast")).toContainText("1 active session found. Loading recent agent sessions...");
+  await expect(page.getByTestId("home-session-count")).toHaveText("1 session active");
+
+  releaseManualRecentSessions();
+  await expect(page.getByTestId("home-session-refetch-toast")).toContainText("Sessions refetched");
+  await expect(page.getByTestId("home-session-refetch-toast")).toContainText("1 active session found. 1 recent session loaded, 1 visible recent session.");
+  await expect(page.getByRole("button", { name: /Resume Codex session Refetched Codex/ })).toBeVisible();
+  expect(sessionListRequests).toBe(2);
+  expect(recentSessionRequests).toBe(2);
+});
+
 test("groups recent sessions with jsonata expressions from the title details", async ({ page, ctx }) => {
   const now = new Date().toISOString();
   const projectA = path.join(ctx.env.HOME!, "project-a-with-a-very-long-name-that-should-truncate-in-the-group-summary");

@@ -15,7 +15,7 @@ import { Codex } from "@openai/codex-sdk";
 import { createOpencodeClient } from "@opencode-ai/sdk/client";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import { createFakeAgent, parseRequest, type AgentName, type FakeAgent } from "fakeagent";
+import { createDumbAgent as createFakeAgent, parseRequest, type AgentName, type DumbAgent as FakeAgent } from "dumbagent";
 import { z } from "zod";
 import homepage from "./public/index.html";
 import {

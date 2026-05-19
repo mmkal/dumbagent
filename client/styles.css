@@ -1294,6 +1294,14 @@ textarea:focus {
   gap: 6px;
 }
 
+.home-menu .menu-panel .toolbar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.home-menu .icon-button {
+  width: 100%;
+}
+
 .terminal-zoom-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
