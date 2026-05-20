@@ -1,9 +1,17 @@
+import { css } from "@codemirror/lang-css";
+import { html } from "@codemirror/lang-html";
+import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
+import { markdown } from "@codemirror/lang-markdown";
+import { python } from "@codemirror/lang-python";
+import { sql } from "@codemirror/lang-sql";
+import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
+import { githubDark, vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import jsonata from "@mmkal/jsonata/sync";
+import { FileTree } from "@pierre/trees";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { ILinkHandler, Terminal as XtermTerminal } from "@xterm/xterm";
@@ -258,6 +266,27 @@ type LaunchSessionInput = {
   coordinator?: boolean;
 };
 
+type SessionFileTreePayload = {
+  cwd: string;
+  paths: string[];
+  truncated: boolean;
+  entryCount: number;
+  maxEntries: number;
+  ignoredNames: string[];
+};
+
+type SessionFileContentPayload = {
+  cwd: string;
+  path: string;
+  name: string;
+  kind: "text" | "binary" | "too-large";
+  content: string;
+  size: number;
+  limit: number;
+  updatedAt: string;
+  message: string;
+};
+
 type AttachmentUpload = {
   path: string;
   name: string;
@@ -295,10 +324,15 @@ let events: EventSource | null = null;
 let activeSession: SessionPayload | null = null;
 let renderer: "terminal" | "sdk" = "terminal";
 let dataEditorView: EditorView | null = null;
-let dataEditorKind: "" | "sdk-yaml" | "blocks-json" = "";
+let dataEditorKind: "" | "sdk-yaml" | "blocks-json" | "file-text" = "";
 let dataEditorDoc = "";
+let fileEditorLanguageKey = "";
 let briefEditorView: EditorView | null = null;
 let briefEditorDoc = "";
+let ideFileTree: FileTree | null = null;
+let ideFileTreeCwd = "";
+let ideFileTreeLoadingCwd = "";
+let ideSelectedFilePath = "";
 let eventsPaused = false;
 let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
@@ -733,6 +767,7 @@ async function renderRoute() {
   clearSessionIdleRefreshTimer();
   stopHomeIdleNotificationPolling();
   destroyXterm();
+  destroyIdeFileTree();
   activeSession = null;
   destroyDataEditor();
   unsubscribeVoiceLoop?.();
@@ -747,6 +782,11 @@ async function renderRoute() {
     } catch (error) {
       await renderMissingSession(sessionMatch[1]!, String(error instanceof Error ? error.message : error));
     }
+    return;
+  }
+
+  if (location.pathname === "/ide") {
+    await renderIdeRoute();
     return;
   }
 
@@ -791,6 +831,29 @@ async function fetchSessionRecovery(sessionId: string) {
   } catch {
     return null;
   }
+}
+
+async function renderIdeRoute() {
+  const url = new URL(location.href);
+  const requestedCwd = url.searchParams.get("cwd") || "";
+  const cwd = requestedCwd || (await clientApi.cwd()).cwd;
+  if (!requestedCwd) {
+    history.replaceState({}, "", `/ide?cwd=${encodeURIComponent(cwd)}`);
+  }
+  const displayCwd = formatPathForDisplay(cwd, homeDirsForDisplay({ cwd }));
+  document.title = `${displayCwd} · IDE · TUI UI`;
+  app.innerHTML = `
+    <main class="layout ide-route-layout">
+      <header class="topbar ide-route-topbar">
+        <a class="brand" href="/">tuiui</a>
+        <span class="muted">IDE</span>
+        <code class="command app-title" title="${escapeAttr(cwd)}" data-testid="ide-cwd">${escapeHtml(displayCwd)}</code>
+      </header>
+      <section id="screen" class="screen ide-screen" data-testid="semantic-screen"></section>
+    </main>
+  `;
+  const screen = document.getElementById("screen")!;
+  renderIdeScreenForCwd(screen, cwd);
 }
 
 async function renderHome() {
@@ -1586,6 +1649,7 @@ async function renderSession(sessionId: string) {
               </div>
               <div class="toolbar" role="group" aria-label="Session controls">
                 <button type="button" class="icon-button" data-renderer="terminal" aria-pressed="${renderer === "terminal"}">TTY</button>
+                <button type="button" class="icon-button" data-action="open-ide-view">IDE</button>
                 <button type="button" class="icon-button" data-renderer="sdk" aria-pressed="${renderer === "sdk"}">Debug</button>
                 <button type="button" class="icon-button" data-action="pause-events" aria-pressed="false">Pause events</button>
                 <button type="button" class="icon-button" data-action="relayout">Relayout</button>
@@ -1754,6 +1818,16 @@ function bindSessionControls(sessionId: string) {
     sequenceInput.value = "";
     setChordFormOpen(chordForm, false);
     void sendChordSequence(sessionId, chord.sequence, chord.id);
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='open-ide-view']")?.addEventListener("click", () => {
+    const cwd = activeSession?.cwd || "";
+    if (!cwd) {
+      return;
+    }
+    history.pushState({}, "", `/ide?cwd=${encodeURIComponent(cwd)}`);
+    closeSessionMenu();
+    void renderRoute();
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-renderer]").forEach((button) => {
@@ -2336,9 +2410,11 @@ function renderSessionPayload(
 
   const screen = document.getElementById("screen")!;
   if (renderer === "terminal") {
+    destroyIdeFileTree();
     destroyDataEditor();
     renderTerminalScreen(screen, payload);
   } else if (renderer === "sdk") {
+    destroyIdeFileTree();
     stopTerminalAutoResize();
     destroyXterm();
     renderSdkScreen(screen, payload);
@@ -2570,6 +2646,384 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   }
   xtermSyncQueue = xtermSyncQueue.then(() => syncXterm(payload)).catch(() => undefined);
   startTerminalAutoResize(payload.id);
+}
+
+function renderIdeScreenForCwd(screen: HTMLElement, cwd: string) {
+  screen.className = "screen ide-screen";
+  const existingLayout = screen.querySelector(".ide-layout");
+  if (existingLayout && ideFileTreeCwd === cwd) {
+    return;
+  }
+
+  destroyDataEditor();
+  destroyIdeFileTree();
+  ideFileTreeCwd = cwd;
+  ideSelectedFilePath = "";
+  const displayCwd = formatPathForDisplay(cwd, homeDirsForDisplay({ cwd }));
+  screen.innerHTML = `
+    <section class="ide-layout" data-testid="ide-view">
+      <aside class="ide-sidebar" aria-label="Files under current working directory">
+        <header>
+          <div class="ide-sidebar-title-row">
+            <strong>Files</strong>
+            <button
+              type="button"
+              class="ide-files-toggle"
+              data-action="toggle-ide-files"
+              aria-expanded="true"
+              aria-label="Collapse file tree"
+              title="Collapse file tree"
+            >▾</button>
+          </div>
+          <code title="${escapeAttr(cwd)}" data-ide-cwd>${escapeHtml(displayCwd)}</code>
+        </header>
+        <div id="ide-file-tree" class="ide-tree-mount" data-testid="ide-file-tree">
+          <p class="empty">Loading files</p>
+        </div>
+      </aside>
+      <section class="ide-editor-pane" aria-label="File preview">
+        <header>
+          <strong data-ide-file-title>No file selected</strong>
+          <span data-ide-file-meta></span>
+        </header>
+        <p class="ide-file-message" data-ide-file-message>Select a file from the tree.</p>
+        <div id="ide-file-editor" class="ide-file-editor" data-testid="ide-file-editor"></div>
+      </section>
+    </section>
+  `;
+  bindIdeFilesToggle();
+  mountFileTextEditor("");
+  void loadIdeFileTree(cwd);
+}
+
+function bindIdeFilesToggle() {
+  const button = document.querySelector<HTMLButtonElement>("[data-action='toggle-ide-files']");
+  button?.addEventListener("click", () => {
+    const layout = document.querySelector<HTMLElement>(".ide-layout");
+    if (!layout) {
+      return;
+    }
+    setIdeFilesCollapsed(layout.dataset.filesCollapsed !== "true");
+  });
+}
+
+function setIdeFilesCollapsed(collapsed: boolean) {
+  const layout = document.querySelector<HTMLElement>(".ide-layout");
+  const button = document.querySelector<HTMLButtonElement>("[data-action='toggle-ide-files']");
+  if (!layout || !button) {
+    return;
+  }
+  layout.dataset.filesCollapsed = String(collapsed);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", collapsed ? "Expand file tree" : "Collapse file tree");
+  button.setAttribute("title", collapsed ? "Expand file tree" : "Collapse file tree");
+  button.textContent = collapsed ? "▸" : "▾";
+}
+
+async function loadIdeFileTree(cwd: string) {
+  if (ideFileTreeLoadingCwd === cwd) {
+    return;
+  }
+  ideFileTreeLoadingCwd = cwd;
+  try {
+    const tree = await clientApi.files.fileTree({ cwd });
+    if (!isCurrentIdeCwd(cwd)) {
+      return;
+    }
+    renderIdeFileTree(cwd, tree);
+  } catch (error) {
+    if (isCurrentIdeCwd(cwd)) {
+      renderIdeTreeError(error);
+    }
+  } finally {
+    if (ideFileTreeLoadingCwd === cwd) {
+      ideFileTreeLoadingCwd = "";
+    }
+  }
+}
+
+function renderIdeFileTree(cwd: string, payload: SessionFileTreePayload) {
+  const host = document.getElementById("ide-file-tree");
+  if (!host) {
+    return;
+  }
+  destroyIdeFileTree();
+  ideFileTreeCwd = cwd;
+  host.textContent = "";
+  setIdeCwdChrome(payload.cwd);
+
+  if (!payload.paths.length) {
+    host.innerHTML = `<p class="empty">No files</p>`;
+    setIdeFileMessage("No previewable files were found under this cwd.");
+    return;
+  }
+
+  const firstFilePath = firstPreviewFilePath(payload.paths);
+  ideFileTree = new FileTree({
+    density: "compact",
+    fileTreeSearchMode: "hide-non-matches",
+    flattenEmptyDirectories: true,
+    initialExpansion: "open",
+    initialSelectedPaths: firstFilePath ? [firstFilePath] : [],
+    paths: payload.paths,
+    search: true,
+    unsafeCSS: ideFileTreeCss(),
+    onSelectionChange(selectedPaths) {
+      const selectedPath = selectedPaths[0] || "";
+      if (!selectedPath) {
+        return;
+      }
+      const item = ideFileTree?.getItem(selectedPath);
+      if (!item || item.isDirectory()) {
+        return;
+      }
+      void selectIdeFile(cwd, selectedPath);
+    },
+  });
+  ideFileTree.render({ containerWrapper: host });
+  if (payload.truncated) {
+    host.insertAdjacentHTML("beforeend", `
+      <p class="ide-tree-note">Showing first ${payload.entryCount} entries of ${payload.maxEntries}.</p>
+    `);
+  }
+  if (firstFilePath) {
+    void selectIdeFile(cwd, firstFilePath);
+  } else {
+    setIdeFileMessage("No previewable files were found under this cwd.");
+  }
+}
+
+function renderIdeTreeError(error: unknown) {
+  const host = document.getElementById("ide-file-tree");
+  if (!host) {
+    return;
+  }
+  destroyIdeFileTree();
+  host.innerHTML = `<p class="ide-file-message">${escapeHtml(String(error instanceof Error ? error.message : error))}</p>`;
+  setIdeFileMessage("File tree unavailable.");
+}
+
+async function selectIdeFile(cwd: string, filePath: string) {
+  if (ideSelectedFilePath === filePath && dataEditorKind === "file-text") {
+    return;
+  }
+  ideSelectedFilePath = filePath;
+  setIdeFileChrome(filePath, "Loading");
+  setIdeFileMessage("");
+  mountFileTextEditor("", filePath);
+  try {
+    const file = await clientApi.files.fileContent({ cwd, path: filePath });
+    if (!isCurrentIdeCwd(cwd) || ideSelectedFilePath !== filePath) {
+      return;
+    }
+    renderIdeFileContent(file);
+  } catch (error) {
+    if (isCurrentIdeCwd(cwd) && ideSelectedFilePath === filePath) {
+      setIdeFileChrome(filePath, "Unavailable");
+      mountFileTextEditor("");
+      setIdeFileMessage(String(error instanceof Error ? error.message : error));
+    }
+  }
+}
+
+function isCurrentIdeCwd(cwd: string) {
+  return location.pathname === "/ide" && ideFileTreeCwd === cwd;
+}
+
+function renderIdeFileContent(file: SessionFileContentPayload) {
+  setIdeFileChrome(file.path, `${formatFileSize(file.size)} · ${file.kind}`);
+  if (file.kind !== "text") {
+    mountFileTextEditor("");
+    setIdeFileMessage(file.message);
+    return;
+  }
+  mountFileTextEditor(file.content, file.path);
+  setIdeFileMessage("");
+  requestAnimationFrame(() => dataEditorView?.requestMeasure());
+}
+
+function mountFileTextEditor(doc: string, filePath = "") {
+  const host = document.getElementById("ide-file-editor");
+  if (!host) {
+    return;
+  }
+  const languageKey = fileLanguageKey(filePath);
+  if (!dataEditorView || dataEditorKind !== "file-text" || fileEditorLanguageKey !== languageKey) {
+    destroyDataEditor();
+    const languageExtensions = fileLanguageExtensions(languageKey);
+    dataEditorView = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          basicSetup,
+          githubDark,
+          ...languageExtensions,
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+          EditorView.contentAttributes.of({ "aria-label": "IDE file content" }),
+          fileEditorTheme(),
+        ],
+      }),
+    });
+    dataEditorKind = "file-text";
+    dataEditorDoc = doc;
+    fileEditorLanguageKey = languageKey;
+    return;
+  }
+  updateDataEditorDoc(doc);
+}
+
+function fileLanguageKey(filePath: string) {
+  const fileName = filePath.split("/").pop()?.toLowerCase() || "";
+  if (!fileName) {
+    return "";
+  }
+  if (fileName === "dockerfile") {
+    return "";
+  }
+  const extension = fileName.includes(".") ? fileName.split(".").pop() || "" : "";
+  if (["ts", "mts", "cts"].includes(extension)) {
+    return "typescript";
+  }
+  if (extension === "tsx") {
+    return "tsx";
+  }
+  if (["js", "mjs", "cjs"].includes(extension)) {
+    return "javascript";
+  }
+  if (extension === "jsx") {
+    return "jsx";
+  }
+  if (extension === "json") {
+    return "json";
+  }
+  if (["yaml", "yml"].includes(extension)) {
+    return "yaml";
+  }
+  if (["html", "htm"].includes(extension)) {
+    return "html";
+  }
+  if (["css", "scss", "less"].includes(extension)) {
+    return "css";
+  }
+  if (["md", "markdown", "mdx"].includes(extension)) {
+    return "markdown";
+  }
+  if (["py", "pyw"].includes(extension)) {
+    return "python";
+  }
+  if (["sql", "psql"].includes(extension)) {
+    return "sql";
+  }
+  if (["xml", "svg"].includes(extension)) {
+    return "xml";
+  }
+  return "";
+}
+
+function fileLanguageExtensions(languageKey: string): Extension[] {
+  switch (languageKey) {
+    case "typescript":
+      return [javascript({ typescript: true })];
+    case "tsx":
+      return [javascript({ jsx: true, typescript: true })];
+    case "javascript":
+      return [javascript()];
+    case "jsx":
+      return [javascript({ jsx: true })];
+    case "json":
+      return [json()];
+    case "yaml":
+      return [yaml()];
+    case "html":
+      return [html()];
+    case "css":
+      return [css()];
+    case "markdown":
+      return [markdown()];
+    case "python":
+      return [python()];
+    case "sql":
+      return [sql()];
+    case "xml":
+      return [xml()];
+    default:
+      return [];
+  }
+}
+
+function firstPreviewFilePath(paths: string[]) {
+  return paths.find((candidate) => !candidate.endsWith("/")) || "";
+}
+
+function setIdeFileChrome(title: string, meta: string) {
+  const titleElement = document.querySelector<HTMLElement>("[data-ide-file-title]");
+  const metaElement = document.querySelector<HTMLElement>("[data-ide-file-meta]");
+  if (titleElement) {
+    titleElement.textContent = title || "No file selected";
+    titleElement.title = title;
+  }
+  if (metaElement) {
+    metaElement.textContent = meta;
+  }
+}
+
+function setIdeFileMessage(message: string) {
+  const element = document.querySelector<HTMLElement>("[data-ide-file-message]");
+  if (!element) {
+    return;
+  }
+  element.textContent = message;
+  element.hidden = !message;
+}
+
+function setIdeCwdChrome(cwd: string) {
+  const elements = document.querySelectorAll<HTMLElement>("[data-ide-cwd]");
+  const displayCwd = formatPathForDisplay(cwd, homeDirsForDisplay({ cwd }));
+  elements.forEach((element) => {
+    element.textContent = displayCwd;
+    element.title = cwd;
+  });
+}
+
+function destroyIdeFileTree() {
+  ideFileTree?.cleanUp();
+  ideFileTree = null;
+  ideFileTreeCwd = "";
+  ideFileTreeLoadingCwd = "";
+  ideSelectedFilePath = "";
+}
+
+function ideFileTreeCss() {
+  return `
+    :host {
+      --trees-bg-override: #10151b;
+      --trees-fg-override: #dce5ef;
+      --trees-muted-fg-override: #8d99a8;
+      --trees-border-color-override: #29313b;
+      --trees-selected-bg-override: #64d2c8;
+      --trees-selected-fg-override: #071112;
+      color: #dce5ef;
+      font: 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+    * {
+      font-size: inherit;
+      line-height: inherit;
+    }
+  `;
+}
+
+function formatFileSize(size: number) {
+  if (size >= 1024 * 1024) {
+    return `${Math.round(size / (1024 * 1024))} MB`;
+  }
+  if (size >= 1024) {
+    return `${Math.round(size / 1024)} KB`;
+  }
+  return `${size} bytes`;
 }
 
 function updateTerminalRedrawOverlay(screen: HTMLElement, active: boolean) {
@@ -3394,32 +3848,65 @@ function renderBlocksScreen(screen: HTMLElement, model: TerminalBlockModel) {
 }
 
 function editorTheme() {
+  return createEditorTheme({
+    fontSize: "10px",
+    lineHeight: "1.35",
+    contentPadding: "6px 0",
+    linePadding: "0 8px",
+    lineNumberMinWidth: "32px",
+  });
+}
+
+function fileEditorTheme() {
+  return createEditorTheme({
+    fontSize: "7px",
+    lineHeight: "1.32",
+    contentPadding: "5px 0",
+    linePadding: "0 6px",
+    lineNumberMinWidth: "22px",
+  });
+}
+
+function createEditorTheme(input: {
+  fontSize: string;
+  lineHeight: string;
+  contentPadding: string;
+  linePadding: string;
+  lineNumberMinWidth: string;
+}) {
   return EditorView.theme({
     "&": {
       height: "100%",
       backgroundColor: "#0d1014",
       color: "#eef2f7",
-      fontSize: "10px",
-      lineHeight: "1.35",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
     },
     ".cm-scroller": {
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
     },
     ".cm-content": {
-      padding: "6px 0",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
+      padding: input.contentPadding,
     },
     ".cm-line": {
-      lineHeight: "1.35",
-      padding: "0 8px",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
+      padding: input.linePadding,
     },
     ".cm-gutters": {
       backgroundColor: "#11161d",
       color: "#748293",
       borderRightColor: "#2c333d",
-      lineHeight: "1.35",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
     },
     ".cm-gutterElement": {
-      lineHeight: "1.35",
+      fontSize: input.fontSize,
+      lineHeight: input.lineHeight,
       paddingTop: "0 !important",
       paddingBottom: "0 !important",
     },
@@ -3427,7 +3914,7 @@ function editorTheme() {
       display: "flex",
       alignItems: "center",
       justifyContent: "flex-end",
-      minWidth: "32px",
+      minWidth: input.lineNumberMinWidth,
       paddingLeft: "7px !important",
       paddingRight: "7px !important",
     },
@@ -3440,7 +3927,7 @@ function editorTheme() {
     ".cm-foldGutter span": {
       display: "inline-flex",
       alignItems: "center",
-      height: "1.35em",
+      height: `${input.lineHeight}em`,
       lineHeight: "1",
     },
     ".cm-activeLineGutter": {
@@ -3457,6 +3944,7 @@ function destroyDataEditor() {
   dataEditorView = null;
   dataEditorKind = "";
   dataEditorDoc = "";
+  fileEditorLanguageKey = "";
   briefEditorView?.destroy();
   briefEditorView = null;
   briefEditorDoc = "";
