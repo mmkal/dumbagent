@@ -357,6 +357,71 @@ test("keeps the promptbox draft in localStorage per session", async ({ page, ctx
   await expect(promptbox).toHaveValue("different session draft");
 });
 
+test("keeps the last ten sent promptbox messages in the session menu", async ({ page, ctx }) => {
+  const pageErrors: string[] = [];
+  const sessionId = "sent-history-session";
+  let sendRequests = 0;
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+  await page.route("**/rpc/sessions/get", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody(fakeSessionPayload({ id: sessionId, status: "idle" })),
+    });
+  });
+  await page.route("**/rpc/sessions/send", async (route) => {
+    sendRequests += 1;
+    if (sendRequests === 1) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody({ ok: true }),
+    });
+  });
+
+  await page.goto(`${ctx.baseUrl}/sessions/${sessionId}`);
+  const promptbox = page.getByRole("textbox", { name: "Send stdin" });
+  const lostMessage = `network lost long message\n${"details ".repeat(24)}`.trim();
+
+  await promptbox.fill(lostMessage);
+  await promptbox.press("Enter");
+
+  await expect(page.getByTestId("send-message-error-toast")).toContainText("Send message failed");
+  await page.locator(".session-menu").evaluate((menu) => {
+    menu.setAttribute("open", "");
+  });
+  await expect(page.getByTestId("sent-message-list")).toContainText("network lost long message");
+  await page.getByRole("button", { name: /network lost long message/ }).press("Enter");
+  await expect(promptbox).toHaveValue(lostMessage);
+
+  for (let index = 2; index <= 11; index += 1) {
+    await promptbox.fill(`sent prompt ${index}`);
+    await promptbox.press("Enter");
+  }
+
+  await page.locator(".session-menu").evaluate((menu) => {
+    menu.setAttribute("open", "");
+  });
+  await expect(page.getByTestId("sent-message-item")).toHaveCount(10);
+  const storedMessages = await page.evaluate((id) => {
+    const stored = localStorage.getItem(`tuiui-sent-promptbox-${encodeURIComponent(id)}`) || "[]";
+    return JSON.parse(stored).map((message: any) => message.text);
+  }, sessionId);
+  expect(storedMessages).toHaveLength(10);
+  expect(storedMessages[0]).toBe("sent prompt 11");
+  expect(storedMessages.at(-1)).toBe("sent prompt 2");
+  expect(storedMessages).not.toContain(lostMessage);
+
+  await page.getByRole("button", { name: /sent prompt 10/ }).press("Enter");
+  await expect(promptbox).toHaveValue("sent prompt 10");
+  expect(pageErrors).toEqual([]);
+});
+
 test("uploads composer attachments to a session temp directory and inserts the saved path", async ({ page, ctx }) => {
   const firstImagePath = path.join(ctx.tempRoot, "tiny.png");
   const imageBytes = Buffer.from(tinyPngBase64, "base64");
@@ -828,6 +893,144 @@ test("refreshes stale empty recent sessions when the home tab regains focus", as
 
   await expect(page.getByTestId("recent-agent-count")).toHaveText("1 active in 24h");
   await expect(page.getByRole("button", { name: /Resume Codex session Focus refreshed Codex/ })).toBeVisible();
+});
+
+test("distinguishes empty recent sessions from sessions hidden by a saved filter", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  await page.addInitScript(() => {
+    localStorage.setItem("tuiui-recent-session-filter", 'status != "archived" and $contains(cwd, "sqlfu")');
+  });
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody([{
+        provider: "codex",
+        id: "filtered-away-codex-thread",
+        title: "Filtered away Codex",
+        cwd: ctx.workspaceDir,
+        updatedAt: now,
+        lastMessageAt: now,
+        lastMessageText: "This session is loaded but hidden by the saved filter.",
+        initialUserText: "Show hidden recents",
+        latestUserText: "Show hidden recents",
+        userMessageCount: 1,
+        latestAssistantText: "The filter hides it.",
+        messageCount: 2,
+        status: "idle",
+        archived: false,
+        command: "codex",
+        args: ["resume", "filtered-away-codex-thread"],
+      }]),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("None");
+  await expect(page.getByTestId("recent-agent-list")).toHaveText("No recent sessions match the current filter");
+  await page.locator("[data-testid='recent-session-group-config'] > summary").click();
+  await expect(page.getByTestId("recent-session-filter-input")).toHaveValue('status != "archived" and $contains(cwd, "sqlfu")');
+});
+
+test("asks before killing a Codex session that is active elsewhere", async ({ page, ctx }) => {
+  const now = new Date().toISOString();
+  let createPayload: any = null;
+  let createRequests = 0;
+
+  await page.route("**/rpc/agentSessions/recent", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody([{
+        provider: "codex",
+        id: "active-elsewhere-codex-thread",
+        title: "Active elsewhere Codex",
+        cwd: ctx.workspaceDir,
+        updatedAt: now,
+        lastMessageAt: now,
+        lastMessageText: "This session is already running in another terminal.",
+        initialUserText: "Resume the active session",
+        latestUserText: "Resume the active session",
+        userMessageCount: 1,
+        latestAssistantText: "Still working elsewhere.",
+        messageCount: 2,
+        status: "busy",
+        archived: false,
+        activeOwnerCount: 1,
+        command: "codex",
+        args: ["resume", "active-elsewhere-codex-thread"],
+      }]),
+    });
+  });
+  await page.route("**/rpc/sessions/create", async (route) => {
+    createRequests += 1;
+    createPayload = route.request().postDataJSON().json;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody({ id: "confirmed-active-elsewhere", url: `${ctx.baseUrl}/sessions/confirmed-active-elsewhere` }),
+    });
+  });
+  await page.route("**/rpc/sessions/get", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: orpcJsonBody(fakeSessionPayload({ id: "confirmed-active-elsewhere", status: "idle" })),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  const card = page.getByRole("button", { name: /Resume Codex session Active elsewhere Codex/ });
+  await expect(card).toContainText("active elsewhere");
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("active in another terminal");
+    expect(dialog.message()).toContain("Kill that process and resume it here?");
+    await dialog.dismiss();
+  });
+  await card.click();
+  expect(createRequests).toBe(0);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Active elsewhere Codex");
+    await dialog.accept();
+  });
+  await card.click();
+
+  await expect(page).toHaveURL(/\/sessions\/confirmed-active-elsewhere$/);
+  expect(createRequests).toBe(1);
+  expect(createPayload).toMatchObject({
+    command: "codex",
+    args: ["resume", "active-elsewhere-codex-thread"],
+    cwd: ctx.workspaceDir,
+    killActiveOwner: true,
+  });
+});
+
+test("shows a toast instead of an error overlay when session launch is rejected", async ({ page, ctx }) => {
+  await page.route("**/rpc/sessions/create", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: {
+          defined: false,
+          code: "CONFLICT",
+          status: 409,
+          message: "That Codex session is active in another terminal. Confirm killing the active process before resuming it here.",
+        },
+      }),
+    });
+  });
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("codex resume active-elsewhere-codex-thread");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+
+  await expect(page.getByTestId("launch-session-error-toast")).toContainText("Launch session failed");
+  await expect(page.getByTestId("launch-session-error-toast")).toContainText("Confirm killing the active process");
+  await expect(page).toHaveURL(ctx.baseUrl);
 });
 
 test("refetches home sessions from the hamburger menu with mobile progress toasts", async ({ page, ctx }) => {
@@ -1518,6 +1721,73 @@ test("opens absolute image paths from terminal output in a preview popover", asy
   const linkX = rowsBox.x + 8;
   const linkY = rowsBox.y + 8;
   await page.touchscreen.tap(linkX, linkY);
+
+  const preview = page.getByTestId("terminal-image-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(imagePath);
+  await expect.poll(async () => {
+    return await preview.locator("img").evaluate((image: HTMLImageElement) => {
+      return {
+        complete: image.complete,
+        naturalWidth: image.naturalWidth,
+      };
+    });
+  }).toMatchObject({ complete: true, naturalWidth: 1 });
+});
+
+test("opens wrapped absolute image path hints with the complete path", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+  const imageDir = path.join(
+    ctx.tempRoot,
+    "terminal-preview-paths",
+    "very-long-segment-before-the-attachment-root",
+    "another-long-segment-that-forces-terminal-wrapping",
+    "yet-another-long-segment-after-the-first-wrap",
+    "attachments-sQe12M",
+    "tuiui_4f2f7c5c687e4fb58b20596fe96f3fb3",
+  );
+  fs.mkdirSync(imageDir, { recursive: true });
+  const imagePath = path.join(imageDir, "terminal-preview.png");
+  fs.writeFileSync(imagePath, Buffer.from(tinyPngBase64, "base64"));
+
+  await page.goto(ctx.baseUrl);
+  const pathPrefix = imagePath.slice(0, imagePath.indexOf("attachments-sQe12M"));
+  const pathSuffix = imagePath.slice(pathPrefix.length);
+  await page.getByRole("textbox", { name: "Command" }).fill(`split-image-path-agent ${pathPrefix} ${pathSuffix}`);
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("terminal-preview.png");
+
+  const hint = page.locator("[data-terminal-image-hint-path]").first();
+  await expect(hint).toBeVisible();
+  await expect.poll(async () => {
+    return await page.locator("[data-terminal-image-hint-path]").evaluateAll((hints) => {
+      return hints.map((hint) => hint.getAttribute("data-terminal-image-hint-path"));
+    });
+  }).toEqual([imagePath]);
+  await expect(hint).toHaveAttribute("data-terminal-image-hint-path", imagePath);
+  const hintBox = await hint.boundingBox();
+  const pathEndRow = await page.locator(".xterm-rows > div").evaluateAll((rows) => {
+    const rowSummaries = rows.map((row) => {
+      const box = row.getBoundingClientRect();
+      return {
+        text: row.textContent || "",
+        y: box.y,
+        height: box.height,
+      };
+    });
+    for (let index = rowSummaries.length - 1; index >= 0; index -= 1) {
+      if (rowSummaries[index].text.includes(".png")) {
+        return rowSummaries[index];
+      }
+    }
+    throw new Error("image path end row was not rendered");
+  });
+  if (!hintBox) {
+    throw new Error("terminal image hint was not rendered");
+  }
+  expect(hintBox.y).toBeLessThan(pathEndRow.y + pathEndRow.height * 0.25);
+  await hint.click();
 
   const preview = page.getByTestId("terminal-image-preview");
   await expect(preview).toBeVisible();
@@ -2749,6 +3019,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "image-path-agent"), imagePathAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "split-image-path-agent"), splitImagePathAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "selectable-agent"), selectableAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
 
@@ -2898,6 +3169,11 @@ setTimeout(() => {}, 100000);
 
 const imagePathAgentSource = `#!/usr/bin/env node
 process.stdout.write((process.argv[2] || "") + "\\r\\n");
+setTimeout(() => {}, 100000);
+`;
+
+const splitImagePathAgentSource = `#!/usr/bin/env node
+process.stdout.write("› " + (process.argv[2] || "") + "\\r\\n  " + (process.argv[3] || "") + "\\r\\n");
 setTimeout(() => {}, 100000);
 `;
 

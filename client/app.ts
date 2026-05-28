@@ -278,6 +278,7 @@ type LaunchSessionInput = {
   cwd: string;
   fakeAgent: string;
   coordinator?: boolean;
+  killActiveOwner?: boolean;
 };
 
 type SessionFileTreePayload = {
@@ -312,6 +313,12 @@ type AttachmentUpload = {
 type ComposerAttachment = AttachmentUpload & {
   id: string;
   previewUrl: string;
+};
+
+type SentPromptboxMessage = {
+  id: string;
+  text: string;
+  createdAt: string;
 };
 
 declare global {
@@ -379,6 +386,7 @@ let homeIdleNotificationDisplayDirs: string[] = [];
 
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
 const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const sentPromptboxMessageLimit = 10;
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
 const recentSessionFilterStorageKey = "tuiui-recent-session-filter";
 const defaultRecentSessionFilterExpression = 'status != "archived"';
@@ -921,6 +929,65 @@ function promptboxStorageKey(sessionId: string) {
   return `tuiui-promptbox-${encodeURIComponent(sessionId)}`;
 }
 
+function sentPromptboxStorageKey(sessionId: string) {
+  return `tuiui-sent-promptbox-${encodeURIComponent(sessionId)}`;
+}
+
+function readSentPromptboxMessages(sessionId: string): SentPromptboxMessage[] {
+  try {
+    const stored = localStorage.getItem(sentPromptboxStorageKey(sessionId));
+    if (!stored) {
+      return [];
+    }
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const messages: SentPromptboxMessage[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const message = entry as Partial<SentPromptboxMessage>;
+      if (typeof message.id !== "string" || typeof message.text !== "string" || typeof message.createdAt !== "string") {
+        continue;
+      }
+      messages.push({
+        id: message.id,
+        text: message.text,
+        createdAt: message.createdAt,
+      });
+    }
+    return messages.slice(0, sentPromptboxMessageLimit);
+  } catch {
+    return [];
+  }
+}
+
+function writeSentPromptboxMessages(sessionId: string, messages: SentPromptboxMessage[]) {
+  try {
+    if (messages.length) {
+      localStorage.setItem(sentPromptboxStorageKey(sessionId), JSON.stringify(messages.slice(0, sentPromptboxMessageLimit)));
+      return;
+    }
+    localStorage.removeItem(sentPromptboxStorageKey(sessionId));
+  } catch {
+  }
+}
+
+function rememberSentPromptboxMessage(sessionId: string, text: string) {
+  if (!text) {
+    return;
+  }
+  const nextMessages = [{
+    id: `sent-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    text,
+    createdAt: new Date().toISOString(),
+  }, ...readSentPromptboxMessages(sessionId)].slice(0, sentPromptboxMessageLimit);
+  writeSentPromptboxMessages(sessionId, nextMessages);
+  refreshSentPromptboxMenu(sessionId);
+}
+
 async function renderRoute() {
   events?.close();
   events = null;
@@ -1391,13 +1458,8 @@ async function renderHome() {
           await renderRoute();
           return;
         }
-        if (session.activeOwnerCount) {
-          showToast({
-            id: "recent-session-active-owner",
-            title: "Session already active",
-            message: "This Codex session is active in another terminal, so TUI UI did not resume it here.",
-            durationMs: 4_000,
-          });
+        const killActiveOwner = session.activeOwnerCount ? confirmKillActiveElsewhere(session) : false;
+        if (session.activeOwnerCount && !killActiveOwner) {
           return;
         }
         commandInput.value = [session.command, ...session.args].join(" ");
@@ -1408,6 +1470,7 @@ async function renderHome() {
           cwd: session.cwd || currentLaunchCwd(),
           fakeAgent: "",
           coordinator: false,
+          killActiveOwner,
         });
       });
     }
@@ -1539,18 +1602,23 @@ async function renderHome() {
   }
 
   async function launchSession(input: LaunchSessionInput) {
-    const result = await clientApi.sessions.create({
-      command: input.command,
-      args: input.args,
-      cwd: input.cwd,
-      cols: 120,
-      rows: 42,
-      env: {},
-      fakeAgent: input.fakeAgent,
-      coordinator: Boolean(input.coordinator),
-    });
-    history.pushState({}, "", `/sessions/${result.id}`);
-    await renderRoute();
+    try {
+      const result = await clientApi.sessions.create({
+        command: input.command,
+        args: input.args,
+        cwd: input.cwd,
+        cols: 120,
+        rows: 42,
+        env: {},
+        fakeAgent: input.fakeAgent,
+        coordinator: Boolean(input.coordinator),
+        killActiveOwner: Boolean(input.killActiveOwner),
+      });
+      history.pushState({}, "", `/sessions/${result.id}`);
+      await renderRoute();
+    } catch (error) {
+      showRequestErrorToast("Launch session failed", error, "launch-session-error-toast");
+    }
   }
 
   async function openOrLaunchCoordinator() {
@@ -1749,13 +1817,8 @@ async function renderFactoryFloorHome() {
           await renderRoute();
           return;
         }
-        if (session.activeOwnerCount) {
-          showToast({
-            id: "recent-session-active-owner",
-            title: "Session already active",
-            message: "This Codex session is active in another terminal, so TUI UI did not resume it here.",
-            durationMs: 4_000,
-          });
+        const killActiveOwner = session.activeOwnerCount ? confirmKillActiveElsewhere(session) : false;
+        if (session.activeOwnerCount && !killActiveOwner) {
           return;
         }
         commandInput.value = [session.command, ...session.args].join(" ");
@@ -1766,6 +1829,7 @@ async function renderFactoryFloorHome() {
           cwd: session.cwd || currentLaunchCwd(),
           fakeAgent: "",
           coordinator: false,
+          killActiveOwner,
         });
       });
     }
@@ -1852,19 +1916,31 @@ async function renderFactoryFloorHome() {
   }
 
   async function launchSession(input: LaunchSessionInput) {
-    const result = await clientApi.sessions.create({
-      command: input.command,
-      args: input.args,
-      cwd: input.cwd,
-      cols: 120,
-      rows: 42,
-      env: {},
-      fakeAgent: input.fakeAgent,
-      coordinator: Boolean(input.coordinator),
-    });
-    history.pushState({}, "", `/sessions/${result.id}`);
-    await renderRoute();
+    try {
+      const result = await clientApi.sessions.create({
+        command: input.command,
+        args: input.args,
+        cwd: input.cwd,
+        cols: 120,
+        rows: 42,
+        env: {},
+        fakeAgent: input.fakeAgent,
+        coordinator: Boolean(input.coordinator),
+        killActiveOwner: Boolean(input.killActiveOwner),
+      });
+      history.pushState({}, "", `/sessions/${result.id}`);
+      await renderRoute();
+    } catch (error) {
+      showRequestErrorToast("Launch session failed", error, "launch-session-error-toast");
+    }
   }
+}
+
+function confirmKillActiveElsewhere(session: RecentAgentSession) {
+  return window.confirm([
+    `${providerLabel(session.provider)} session "${session.title}" is active in another terminal.`,
+    "Kill that process and resume it here?",
+  ].join("\n\n"));
 }
 
 function renderRecentSessionGroupError(message: string) {
@@ -1901,6 +1977,9 @@ function renderRecentAgentSessionContent(
   }
   const error = filterParsed.error || groupParsed.error;
   if (!filteredSessions.length) {
+    if (recentAgentSessions.length && !filterParsed.error) {
+      return { html: `<p class="empty">No recent sessions match the current filter</p>`, error, sessions: filteredSessions };
+    }
     return { html: `<p class="empty">No recent sessions</p>`, error, sessions: filteredSessions };
   }
   if (error || !groupParsed.definitions.length) {
@@ -2143,6 +2222,61 @@ function sessionStatusLabel(status: SessionPayload["status"]) {
   return `Session status: ${status}`;
 }
 
+function renderSentPromptboxHistory(sessionId: string) {
+  return `
+    <section class="sent-messages" aria-label="Sent messages">
+      <strong>Sent messages</strong>
+      <div data-sent-message-list data-testid="sent-message-list">
+        ${renderSentPromptboxMessageList(sessionId)}
+      </div>
+    </section>
+  `;
+}
+
+function renderSentPromptboxMessageList(sessionId: string) {
+  const messages = readSentPromptboxMessages(sessionId);
+  if (!messages.length) {
+    return `<p class="sent-message-empty" data-testid="sent-message-empty">No sent messages</p>`;
+  }
+  return `
+    <ol class="sent-message-list">
+      ${messages.map((message) => `
+        <li data-testid="sent-message-item">
+          <button
+            type="button"
+            class="sent-message-button"
+            data-action="restore-sent-message"
+            data-sent-message-id="${escapeAttr(message.id)}"
+            title="${escapeAttr(message.text)}"
+          >
+            <span class="sent-message-meta">${escapeHtml(formatSentPromptboxMessageTime(message.createdAt))}</span>
+            <span class="sent-message-text">${escapeHtml(message.text)}</span>
+          </button>
+        </li>
+      `).join("")}
+    </ol>
+  `;
+}
+
+function formatSentPromptboxMessageTime(createdAt: string) {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function refreshSentPromptboxMenu(sessionId: string) {
+  const list = document.querySelector<HTMLElement>("[data-sent-message-list]");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = renderSentPromptboxMessageList(sessionId);
+}
+
 async function renderSession(sessionId: string) {
   if (activeSession?.id !== sessionId) {
     renderer = "terminal";
@@ -2180,6 +2314,7 @@ async function renderSession(sessionId: string) {
                 <output data-terminal-zoom-value aria-label="Terminal font size">${terminalFontSize}px</output>
                 <button type="button" class="icon-button" data-terminal-zoom="1" aria-label="Zoom terminal in" title="Zoom terminal in">+</button>
               </div>
+              ${renderSentPromptboxHistory(sessionId)}
             </div>
           </div>
         </details>
@@ -2272,6 +2407,7 @@ function bindSessionControls(sessionId: string) {
   const sendButton = document.getElementById("send") as HTMLButtonElement;
   const chordForm = document.getElementById("chord-form") as HTMLFormElement;
   setupPromptboxState(sessionId, textarea);
+  setupSentPromptboxHistoryControls(sessionId, textarea);
   setupVoiceControls(sessionId, textarea);
   setupAttachmentControls(sessionId, textarea);
 
@@ -2389,6 +2525,30 @@ function bindSessionControls(sessionId: string) {
     button.addEventListener("click", () => {
       scrollTerminalByStep(Number(button.dataset.terminalScroll || 0));
     });
+  });
+}
+
+function setupSentPromptboxHistoryControls(sessionId: string, textarea: HTMLTextAreaElement) {
+  const menuPanel = document.querySelector<HTMLElement>(".menu-panel");
+  if (!menuPanel) {
+    return;
+  }
+  menuPanel.addEventListener("click", (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-action='restore-sent-message']")
+      : null;
+    if (!target) {
+      return;
+    }
+    const message = readSentPromptboxMessages(sessionId)
+      .find((candidate) => candidate.id === (target.dataset.sentMessageId || ""));
+    if (!message) {
+      return;
+    }
+    setPromptboxValue(textarea, message.text);
+    textarea.focus();
+    resizePromptbox(textarea);
+    closeSessionMenu();
   });
 }
 
@@ -2695,8 +2855,13 @@ function setupVoiceControls(sessionId: string, textarea: HTMLTextAreaElement) {
     readbackMode: window.__tuiuiVoiceTest?.readbackMode || "enabled",
     async sendTranscript(text) {
       setPromptboxValue(textarea, text);
-      await clientApi.sessions.send({ sessionId, text, submit: true });
-      setPromptboxValue(textarea, "");
+      rememberSentPromptboxMessage(sessionId, text);
+      try {
+        await clientApi.sessions.send({ sessionId, text, submit: true });
+        setPromptboxValue(textarea, "");
+      } catch (error) {
+        showRequestErrorToast("Send message failed", error, "send-message-error-toast");
+      }
     },
   });
   unsubscribeVoiceLoop = voiceLoop.subscribe(updateVoiceControls);
@@ -2773,10 +2938,15 @@ function collapsePromptbox(promptbox: HTMLTextAreaElement) {
 async function sendComposer(sessionId: string) {
   const textarea = document.getElementById("stdin") as HTMLTextAreaElement;
   const text = textarea.value;
+  rememberSentPromptboxMessage(sessionId, text);
   setPromptboxValue(textarea, "");
-  await clientApi.sessions.send({ sessionId, text, submit: true });
-  clearComposerAttachments();
-  scheduleTerminalResize(sessionId);
+  try {
+    await clientApi.sessions.send({ sessionId, text, submit: true });
+    clearComposerAttachments();
+    scheduleTerminalResize(sessionId);
+  } catch (error) {
+    showRequestErrorToast("Send message failed", error, "send-message-error-toast");
+  }
 }
 
 async function archiveSession(sessionId: string) {
@@ -4438,7 +4608,7 @@ function updateTerminalImageHints(term: XtermTerminal) {
   const seen = new Set<string>();
   const visibleStart = term.buffer.active.viewportY + 1;
   const visibleEnd = visibleStart + term.rows - 1;
-  const buttons: string[] = [];
+  const visibleLinks: ILink[] = [];
   for (let bufferLineNumber = visibleStart; bufferLineNumber <= visibleEnd; bufferLineNumber += 1) {
     const links = computeTerminalImagePathLinks(term, bufferLineNumber) || [];
     for (const link of links) {
@@ -4450,17 +4620,38 @@ function updateTerminalImageHints(term: XtermTerminal) {
         continue;
       }
       seen.add(key);
-      const viewportRow = link.range.end.y - term.buffer.active.viewportY;
-      const iconSize = 14;
-      const left = Math.max(0, Math.min(
-        rowsRect.left - wrapRect.left + link.range.end.x * cellWidth + 1,
-        wrapRect.width - iconSize,
-      ));
-      const top = Math.max(0, Math.min(
-        rowsRect.top - wrapRect.top + (viewportRow - 1) * cellHeight - 2,
-        wrapRect.height - iconSize,
-      ));
-      buttons.push(`
+      visibleLinks.push(link);
+    }
+  }
+
+  const linksByLongestPath = visibleLinks
+    .slice()
+    .sort((left, right) => right.text.length - left.text.length)
+    .filter((link, index, links) => {
+      return !links.slice(0, index).some((longerLink) => {
+        return longerLink.range.end.x === link.range.end.x
+          && longerLink.range.end.y === link.range.end.y
+          && longerLink.text !== link.text
+          && longerLink.text.endsWith(link.text);
+      });
+    })
+    .sort((left, right) => {
+      return left.range.end.y - right.range.end.y || left.range.end.x - right.range.end.x;
+    });
+
+  const buttons: string[] = [];
+  for (const link of linksByLongestPath) {
+    const viewportRow = link.range.end.y - term.buffer.active.viewportY;
+    const iconSize = 14;
+    const left = Math.max(0, Math.min(
+      rowsRect.left - wrapRect.left + link.range.end.x * cellWidth + 1,
+      wrapRect.width - iconSize,
+    ));
+    const top = Math.max(0, Math.min(
+      rowsRect.top - wrapRect.top + (viewportRow - 1) * cellHeight - 7,
+      wrapRect.height - iconSize,
+    ));
+    buttons.push(`
         <button
           type="button"
           class="terminal-image-hint"
@@ -4476,7 +4667,6 @@ function updateTerminalImageHints(term: XtermTerminal) {
           </svg>
         </button>
       `);
-    }
   }
   hintLayer.innerHTML = buttons.slice(0, 40).join("");
 }

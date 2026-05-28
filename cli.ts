@@ -59,6 +59,10 @@ import {
   type RecentAgentSession,
   type SessionSdkPayload,
 } from "./src/opencode-sdk.ts";
+import {
+  readRecentProviderSessions as readRecentProviderSessionsWithBudget,
+  type RecentProviderDiagnostic,
+} from "./src/recent-provider-sessions.ts";
 import { createSessionId } from "./src/session-id.ts";
 import { resolveNamedKeySequence } from "./src/chords.ts";
 import { analyzeTerminalScreen, type SemanticScreen } from "./src/semantic-screen.ts";
@@ -205,6 +209,7 @@ type CreateSessionInput = {
   backend: SessionBackendName;
   launchCommand: string;
   coordinator: boolean;
+  killActiveOwner: boolean;
 };
 
 type ServerState = {
@@ -253,6 +258,10 @@ const ignoredFileTreeNames = new Set([
   "playwright-report",
   "test-results",
 ]);
+const recentProviderTimeoutMs = 3_000;
+const recentProviderUnavailableRetryDelayMs = 200;
+const recentProviderDiagnosticLogTtlMs = 60_000;
+const recentProviderDiagnosticLoggedAt = new Map<string, number>();
 
 const createSessionBodySchema = z.object({
   command: z.string().optional(),
@@ -264,6 +273,7 @@ const createSessionBodySchema = z.object({
   fakeAgent: z.string().optional(),
   backend: z.string().optional(),
   coordinator: z.boolean().optional(),
+  killActiveOwner: z.boolean().optional(),
 });
 const sessionIdInputSchema = z.object({ sessionId: z.string() });
 const agentSessionArchiveInputSchema = z.object({
@@ -331,6 +341,7 @@ if (cli.rest.length > 0) {
     backend: cli.backend,
     launchCommand: formatCommandLine(command || "", args),
     coordinator: false,
+    killActiveOwner: false,
   });
   const sessionUrls = accessBaseUrls.map((url) => `${url}/sessions/${session.id}`);
   process.stdout.write(`${sessionUrls.join("\n")}\n`);
@@ -806,7 +817,6 @@ async function createSessionPayload(body: CreateSessionBody) {
   if (existingResume) {
     return { id: existingResume.id, url: `${baseUrl}/sessions/${existingResume.id}` };
   }
-  assertNoExternalOwnerForCodexResumeLaunch(command, args);
   const session = await createSession({
     id: createSessionId(),
     command,
@@ -819,6 +829,7 @@ async function createSessionPayload(body: CreateSessionBody) {
     backend: resolveBackendForLaunch(body.backend),
     launchCommand: formatCommandLine(command, args),
     coordinator,
+    killActiveOwner: body.killActiveOwner === true,
   });
   return { id: session.id, url: `${baseUrl}/sessions/${session.id}` };
 }
@@ -904,6 +915,7 @@ async function recoverStoredSessionPayload(state: ServerState, sessionId: string
     backend: resolveBackendForLaunch(""),
     launchCommand: storedSession.launchCommand,
     coordinator: false,
+    killActiveOwner: false,
   });
   return { id: session.id, url: `${baseUrl}/sessions/${session.id}` };
 }
@@ -1315,7 +1327,7 @@ async function createSession(input: CreateSessionInput) {
   if (!cwdStats.isDirectory()) {
     throw new Error(`cwd is not a directory: ${cwd}`);
   }
-  await terminateExistingCodexResumeOwners(input.command, input.args, input.fakeAgent);
+  await terminateExistingCodexResumeOwners(input.command, input.args, input.fakeAgent, input.killActiveOwner);
 
   const id = input.id;
   const createdAtMs = Date.now();
@@ -2140,14 +2152,35 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
   const codexDatabasePaths = recentCodexDatabasePaths();
   const openCodeDatabasePath = openCodeDatabasePathForEnv(process.env);
   const claudeConfigDir = claudeConfigDirForEnv(process.env);
-  const claudeSessions = readRecentProviderSessions(async () => await readRecentClaudeSessions(claudeConfigDir, nowMs));
+  const claudeSessions = readRecentProviderSessionsWithBudget({
+    provider: "claude",
+    read: async () => await readRecentClaudeSessions(claudeConfigDir, nowMs),
+    timeoutMs: recentProviderTimeoutMs,
+    unavailableRetryDelayMs: recentProviderUnavailableRetryDelayMs,
+    isUnavailableStoreError: isUnavailableRecentProviderStoreError,
+    reportDiagnostic: reportRecentProviderDiagnostic,
+  });
   // Let the async Claude SDK scan start before the synchronous SQLite readers block the event loop.
   await Promise.resolve();
   const results = await Promise.all([
     Promise.all(codexDatabasePaths.map((databasePath) => {
-      return readRecentProviderSessions(() => readRecentCodexSessionsFromDatabasePath(databasePath, nowMs));
+      return readRecentProviderSessionsWithBudget({
+        provider: "codex",
+        read: () => readRecentCodexSessionsFromDatabasePath(databasePath, nowMs),
+        timeoutMs: recentProviderTimeoutMs,
+        unavailableRetryDelayMs: recentProviderUnavailableRetryDelayMs,
+        isUnavailableStoreError: isUnavailableRecentProviderStoreError,
+        reportDiagnostic: reportRecentProviderDiagnostic,
+      });
     })).then((sessions) => dedupeRecentAgentSessions(sessions.flat())),
-    readRecentProviderSessions(() => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePath, nowMs)),
+    readRecentProviderSessionsWithBudget({
+      provider: "opencode",
+      read: () => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePath, nowMs),
+      timeoutMs: recentProviderTimeoutMs,
+      unavailableRetryDelayMs: recentProviderUnavailableRetryDelayMs,
+      isUnavailableStoreError: isUnavailableRecentProviderStoreError,
+      reportDiagnostic: reportRecentProviderDiagnostic,
+    }),
     claudeSessions,
   ]);
   const locallyArchivedSessions = readRecentAgentArchiveKeys();
@@ -2288,18 +2321,6 @@ function realpathIfPossible(value: string) {
   }
 }
 
-async function readRecentProviderSessions(read: () => RecentAgentSession[] | Promise<RecentAgentSession[]>) {
-  try {
-    return await read();
-  } catch (error) {
-    const message = String(error instanceof Error ? error.message : error);
-    if (isUnavailableRecentProviderStoreError(message)) {
-      return [];
-    }
-    throw error;
-  }
-}
-
 function isUnavailableRecentProviderStoreError(message: string) {
   return (
     message.startsWith("Codex state database not found at ") ||
@@ -2307,6 +2328,20 @@ function isUnavailableRecentProviderStoreError(message: string) {
     message === "unable to open database file" ||
     message.includes("SQLITE_CANTOPEN")
   );
+}
+
+function reportRecentProviderDiagnostic(diagnostic: RecentProviderDiagnostic) {
+  if (diagnostic.kind === "unavailable" && diagnostic.provider !== "codex") {
+    return;
+  }
+  const key = `${diagnostic.provider}:${diagnostic.kind}:${diagnostic.message}`;
+  const now = Date.now();
+  const lastLoggedAt = recentProviderDiagnosticLoggedAt.get(key) || 0;
+  if (now - lastLoggedAt < recentProviderDiagnosticLogTtlMs) {
+    return;
+  }
+  recentProviderDiagnosticLoggedAt.set(key, now);
+  console.warn(`[tuiui] recent ${diagnostic.provider} sessions ${diagnostic.kind}: ${diagnostic.message}`);
 }
 
 async function prepareSessionSdk(command: string, args: string[], env: Record<string, string>) {
@@ -2446,15 +2481,21 @@ function isClaudeCommand(command: string) {
   return path.basename(command).toLowerCase() === "claude";
 }
 
-async function terminateExistingCodexResumeOwners(command: string, args: string[], fakeAgent: AgentName | "") {
-  if (fakeAgent || !isCodexCommand(command) || !findCodexResumeId(args)) {
+async function terminateExistingCodexResumeOwners(command: string, args: string[], fakeAgent: AgentName | "", killActiveOwner: boolean) {
+  const recoveryCommand = codexResumeRecoveryCommand(command, args);
+  if (fakeAgent || !recoveryCommand) {
     return;
   }
-  assertNoExternalOwnerForCodexResumeLaunch(command, args);
   if (existingSessionForCodexResumeLaunch(command, args, "")) {
     return;
   }
-  await terminateOwnersForRecoveryCommand(state.sessionStore, formatCommandLine("codex", args));
+  const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
+  if (ownerInfo.externalOwnerCount && !killActiveOwner) {
+    throw new ORPCError("CONFLICT", {
+      message: "That Codex session is active in another terminal. Confirm killing the active process before resuming it here.",
+    });
+  }
+  await terminateOwnersForRecoveryCommand(state.sessionStore, recoveryCommand);
 }
 
 function findCodexResumeId(args: string[]) {
@@ -2484,20 +2525,6 @@ function existingSessionForCodexResumeLaunch(command: string, args: string[], cw
     return candidate.sdk.externalSessionId === resumeId;
   });
   return candidates.length === 1 ? candidates[0]! : null;
-}
-
-function assertNoExternalOwnerForCodexResumeLaunch(command: string, args: string[]) {
-  const recoveryCommand = codexResumeRecoveryCommand(command, args);
-  if (!recoveryCommand) {
-    return;
-  }
-  const ownerInfo = activeSessionOwnerInfoForRecoveryCommand(recoveryCommand);
-  if (!ownerInfo.externalOwnerCount) {
-    return;
-  }
-  throw new ORPCError("CONFLICT", {
-    message: "That Codex session is already active in another terminal. TUI UI will not terminate it from a recent-session card.",
-  });
 }
 
 function codexResumeRecoveryCommand(command: string, args: string[]) {

@@ -55,7 +55,7 @@ test("codex resume terminates the existing wrapper-owned session before starting
   }
 });
 
-test("web UI codex resume refuses to terminate an existing wrapper-owned session", async () => {
+test("web UI codex resume refuses to terminate an existing wrapper-owned session without explicit confirmation", async () => {
   using fixture = createFakeCodexFixture();
   const sessionId = "019e9999-1111-7222-8333-bbbbbbbbbbbb";
 
@@ -109,11 +109,81 @@ test("web UI codex resume refuses to terminate an existing wrapper-owned session
 
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      error: "That Codex session is already active in another terminal. TUI UI will not terminate it from a recent-session card.",
+      error: "That Codex session is active in another terminal. Confirm killing the active process before resuming it here.",
     });
     expect(fs.existsSync(fixture.firstTerminatedPath)).toBe(false);
     expect(fs.existsSync(fixture.resumedPath)).toBe(false);
     expect(first.exitCode).toBe(null);
+  } finally {
+    killIfRunning(first);
+    if (server) {
+      server.kill("SIGTERM");
+      await waitForExit(server).catch(() => {});
+    }
+  }
+});
+
+test("web UI codex resume terminates an existing wrapper-owned session after explicit confirmation", async () => {
+  using fixture = createFakeCodexFixture();
+  const sessionId = "019e9999-1111-7222-8333-cccccccccccc";
+
+  const first = spawn(process.execPath, [path.resolve("bin/tuiui.ts"), "codex"], {
+    cwd: fixture.workspace,
+    env: {
+      ...process.env,
+      CODEX_HOME: fixture.codexHome,
+      FAKE_CODEX_SESSION_ID: sessionId,
+      FAKE_CODEX_STARTED_PATH: fixture.firstStartedPath,
+      FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+      REALCODEX: fixture.codexPath,
+      TUIUI_CODEX_LEASE_DISCOVERY_INTERVAL_MS: "25",
+      TUIUI_STATE_DB: fixture.stateDb,
+    },
+    stdio: "ignore",
+  });
+  let server: ChildProcess | null = null;
+
+  try {
+    await waitForFile(fixture.firstStartedPath);
+    await waitForLease(fixture.stateDb, sessionId);
+
+    const port = await getFreePort();
+    server = await startTuiuiServer(fixture.workspace, {
+      ...process.env,
+      CODEX_HOME: fixture.codexHome,
+      FAKE_CODEX_RESUMED_PATH: fixture.resumedPath,
+      FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+      HOME: path.join(fixture.workspace, "home"),
+      PATH: [fixture.binDir, process.env.PATH || ""].join(path.delimiter),
+      TUIUI_CODEX_LEASE_KILL_TIMEOUT_MS: "500",
+      TUIUI_STATE_DB: fixture.stateDb,
+    }, port);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        command: "codex",
+        args: ["resume", sessionId],
+        cwd: fixture.workspace,
+        cols: 80,
+        rows: 24,
+        killActiveOwner: true,
+        env: {
+          FAKE_CODEX_RESUMED_PATH: fixture.resumedPath,
+          FAKE_CODEX_TERMINATED_PATH: fixture.firstTerminatedPath,
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await waitForFile(fixture.firstTerminatedPath);
+    await waitForExit(first);
+    await waitForFile(fixture.resumedPath);
+    expect(JSON.parse(fs.readFileSync(fixture.resumedPath, "utf8"))).toMatchObject({
+      args: ["resume", sessionId],
+      terminatedBeforeResumeStarted: true,
+    });
   } finally {
     killIfRunning(first);
     if (server) {
