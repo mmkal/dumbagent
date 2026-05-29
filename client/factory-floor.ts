@@ -14,7 +14,7 @@ export type FactoryFloorSession = {
 };
 
 export type FactoryFloorRecentSession = {
-  provider: "opencode" | "codex" | "claude";
+  provider: "opencode" | "codex" | "claude" | "pi";
   id: string;
   title: string;
   cwd: string;
@@ -316,6 +316,9 @@ function providerLabel(provider: FactoryFloorRecentSession["provider"]) {
   if (provider === "codex") {
     return "Codex";
   }
+  if (provider === "pi") {
+    return "Pi";
+  }
   return "Claude";
 }
 
@@ -329,6 +332,9 @@ function providerLabelForCommand(command: string) {
   }
   if (value.includes("codex")) {
     return "Codex";
+  }
+  if (value.includes("pi")) {
+    return "Pi";
   }
   return "Agent";
 }

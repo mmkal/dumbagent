@@ -89,7 +89,7 @@ type ClientConfig = {
 };
 
 type SessionSdkPayload = {
-  provider: "" | "opencode" | "codex" | "claude";
+  provider: "" | "opencode" | "codex" | "claude" | "pi";
   state: "unavailable" | "ready" | "connected" | "not-found" | "error";
   baseUrl: string;
   externalSessionId: string;
@@ -99,7 +99,7 @@ type SessionSdkPayload = {
   sidecarSummary: SidecarSummaryState;
   forks: SidecarSummaryFork[];
   summary: null | {
-    provider: "opencode" | "codex" | "claude";
+    provider: "opencode" | "codex" | "claude" | "pi";
     title: string;
     forkPoint: string;
     messageCount: number;
@@ -130,7 +130,7 @@ type StructuredSessionBrief = {
 type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+prompt" | "codex.startThread+summary" | "claude.query+forkSession";
+  method: "" | "opencode.session.fork+prompt" | "codex.startThread+summary" | "claude.query+forkSession" | "pi.forkFrom+prompt";
   sourceSessionId: string;
   forkSessionId: string;
   forkPoint: string;
@@ -141,7 +141,7 @@ type SidecarSummaryState = {
 };
 
 type SidecarSummaryFork = {
-  provider: "opencode" | "codex" | "claude";
+  provider: "opencode" | "codex" | "claude" | "pi";
   purpose: "sidecarSummary";
   sourceSessionId: string;
   forkSessionId: string;
@@ -206,7 +206,7 @@ type CommandPreset = {
 };
 
 type RecentAgentSession = {
-  provider: "opencode" | "codex" | "claude";
+  provider: "opencode" | "codex" | "claude" | "pi";
   id: string;
   title: string;
   cwd: string;
@@ -331,6 +331,7 @@ declare global {
       readbackMode?: "enabled" | "disabled";
       now?: () => number;
     };
+    __tuiuiClipboardImageReader?: () => Promise<File[]>;
   }
 }
 
@@ -808,6 +809,9 @@ function providerLabelForCommand(provider: string, command: string) {
   if (value.includes("codex")) {
     return "Codex";
   }
+  if (value.includes("pi")) {
+    return "Pi";
+  }
   return "Agent";
 }
 
@@ -1122,7 +1126,7 @@ async function renderHome() {
   const recentSessionFilterState = useLocalStorageState(recentSessionFilterStorageKey, defaultRecentSessionFilterExpression);
   const recentSessionGroupConfigOpenState = useLocalStorageState(recentSessionGroupConfigOpenStorageKey, "");
   const recentSessionGroupOpenState = createRecentSessionGroupOpenState(recentSessionGroupOpenStorageKey);
-  const launchCommandOrder = ["codex", "claude", "opencode"];
+  const launchCommandOrder = ["codex", "claude", "opencode", "pi"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
@@ -1667,7 +1671,7 @@ async function renderFactoryFloorHome() {
   observeHomeIdleNotificationSessions(sessions, [], displayHomeDirs);
   const launchCwdState = useLocalStorageState("tuiui-launch-cwd", cwd.cwd);
   const launchCwdValue = launchCwdState.getValue() || cwd.cwd;
-  const launchCommandOrder = ["codex", "claude", "opencode"];
+  const launchCommandOrder = ["codex", "claude", "opencode", "pi"];
   const quickLaunchCommands = launchCommandOrder
     .map((id) => commands.find((command) => command.id === id && !command.fakeAgent))
     .filter((command): command is CommandPreset => Boolean(command));
@@ -2577,11 +2581,27 @@ function setupAttachmentControls(sessionId: string, textarea: HTMLTextAreaElemen
     void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "file");
   });
 
+  let lastClipboardImagePasteAt = 0;
+  textarea.addEventListener("keydown", (event) => {
+    if (!isClipboardPasteShortcut(event)) {
+      return;
+    }
+    const startedAt = performance.now();
+    void readClipboardImageFiles().then((files) => {
+      if (!files.length || lastClipboardImagePasteAt >= startedAt) {
+        return;
+      }
+      void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "paste");
+    }).catch(() => {
+    });
+  });
+
   textarea.addEventListener("paste", (event) => {
     const files = imageFilesFromClipboard(event.clipboardData);
     if (!files.length) {
       return;
     }
+    lastClipboardImagePasteAt = performance.now();
     event.preventDefault();
     void uploadComposerAttachments(sessionId, textarea, preview, buttons, files, "paste");
   });
@@ -2834,6 +2854,32 @@ function imageFilesFromClipboard(data: DataTransfer | null) {
     .filter((file) => file.type.startsWith("image/"));
 
   return dedupeClipboardImageFiles([...files, ...itemFiles]);
+}
+
+function isClipboardPasteShortcut(event: KeyboardEvent) {
+  return event.key.toLowerCase() === "v" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
+}
+
+async function readClipboardImageFiles() {
+  if (window.__tuiuiClipboardImageReader) {
+    return window.__tuiuiClipboardImageReader();
+  }
+  const read = navigator.clipboard?.read;
+  if (!read) {
+    return [];
+  }
+
+  const items = await read.call(navigator.clipboard);
+  const files: File[] = [];
+  for (const item of items) {
+    const imageType = item.types.find((type) => type.startsWith("image/"));
+    if (!imageType) {
+      continue;
+    }
+    const blob = await item.getType(imageType);
+    files.push(new File([blob], "", { type: blob.type || imageType }));
+  }
+  return dedupeClipboardImageFiles(files);
 }
 
 function dragEventHasFiles(event: DragEvent) {
@@ -5970,6 +6016,9 @@ function providerLabel(provider: RecentAgentSession["provider"]) {
   if (provider === "codex") {
     return "Codex";
   }
+  if (provider === "pi") {
+    return "Pi";
+  }
   return "Claude";
 }
 
@@ -6217,7 +6266,7 @@ function deleteStoredChord(id: string) {
 }
 
 function isChordBinary(value: unknown): value is ChordBinary {
-  return value === "" || value === "codex" || value === "opencode" || value === "claude";
+  return value === "" || value === "codex" || value === "opencode" || value === "claude" || value === "pi";
 }
 
 function firstLine(text: string) {

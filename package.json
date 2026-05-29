@@ -26,6 +26,7 @@
     "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.8",
+    "@earendil-works/pi-coding-agent": "0.76.0",
     "@fsegurai/codemirror-theme-bundle": "^6.4.2",
     "@mmkal/jsonata": "^2.2.1",
     "@modelcontextprotocol/sdk": "1.29.0",

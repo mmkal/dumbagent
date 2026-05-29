@@ -4,7 +4,7 @@ export type VoiceSessionPayload = {
   updatedAt: string;
   renderedText: string;
   sdk: {
-    provider: "" | "opencode" | "codex" | "claude";
+    provider: "" | "opencode" | "codex" | "claude" | "pi";
     summary: null | {
       latestUserText?: string;
       latestAssistantText: string;

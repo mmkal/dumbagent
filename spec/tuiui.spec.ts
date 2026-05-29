@@ -484,6 +484,38 @@ test("uploads composer attachments to a session temp directory and inserts the s
   }).toBe(sentText);
 });
 
+test("uploads clipboard images pasted with the keyboard shortcut", async ({ page, ctx }) => {
+  const imageBytes = Buffer.from(tinyPngBase64, "base64");
+  await page.addInitScript((base64) => {
+    (window as any).__tuiuiClipboardImageReader = async () => {
+      const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+      return [new File([bytes], "clipboard.png", { type: "image/png" })];
+    };
+  }, tinyPngBase64);
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("bytewise-ui");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("semantic-screen")).toContainText("──hello──");
+
+  const textarea = page.getByRole("textbox", { name: "Send stdin" });
+  await textarea.click();
+  await textarea.evaluate((element) => {
+    element.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "v",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+  });
+
+  await expect(textarea).toHaveValue(/\/tuiui-attachments-[^/]+\/tuiui_[a-f0-9]+\/screenshot-\d+\.png/);
+  const savedPath = (await textarea.inputValue()).trim();
+  expect(fs.existsSync(savedPath)).toBe(true);
+  expect(fs.readFileSync(savedPath).equals(imageBytes)).toBe(true);
+  await expect(page.getByTestId("attachment-preview").locator("img")).toBeVisible();
+});
+
 test("explains that attachment uploads need a restarted server when the route is missing", async ({ page, ctx }) => {
   const imagePath = path.join(ctx.tempRoot, "tiny.png");
   fs.writeFileSync(imagePath, Buffer.from(tinyPngBase64, "base64"));
@@ -582,8 +614,9 @@ test("exposes real and fake launcher presets as one-click button rows", async ({
   });
   expect(rows).toMatchObject([
     {
-      buttons: ["codex", "claude", "opencode"],
+      buttons: ["codex", "claude", "opencode", "pi"],
       buttonStyles: [
+        { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
         { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
         { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },
         { fontFamily: expect.stringContaining("monospace"), fontSize: "11px", minHeight: "24px", paddingLeft: "7px" },

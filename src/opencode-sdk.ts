@@ -9,7 +9,7 @@ import {
   type StructuredSessionBrief,
 } from "./session-brief.ts";
 
-export type AgentProvider = "opencode" | "codex" | "claude";
+export type AgentProvider = "opencode" | "codex" | "claude" | "pi";
 
 export type SessionSdkPayload = {
   provider: "" | AgentProvider;
@@ -27,7 +27,7 @@ export type SessionSdkPayload = {
 export type SidecarSummaryState = {
   implemented: boolean;
   status: "idle" | "running" | "completed" | "error";
-  method: "" | "opencode.session.fork+prompt" | "codex.startThread+summary" | "claude.query+forkSession";
+  method: "" | "opencode.session.fork+prompt" | "codex.startThread+summary" | "claude.query+forkSession" | "pi.forkFrom+prompt";
   sourceSessionId: string;
   forkSessionId: string;
   forkPoint: string;

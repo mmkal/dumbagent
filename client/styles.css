@@ -675,6 +675,10 @@ textarea:focus {
   background: #f3a86a;
 }
 
+.provider-pill[data-provider="pi"] {
+  background: #c4b5fd;
+}
+
 .provider-pill[data-provider="agent"] {
   background: #cbd5e1;
 }

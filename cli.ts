@@ -42,6 +42,17 @@ import {
   resolveClaudeSession,
   runClaudeSidecarSummary,
 } from "./src/claude-sdk.ts";
+import {
+  buildPiSidecarSummary,
+  buildPiSummary,
+  createPiSummaryPrompt,
+  discardPiSessionFile,
+  piSessionDirForEnv,
+  readPiSessions,
+  readRecentPiSessions,
+  resolvePiSession,
+  runPiSidecarSummary,
+} from "./src/pi-sdk.ts";
 import { formatFakeAgentFallback } from "./src/fakeagent-response.ts";
 import {
   archiveOpenCodeSessionFromDatabasePath,
@@ -277,7 +288,7 @@ const createSessionBodySchema = z.object({
 });
 const sessionIdInputSchema = z.object({ sessionId: z.string() });
 const agentSessionArchiveInputSchema = z.object({
-  provider: z.enum(["opencode", "codex", "claude"]),
+  provider: z.enum(["opencode", "codex", "claude", "pi"]),
   sessionId: z.string(),
 });
 const sendSessionInputSchema = sessionIdInputSchema.extend({
@@ -590,6 +601,7 @@ function commandPresetsPayload(): CommandPresetPayload[] {
     { id: "opencode", label: "OpenCode", command: "opencode", args: [], fakeAgent: "" },
     { id: "codex", label: "Codex", command: "codex", args: [], fakeAgent: "" },
     { id: "claude", label: "Claude", command: "claude", args: [], fakeAgent: "" },
+    { id: "pi", label: "Pi", command: "pi", args: [], fakeAgent: "" },
     { id: "fake-opencode", label: "Fake OpenCode", command: "opencode", args: [], fakeAgent: "opencode" },
     { id: "fake-codex", label: "Fake Codex", command: "codex", args: [], fakeAgent: "codex" },
     { id: "fake-claude", label: "Fake Claude", command: "claude", args: [], fakeAgent: "claude" },
@@ -1975,7 +1987,7 @@ function snapshotTitleForSession(summary: AgentSessionSummary | null) {
 }
 
 function isGenericSnapshotTitle(title: string) {
-  return /^(opencode session|codex thread|claude session)$/i.test(title.trim());
+  return /^(opencode session|codex thread|claude session|pi session)$/i.test(title.trim());
 }
 
 function isInternalSnapshotTitle(title: string) {
@@ -2039,6 +2051,7 @@ function usesAgentPromptTitle(session: RuntimeSession) {
     session.sdk.provider === "codex" ||
     session.sdk.provider === "claude" ||
     session.sdk.provider === "opencode" ||
+    session.sdk.provider === "pi" ||
     isCodexCommand(session.command) ||
     isClaudeCommand(session.command) ||
     isOpenCodeCommand(session.command)
@@ -2122,7 +2135,7 @@ async function createTestingFakeAgent() {
         return parsed.respond.text(`delayed fakeagent response after ${delayMatch[1]}ms`);
       }
       if (/read .*hello/i.test(text)) {
-        return parsed.respond.toolCall("read", { filePath: path.join("/tmp/fakeagent-test", "hello.txt") });
+        return parsed.respond.toolCall("read", { filePath: path.join("/tmp/dumbagent-test", "hello.txt") });
       }
       return parsed.respond.text(formatFakeAgentFallback(text));
     },
@@ -2131,8 +2144,8 @@ async function createTestingFakeAgent() {
 
 function prepareFakeAgentWorkspace(cwd: string) {
   fs.mkdirSync(cwd, { recursive: true });
-  fs.mkdirSync("/tmp/fakeagent-test", { recursive: true });
-  fs.writeFileSync("/tmp/fakeagent-test/hello.txt", "hi\n");
+  fs.mkdirSync("/tmp/dumbagent-test", { recursive: true });
+  fs.writeFileSync("/tmp/dumbagent-test/hello.txt", "hi\n");
 }
 
 function readRecentCodexSessions() {
@@ -2152,6 +2165,7 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
   const codexDatabasePaths = recentCodexDatabasePaths();
   const openCodeDatabasePath = openCodeDatabasePathForEnv(process.env);
   const claudeConfigDir = claudeConfigDirForEnv(process.env);
+  const piSessionDir = piSessionDirForEnv(process.env);
   const claudeSessions = readRecentProviderSessionsWithBudget({
     provider: "claude",
     read: async () => await readRecentClaudeSessions(claudeConfigDir, nowMs),
@@ -2176,6 +2190,14 @@ async function readRecentAgentSessions(): Promise<RecentAgentSession[]> {
     readRecentProviderSessionsWithBudget({
       provider: "opencode",
       read: () => readRecentOpenCodeSessionsFromDatabasePath(openCodeDatabasePath, nowMs),
+      timeoutMs: recentProviderTimeoutMs,
+      unavailableRetryDelayMs: recentProviderUnavailableRetryDelayMs,
+      isUnavailableStoreError: isUnavailableRecentProviderStoreError,
+      reportDiagnostic: reportRecentProviderDiagnostic,
+    }),
+    readRecentProviderSessionsWithBudget({
+      provider: "pi",
+      read: async () => await readRecentPiSessions(piSessionDir, nowMs),
       timeoutMs: recentProviderTimeoutMs,
       unavailableRetryDelayMs: recentProviderUnavailableRetryDelayMs,
       isUnavailableStoreError: isUnavailableRecentProviderStoreError,
@@ -2271,7 +2293,7 @@ async function archiveRecentAgentSession(input: AgentSessionArchiveInput) {
     archived = archiveCodexThreadFromDatabasePath(resolveCodexStateDatabasePathForEnv(process.env), input.sessionId, archivedAtMs);
   } else if (input.provider === "opencode") {
     archived = archiveOpenCodeSessionFromDatabasePath(openCodeDatabasePathForEnv(process.env), input.sessionId, archivedAtMs);
-  } else if (input.provider === "claude") {
+  } else if (input.provider === "claude" || input.provider === "pi") {
     archived = true;
   }
   const locallyArchived = archiveRecentAgentSessionLocally(input.provider, input.sessionId);
@@ -2325,6 +2347,7 @@ function isUnavailableRecentProviderStoreError(message: string) {
   return (
     message.startsWith("Codex state database not found at ") ||
     message.startsWith("OpenCode database not found at ") ||
+    message.startsWith("Pi session directory not found at ") ||
     message === "unable to open database file" ||
     message.includes("SQLITE_CANTOPEN")
   );
@@ -2374,6 +2397,26 @@ async function prepareSessionSdk(command: string, args: string[], env: Record<st
         provider: "claude" as const,
         state: "ready" as const,
         baseUrl: claudeConfigDirForEnv(env),
+        externalSessionId: "",
+        status: "",
+        updatedAt: now,
+        error: "",
+        sidecarSummary: createIdleSidecarSummary(now),
+        forks: [],
+        summary: null,
+      },
+    };
+  }
+
+  if (isPiCommand(command)) {
+    const now = new Date().toISOString();
+    return {
+      command,
+      args,
+      payload: {
+        provider: "pi" as const,
+        state: "ready" as const,
+        baseUrl: piSessionDirForEnv(env),
         externalSessionId: "",
         status: "",
         updatedAt: now,
@@ -2481,6 +2524,10 @@ function isClaudeCommand(command: string) {
   return path.basename(command).toLowerCase() === "claude";
 }
 
+function isPiCommand(command: string) {
+  return path.basename(command).toLowerCase() === "pi";
+}
+
 async function terminateExistingCodexResumeOwners(command: string, args: string[], fakeAgent: AgentName | "", killActiveOwner: boolean) {
   const recoveryCommand = codexResumeRecoveryCommand(command, args);
   if (fakeAgent || !recoveryCommand) {
@@ -2556,6 +2603,11 @@ async function refreshSessionSdk(session: RuntimeSession) {
 
   if (session.sdk.provider === "claude") {
     await refreshClaudeSessionSdk(session);
+    return;
+  }
+
+  if (session.sdk.provider === "pi") {
+    await refreshPiSessionSdk(session);
     return;
   }
 
@@ -2789,6 +2841,54 @@ async function refreshClaudeSessionSdk(session: RuntimeSession) {
   publishSession(session);
 }
 
+async function refreshPiSessionSdk(session: RuntimeSession) {
+  try {
+    const sessions = await readPiSessions(session.sdk.baseUrl);
+    const target = resolvePiSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      session.sdk = {
+        ...session.sdk,
+        state: "not-found",
+        status: "",
+        updatedAt: new Date().toISOString(),
+        error: "Pi session storage is readable, but no matching session is visible yet.",
+        summary: null,
+      };
+      publishSession(session);
+      return;
+    }
+
+    const summary = buildPiSummary(target);
+    session.sdk = {
+      ...session.sdk,
+      state: "connected",
+      status: "",
+      externalSessionId: String(target.path || target.id || ""),
+      updatedAt: new Date().toISOString(),
+      error: "",
+      summary,
+    };
+    if (!session.title || session.title === path.basename(session.command)) {
+      session.title = summary.title || session.title;
+    }
+    storeSessionRecoveryCommand(session, ["--session", String(target.path || target.id || "")]);
+  } catch (error) {
+    session.sdk = {
+      ...session.sdk,
+      state: "error",
+      updatedAt: new Date().toISOString(),
+      error: String(error instanceof Error ? error.message : error),
+    };
+  }
+  publishSession(session);
+}
+
 async function summarizeSessionWithSdk(session: RuntimeSession) {
   const provider = session.sdk.provider;
   if (!provider) {
@@ -2804,6 +2904,11 @@ async function summarizeSessionWithSdk(session: RuntimeSession) {
 
   if (provider === "claude") {
     await summarizeClaudeSessionWithSdk(session);
+    return;
+  }
+
+  if (provider === "pi") {
+    await summarizePiSessionWithSdk(session);
     return;
   }
 
@@ -3105,6 +3210,9 @@ function sidecarSummaryMethodForProvider(provider: SessionSdkPayload["provider"]
   }
   if (provider === "claude") {
     return "claude.query+forkSession";
+  }
+  if (provider === "pi") {
+    return "pi.forkFrom+prompt";
   }
   return "";
 }
@@ -3417,6 +3525,154 @@ async function summarizeClaudeSessionWithSdk(session: RuntimeSession) {
     publishSession(session);
     if (forkSessionId !== sourceSessionId) {
       await discardClaudeSidecarSession(session.sdk.baseUrl, forkSessionId);
+    }
+  }
+}
+
+async function summarizePiSessionWithSdk(session: RuntimeSession) {
+  session.sdk = {
+    ...session.sdk,
+    sidecarSummary: {
+      implemented: true,
+      status: "running",
+      method: "pi.forkFrom+prompt",
+      sourceSessionId: session.sdk.externalSessionId,
+      forkSessionId: "",
+      forkPoint: "",
+      updatedAt: new Date().toISOString(),
+      result: null,
+      error: "",
+      note: "Resolving the Pi source session before creating a sidecar summary fork.",
+    },
+  };
+  publishSession(session);
+
+  let sourceSessionId = session.sdk.externalSessionId;
+  let forkSessionId = "";
+  let forkCreatedAt = new Date().toISOString();
+  let sourceForkPoint = "";
+  try {
+    const sessions = await readPiSessions(session.sdk.baseUrl);
+    const target = resolvePiSession({
+      sessions,
+      cwd: session.cwd,
+      tuiCreatedAt: session.createdAt,
+      currentExternalSessionId: session.sdk.externalSessionId,
+      args: session.args,
+    });
+    if (!target) {
+      throw new Error("Pi session storage is readable, but no matching session is visible yet.");
+    }
+
+    sourceSessionId = String(target.path || target.id || "");
+    const sourceSummary = buildPiSummary(target);
+    sourceForkPoint = forkPointForSummary(sourceSummary);
+    const reusableBrief = findReusableSessionBrief(session, "pi", sourceSessionId, sourceForkPoint);
+    if (reusableBrief) {
+      reuseSessionBrief(session, {
+        method: "pi.forkFrom+prompt",
+        sourceSessionId,
+        sourceForkPoint,
+        sourceSummary,
+        reusableBrief,
+      });
+      return;
+    }
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceSessionId,
+      state: "connected",
+      status: "",
+      summary: sourceSummary,
+      sidecarSummary: {
+        implemented: true,
+        status: "running",
+        method: "pi.forkFrom+prompt",
+        sourceSessionId,
+        forkSessionId: "",
+        forkPoint: sourceForkPoint,
+        updatedAt: new Date().toISOString(),
+        result: null,
+        error: "",
+        note: "Creating a separate Pi fork for the summary so the live TUI session is left untouched.",
+      },
+    };
+    publishSession(session);
+
+    const sidecar = await runPiSidecarSummary({
+      sourceSessionPath: sourceSessionId,
+      cwd: session.cwd,
+      prompt: createPiSummaryPrompt(sourceSummary),
+    });
+    forkSessionId = sidecar.forkSessionId;
+    const summarizedAt = new Date().toISOString();
+    if (forkSessionId !== sourceSessionId) {
+      discardPiSessionFile(forkSessionId);
+    }
+    session.sdk = {
+      ...session.sdk,
+      externalSessionId: sourceSessionId,
+      forks: upsertSidecarFork(session.sdk.forks, {
+        provider: "pi",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        forkPoint: sourceForkPoint,
+        createdAt: forkCreatedAt,
+        updatedAt: summarizedAt,
+        status: "summarized",
+        result: true,
+        error: "",
+        summary: buildPiSidecarSummary(forkSessionId, sidecar.finalResponse),
+      }),
+      sidecarSummary: {
+        implemented: true,
+        status: "completed",
+        method: "pi.forkFrom+prompt",
+        sourceSessionId,
+        forkSessionId,
+        forkPoint: sourceForkPoint,
+        updatedAt: summarizedAt,
+        result: true,
+        error: "",
+        note: "Pi summarized the source transcript in a disposable fork. The live TUI session remains untouched.",
+      },
+    };
+    await refreshPiSessionSdk(session);
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const existingFork = session.sdk.forks.find((candidate) => candidate.forkSessionId === forkSessionId);
+    session.sdk = {
+      ...session.sdk,
+      forks: forkSessionId ? upsertSidecarFork(session.sdk.forks, {
+        provider: "pi",
+        purpose: "sidecarSummary",
+        sourceSessionId,
+        forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
+        createdAt: existingFork ? existingFork.createdAt : forkCreatedAt,
+        updatedAt: failedAt,
+        status: "error",
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        summary: existingFork ? existingFork.summary : null,
+      }) : session.sdk.forks,
+      sidecarSummary: {
+        implemented: true,
+        status: "error",
+        method: "pi.forkFrom+prompt",
+        sourceSessionId,
+        forkSessionId,
+        forkPoint: existingFork ? existingFork.forkPoint : sourceForkPoint,
+        updatedAt: failedAt,
+        result: null,
+        error: String(error instanceof Error ? error.message : error),
+        note: "Pi sidecar summary failed before producing a result.",
+      },
+    };
+    publishSession(session);
+    if (forkSessionId !== sourceSessionId) {
+      discardPiSessionFile(forkSessionId);
     }
   }
 }

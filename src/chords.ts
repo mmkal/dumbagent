@@ -1,4 +1,4 @@
-export type ChordBinary = "" | "codex" | "opencode" | "claude";
+export type ChordBinary = "" | "codex" | "opencode" | "claude" | "pi";
 
 export type ChordStep = {
   text: string;
@@ -34,14 +34,16 @@ export const chordPresets: ChordPreset[] = [
   { id: "claude-escape", label: "Esc", sequence: "esc", binaries: ["claude"] },
   { id: "claude-shift-tab", label: "Shift-Tab", sequence: "shift+tab", binaries: ["claude"] },
   { id: "claude-newline", label: "Ctrl-J", sequence: "ctrl+j", binaries: ["claude"] },
+  { id: "pi-escape", label: "Esc", sequence: "esc", binaries: ["pi"] },
+  { id: "pi-newline", label: "Ctrl-J", sequence: "ctrl+j", binaries: ["pi"] },
 ];
 
 export function detectChordBinary(command: string, args: string[], provider: string): ChordBinary {
-  if (provider === "codex" || provider === "opencode" || provider === "claude") {
+  if (provider === "codex" || provider === "opencode" || provider === "claude" || provider === "pi") {
     return provider;
   }
   const commandName = basename(command).toLowerCase();
-  if (commandName === "codex" || commandName === "opencode" || commandName === "claude") {
+  if (commandName === "codex" || commandName === "opencode" || commandName === "claude" || commandName === "pi") {
     return commandName;
   }
   const searchable = [commandName, ...args].join(" ").toLowerCase();
@@ -53,6 +55,9 @@ export function detectChordBinary(command: string, args: string[], provider: str
   }
   if (/\bclaude\b/.test(searchable)) {
     return "claude";
+  }
+  if (/\bpi\b/.test(searchable)) {
+    return "pi";
   }
   return "";
 }
