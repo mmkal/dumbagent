@@ -13,7 +13,9 @@ import { githubDark, vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import jsonata from "@mmkal/jsonata/sync";
 import { FileTree } from "@pierre/trees";
 import { FitAddon } from "@xterm/addon-fit";
+import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type { ILink, ILinkHandler, ILinkProvider, Terminal as XtermTerminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import {
@@ -4912,6 +4914,24 @@ function terminalImagePathIsAbsolute(filePath: string) {
   return filePath.startsWith("/") || /^[A-Za-z]:\\/.test(filePath);
 }
 
+function loadTerminalUnicodeGraphemesAddon(term: XtermTerminal) {
+  try {
+    term.loadAddon(new UnicodeGraphemesAddon());
+  } catch (error) {
+    console.warn("xterm Unicode grapheme addon unavailable; using default Unicode handling", error);
+  }
+}
+
+function loadTerminalWebglAddon(term: XtermTerminal) {
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch (error) {
+    console.warn("xterm WebGL renderer unavailable; using the default renderer", error);
+  }
+}
+
 async function ensureXterm(payload: SessionPayload) {
   const host = document.getElementById("xterm-terminal");
   if (!host) {
@@ -4935,14 +4955,17 @@ async function ensureXterm(payload: SessionPayload) {
         foreground: "#d6deeb",
       },
       allowTransparency: false,
+      allowProposedApi: true,
       scrollback: 5000,
       linkHandler: terminalHttpLinkHandler,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    loadTerminalUnicodeGraphemesAddon(term);
     term.loadAddon(new WebLinksAddon(openTerminalHttpLink));
     terminalImageLinkProvider = term.registerLinkProvider(createTerminalImageLinkProvider(term));
     term.open(host);
+    loadTerminalWebglAddon(term);
     bindTerminalImageTapHandler(term);
     bindTerminalImageHints(term);
     bindTerminalTouchSelection(term);

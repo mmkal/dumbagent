@@ -246,6 +246,23 @@ test("launches fake Codex, translates the TUI into semantic sections, and accept
   await expect(page.getByTestId("stdout-log")).toContainText("three");
 });
 
+test("sends Pi promptbox paragraph breaks inside one submitted prompt", async ({ page, ctx }) => {
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("pi");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("Pi test TUI");
+
+  const prompt = "first paragraph\n\nfruit: mango";
+  await page.getByRole("textbox", { name: "Send stdin" }).fill(prompt);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(async () => {
+    const renderedText = (await fetchSessionPayload(page)).renderedText;
+    const match = renderedText.match(/FIRST_PROMPT_JSON (".*")/);
+    return match ? JSON.parse(match[1] || "\"\"") : "";
+  }).toBe(prompt);
+});
+
 test("launches the coordinator as a normal TUI session with MCP tools", async ({ page, ctx }) => {
   await page.goto(ctx.baseUrl);
   await page.getByRole("checkbox", { name: "fakeagent" }).check();
@@ -3055,6 +3072,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "split-image-path-agent"), splitImagePathAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "selectable-agent"), selectableAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "claude"), claudeTuiSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "pi"), piTuiSource, { mode: 0o755 });
 
   const port = await getFreePort();
   const pathParts = [pathPrefix, fakeBinDir, process.env.PATH || ""].filter(Boolean);
@@ -3573,6 +3591,51 @@ function codexRolloutMessage(timestamp: string, role: string, text: string) {
 function sqlString(value: string) {
   return value.replaceAll("'", "''");
 }
+
+const piTuiSource = `#!/usr/bin/env node
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.setEncoding("utf8");
+
+let input = "";
+let submitted = "";
+
+function draw() {
+  process.stdout.write("\\x1b[2J\\x1b[H");
+  process.stdout.write("Pi test TUI\\r\\n");
+  if (submitted) {
+    process.stdout.write("FIRST_PROMPT_JSON " + JSON.stringify(submitted) + "\\r\\n");
+    return;
+  }
+  process.stdout.write("> " + input.replace(/\\n/g, "\\\\n") + "\\r\\n");
+}
+
+function submit() {
+  if (!input.trim() || submitted) return;
+  submitted = input;
+  input = "";
+}
+
+draw();
+process.stdin.on("data", (chunk) => {
+  for (const char of chunk) {
+    if (char === "\\u0003") process.exit(0);
+    if (submitted) continue;
+    if (char === "\\r") {
+      submit();
+      continue;
+    }
+    if (char === "\\n") {
+      input += "\\n";
+      continue;
+    }
+    if (char.charCodeAt(0) >= 32) {
+      input += char;
+    }
+  }
+  draw();
+});
+`;
 
 const claudeTuiSource = `#!/usr/bin/env node
 process.stdin.setRawMode(true);
