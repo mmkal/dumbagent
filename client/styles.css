@@ -1652,6 +1652,47 @@ pre {
   min-width: 0;
 }
 
+.ide-editor-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ide-editor-menu .menu-button {
+  width: 28px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.session-menu:not([open]) .ide-editor-menu-overlay {
+  display: none;
+}
+
+.ide-editor-menu-overlay {
+  position: absolute;
+  inset: auto 0 auto auto;
+  top: calc(100% + 6px);
+  display: block;
+  width: min(300px, calc(100vw - 20px));
+  padding: 0;
+}
+
+.ide-editor-menu-overlay .floating-overlay-backdrop {
+  position: fixed;
+  background: rgb(0 0 0 / 0.18);
+}
+
+.ide-editor-menu-panel {
+  width: 100%;
+}
+
+.ide-editor-menu-panel .toolbar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .ide-sidebar header strong,
 .ide-editor-pane header strong {
   min-width: 0;
@@ -3058,6 +3099,16 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
     gap: 6px;
   }
 
+  .ide-route-topbar {
+    border-bottom: 0;
+    min-height: 28px;
+    padding-bottom: 0;
+  }
+
+  .ide-route-layout {
+    gap: 4px;
+  }
+
   .factory-floor-topbar {
     grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
@@ -3256,6 +3307,10 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
     border-radius: 6px;
   }
 
+  .ide-screen {
+    border-top: 0;
+  }
+
   .ide-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -3264,6 +3319,15 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   .ide-sidebar header,
   .ide-editor-pane header {
     padding: 6px 7px;
+  }
+
+  .ide-sidebar header {
+    border-bottom: 0;
+    padding: 4px 7px;
+  }
+
+  .ide-sidebar header code {
+    display: none;
   }
 
   .ide-sidebar header strong,
@@ -3329,6 +3393,22 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   .terminal-xterm-wrap,
   .terminal-html {
     padding: 4px;
+  }
+
+  .terminal-xterm-wrap,
+  .terminal-host {
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .terminal-touch-selection-toolbar,
+  .terminal-touch-selection-toolbar button,
+  .terminal-image-hint,
+  .terminal-image-popover,
+  .terminal-image-popover button {
+    touch-action: manipulation;
   }
 
   .terminal-host .xterm-viewport {

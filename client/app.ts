@@ -7,8 +7,8 @@ import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { EditorState, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorState, type Extension, type Text } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { githubDark, vsCodeDark } from "@fsegurai/codemirror-theme-bundle";
 import jsonata from "@mmkal/jsonata/sync";
 import { FileTree } from "@pierre/trees";
@@ -359,6 +359,8 @@ let ideFileTree: FileTree | null = null;
 let ideFileTreeCwd = "";
 let ideFileTreeLoadingCwd = "";
 let ideSelectedFilePath = "";
+let ideFilePaths = new Set<string>();
+let lastMarkdownLinkActivationAt = 0;
 let eventsPaused = false;
 let terminalResizeObserver: ResizeObserver | null = null;
 let terminalResizeTimer: number | null = null;
@@ -373,7 +375,7 @@ let xtermInputQueue = Promise.resolve();
 let xtermSyncQueue = Promise.resolve();
 let terminalScrollAnimationFrame: number | null = null;
 let terminalImageLinkProvider: { dispose(): void } | null = null;
-let terminalImageTapCleanup: (() => void) | null = null;
+let terminalTapActivationCleanup: (() => void) | null = null;
 let terminalImageHintsCleanup: (() => void) | null = null;
 let terminalTouchSelectionCleanup: (() => void) | null = null;
 let terminalImageHintAnimationFrame: number | null = null;
@@ -389,6 +391,9 @@ let homeIdleNotificationDisplayDirs: string[] = [];
 
 const terminalFontSizeStorageKey = "tuiui-terminal-font-size";
 const terminalFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const fileEditorFontSizeStorageKey = "tuiui-ide-file-editor-font-size";
+const fileEditorWordWrapStorageKey = "tuiui-ide-file-editor-word-wrap";
+const fileEditorFontSizeSteps = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const sentPromptboxMessageLimit = 10;
 const recentSessionGroupStorageKey = "tuiui-recent-session-groups";
 const recentSessionFilterStorageKey = "tuiui-recent-session-filter";
@@ -396,6 +401,8 @@ const defaultRecentSessionFilterExpression = 'status != "archived"';
 const recentSessionGroupConfigOpenStorageKey = "tuiui-recent-session-group-config-open";
 const recentSessionGroupOpenStorageKey = "tuiui-recent-session-group-open-state";
 let terminalFontSize = readTerminalFontSize();
+let fileEditorFontSize = readFileEditorFontSize();
+let fileEditorWordWrap = readFileEditorWordWrap();
 
 const idleNotifications = new BrowserIdleNotifications({
   storage: window.localStorage,
@@ -410,6 +417,7 @@ const terminalHttpLinkHandler: ILinkHandler = {
   },
   allowNonHttpProtocols: false,
 };
+const terminalHttpLinkPattern = /https?:\/\/[^\s"'`<>]+/gi;
 const terminalImagePathPattern = /(^|[\s"'`(<[{])((?:\/[^\s"'`<>]+|[A-Za-z]:\\[^\s"'`<>]+|\.{1,2}\/[^\s"'`<>]+|[A-Za-z0-9._-][^\s"'`<>]*)\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp))(?=$|[\s"'`<>),;:!?}\]])/gi;
 const terminalTouchLongPressMs = 460;
 const terminalTouchMoveTolerancePx = 8;
@@ -3358,6 +3366,104 @@ function storeTerminalFontSize(fontSize: number) {
   }
 }
 
+function changeFileEditorFontSize(direction: number) {
+  if (!direction) {
+    return;
+  }
+  const currentIndex = fileEditorFontSizeSteps.indexOf(fileEditorFontSize);
+  const index = currentIndex === -1 ? 0 : currentIndex;
+  const nextIndex = Math.max(0, Math.min(fileEditorFontSizeSteps.length - 1, index + direction));
+  const nextFontSize = fileEditorFontSizeSteps[nextIndex]!;
+  if (nextFontSize === fileEditorFontSize) {
+    updateFileEditorControls();
+    return;
+  }
+
+  fileEditorFontSize = nextFontSize;
+  storeFileEditorFontSize(nextFontSize);
+  updateFileEditorControls();
+  remountFileTextEditor();
+}
+
+function toggleFileEditorWordWrap() {
+  fileEditorWordWrap = !fileEditorWordWrap;
+  storeFileEditorWordWrap(fileEditorWordWrap);
+  updateFileEditorControls();
+  remountFileTextEditor();
+}
+
+function updateFileEditorControls() {
+  document.querySelectorAll<HTMLOutputElement>("[data-file-editor-zoom-value]").forEach((output) => {
+    output.textContent = `${fileEditorFontSize}px`;
+  });
+  const currentIndex = fileEditorFontSizeSteps.indexOf(fileEditorFontSize);
+  document.querySelectorAll<HTMLButtonElement>("[data-file-editor-zoom]").forEach((button) => {
+    const direction = Number(button.dataset.fileEditorZoom || 0);
+    button.disabled = direction < 0
+      ? currentIndex <= 0
+      : currentIndex >= fileEditorFontSizeSteps.length - 1;
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-action='toggle-file-word-wrap']").forEach((button) => {
+    button.setAttribute("aria-pressed", String(fileEditorWordWrap));
+  });
+}
+
+function remountFileTextEditor() {
+  if (dataEditorKind !== "file-text") {
+    return;
+  }
+  const doc = dataEditorDoc;
+  const filePath = ideSelectedFilePath;
+  const scrollTop = dataEditorView?.scrollDOM.scrollTop || 0;
+  const scrollLeft = dataEditorView?.scrollDOM.scrollLeft || 0;
+  destroyDataEditor();
+  mountFileTextEditor(doc, filePath);
+  if (dataEditorView) {
+    dataEditorView.scrollDOM.scrollTop = scrollTop;
+    dataEditorView.scrollDOM.scrollLeft = scrollLeft;
+  }
+  requestAnimationFrame(() => dataEditorView?.requestMeasure());
+}
+
+function readFileEditorFontSize() {
+  try {
+    const stored = Number(localStorage.getItem(fileEditorFontSizeStorageKey) || "");
+    if (fileEditorFontSizeSteps.includes(stored)) {
+      return stored;
+    }
+  } catch {
+  }
+  return 7;
+}
+
+function storeFileEditorFontSize(fontSize: number) {
+  try {
+    localStorage.setItem(fileEditorFontSizeStorageKey, String(fontSize));
+  } catch {
+  }
+}
+
+function readFileEditorWordWrap() {
+  try {
+    const stored = localStorage.getItem(fileEditorWordWrapStorageKey);
+    if (stored === "true") {
+      return true;
+    }
+    if (stored === "false") {
+      return false;
+    }
+  } catch {
+  }
+  return false;
+}
+
+function storeFileEditorWordWrap(enabled: boolean) {
+  try {
+    localStorage.setItem(fileEditorWordWrapStorageKey, String(enabled));
+  } catch {
+  }
+}
+
 function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
   screen.className = "screen terminal-screen";
   if (payload.renderedAnsi === undefined && payload.renderedHtml) {
@@ -3441,7 +3547,10 @@ function renderIdeScreenForCwd(screen: HTMLElement, cwd: string) {
       </aside>
       <section class="ide-editor-pane" aria-label="File preview">
         <header>
-          <strong data-ide-file-title>No file selected</strong>
+          <div class="ide-editor-title-row">
+            <strong data-ide-file-title>No file selected</strong>
+            ${renderIdeEditorMenu()}
+          </div>
           <span data-ide-file-meta></span>
         </header>
         <p class="ide-file-message" data-ide-file-message>Select a file from the tree.</p>
@@ -3450,8 +3559,30 @@ function renderIdeScreenForCwd(screen: HTMLElement, cwd: string) {
     </section>
   `;
   bindIdeFilesToggle();
+  bindIdeEditorControls();
   mountFileTextEditor("");
   void loadIdeFileTree(cwd);
+}
+
+function renderIdeEditorMenu() {
+  return `
+    <details class="session-menu ide-editor-menu">
+      <summary class="menu-button ide-editor-menu-button" role="button" aria-label="IDE editor menu">☰</summary>
+      <div class="floating-overlay ide-editor-menu-overlay">
+        <button type="button" class="floating-overlay-backdrop" data-action="close-ide-editor-menu" aria-label="Close IDE editor menu"></button>
+        <div class="floating-overlay-card menu-panel ide-editor-menu-panel" role="dialog" aria-label="IDE editor menu">
+          <div class="toolbar" role="group" aria-label="IDE editor controls">
+            <button type="button" class="icon-button" data-action="toggle-file-word-wrap" aria-pressed="${fileEditorWordWrap}" aria-label="Toggle word wrap">Word wrap</button>
+          </div>
+          <div class="terminal-zoom-control ide-font-size-control" role="group" aria-label="IDE editor font size">
+            <button type="button" class="icon-button" data-file-editor-zoom="-1" aria-label="Decrease IDE editor font size" title="Decrease IDE editor font size">−</button>
+            <output data-file-editor-zoom-value aria-label="IDE editor font size">${fileEditorFontSize}px</output>
+            <button type="button" class="icon-button" data-file-editor-zoom="1" aria-label="Increase IDE editor font size" title="Increase IDE editor font size">+</button>
+          </div>
+        </div>
+      </div>
+    </details>
+  `;
 }
 
 function bindIdeFilesToggle() {
@@ -3463,6 +3594,23 @@ function bindIdeFilesToggle() {
     }
     setIdeFilesCollapsed(layout.dataset.filesCollapsed !== "true");
   });
+}
+
+function bindIdeEditorControls() {
+  document.querySelector<HTMLButtonElement>("[data-action='close-ide-editor-menu']")?.addEventListener("click", () => {
+    closeSessionMenu();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='toggle-file-word-wrap']")?.addEventListener("click", () => {
+    toggleFileEditorWordWrap();
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-file-editor-zoom]").forEach((button) => {
+    button.addEventListener("click", () => {
+      changeFileEditorFontSize(Number(button.dataset.fileEditorZoom || 0));
+    });
+  });
+  updateFileEditorControls();
 }
 
 function setIdeFilesCollapsed(collapsed: boolean) {
@@ -3507,6 +3655,7 @@ function renderIdeFileTree(cwd: string, payload: SessionFileTreePayload) {
   }
   destroyIdeFileTree();
   ideFileTreeCwd = cwd;
+  ideFilePaths = new Set(payload.paths.filter((candidate) => !candidate.endsWith("/")));
   host.textContent = "";
   setIdeCwdChrome(payload.cwd);
 
@@ -3517,12 +3666,16 @@ function renderIdeFileTree(cwd: string, payload: SessionFileTreePayload) {
   }
 
   const firstFilePath = firstPreviewFilePath(payload.paths);
+  const requestedFilePath = resolveIdeFilePathFromTree(currentIdeRouteFilePath());
+  const initialFilePath = requestedFilePath || firstFilePath;
+  let allowSelectionHistory = false;
   ideFileTree = new FileTree({
     density: "compact",
     fileTreeSearchMode: "hide-non-matches",
     flattenEmptyDirectories: true,
-    initialExpansion: "open",
-    initialSelectedPaths: firstFilePath ? [firstFilePath] : [],
+    initialExpansion: "closed",
+    initialExpandedPaths: initialExpandedIdeDirectoryPaths(payload.paths),
+    initialSelectedPaths: initialFilePath && payload.paths.includes(initialFilePath) ? [initialFilePath] : [],
     paths: payload.paths,
     search: true,
     unsafeCSS: ideFileTreeCss(),
@@ -3535,17 +3688,26 @@ function renderIdeFileTree(cwd: string, payload: SessionFileTreePayload) {
       if (!item || item.isDirectory()) {
         return;
       }
+      if (allowSelectionHistory) {
+        pushIdeFileRoute(cwd, selectedPath);
+      }
       void selectIdeFile(cwd, selectedPath);
     },
   });
   ideFileTree.render({ containerWrapper: host });
+  requestAnimationFrame(() => {
+    allowSelectionHistory = true;
+  });
   if (payload.truncated) {
     host.insertAdjacentHTML("beforeend", `
       <p class="ide-tree-note">Showing first ${payload.entryCount} entries of ${payload.maxEntries}.</p>
     `);
   }
-  if (firstFilePath) {
-    void selectIdeFile(cwd, firstFilePath);
+  if (initialFilePath) {
+    if (requestedFilePath && requestedFilePath !== initialFilePath) {
+      replaceIdeFileRoute(cwd, initialFilePath);
+    }
+    void selectIdeFile(cwd, initialFilePath);
   } else {
     setIdeFileMessage("No previewable files were found under this cwd.");
   }
@@ -3588,6 +3750,41 @@ function isCurrentIdeCwd(cwd: string) {
   return location.pathname === "/ide" && ideFileTreeCwd === cwd;
 }
 
+function currentIdeRouteFilePath() {
+  if (location.pathname !== "/ide") {
+    return "";
+  }
+  return new URL(location.href).searchParams.get("file") || "";
+}
+
+function pushIdeFileRoute(cwd: string, filePath: string) {
+  updateIdeFileRoute(cwd, filePath, "push");
+}
+
+function replaceIdeFileRoute(cwd: string, filePath: string) {
+  updateIdeFileRoute(cwd, filePath, "replace");
+}
+
+function updateIdeFileRoute(cwd: string, filePath: string, mode: "push" | "replace") {
+  if (location.pathname !== "/ide" || !filePath) {
+    return;
+  }
+  const url = new URL(location.href);
+  url.pathname = "/ide";
+  url.searchParams.set("cwd", cwd);
+  url.searchParams.set("file", filePath);
+  const nextUrl = `${url.pathname}${url.search}`;
+  const currentUrl = `${location.pathname}${location.search}`;
+  if (nextUrl === currentUrl) {
+    return;
+  }
+  if (mode === "replace") {
+    history.replaceState({}, "", nextUrl);
+    return;
+  }
+  history.pushState({}, "", nextUrl);
+}
+
 function renderIdeFileContent(file: SessionFileContentPayload) {
   setIdeFileChrome(file.path, `${formatFileSize(file.size)} · ${file.kind}`);
   if (file.kind !== "text") {
@@ -3617,6 +3814,8 @@ function mountFileTextEditor(doc: string, filePath = "") {
           basicSetup,
           githubDark,
           ...languageExtensions,
+          ...(fileEditorWordWrap ? [EditorView.lineWrapping] : []),
+          ...fileEditorMarkdownLinkExtensions(languageKey),
           EditorState.readOnly.of(true),
           EditorView.editable.of(false),
           EditorView.contentAttributes.of({ "aria-label": "IDE file content" }),
@@ -3711,8 +3910,643 @@ function fileLanguageExtensions(languageKey: string): Extension[] {
   }
 }
 
+function fileEditorMarkdownLinkExtensions(languageKey: string): Extension[] {
+  if (languageKey !== "markdown") {
+    return [];
+  }
+  return [markdownRelativeFileLinkPlugin()];
+}
+
+type MarkdownEditorLinkCandidate = {
+  from: number;
+  to: number;
+  target: string;
+  source: "markdown" | "frontmatter";
+};
+
+type MarkdownEditorLinkAction =
+  | { kind: "file"; filePath: string }
+  | { kind: "url"; href: string };
+
+function markdownRelativeFileLinkPlugin() {
+  return ViewPlugin.fromClass(class {
+    decorations: DecorationSet;
+    view: EditorView;
+
+    constructor(view: EditorView) {
+      this.view = view;
+      this.decorations = markdownRelativeFileLinkDecorations(view);
+      view.dom.addEventListener("mousedown", this.handleMouseDown, true);
+      view.dom.addEventListener("click", this.handleClick, true);
+      view.dom.addEventListener("pointerup", this.handlePointerUp, true);
+      view.dom.addEventListener("touchend", this.handleTouchEnd, true);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = markdownRelativeFileLinkDecorations(update.view);
+      }
+    }
+
+    destroy() {
+      this.view.dom.removeEventListener("mousedown", this.handleMouseDown, true);
+      this.view.dom.removeEventListener("click", this.handleClick, true);
+      this.view.dom.removeEventListener("pointerup", this.handlePointerUp, true);
+      this.view.dom.removeEventListener("touchend", this.handleTouchEnd, true);
+    }
+
+    handleMouseDown = (event: MouseEvent) => {
+      handleMarkdownRelativeFileLinkMouseDown(event, this.view);
+    };
+
+    handleClick = (event: MouseEvent) => {
+      handleMarkdownRelativeFileLinkClick(event, this.view);
+    };
+
+    handlePointerUp = (event: PointerEvent) => {
+      handleMarkdownRelativeFileLinkPointerUp(event, this.view);
+    };
+
+    handleTouchEnd = (event: TouchEvent) => {
+      handleMarkdownRelativeFileLinkTouchEnd(event, this.view);
+    };
+  }, {
+    decorations(plugin) {
+      return plugin.decorations;
+    },
+  });
+}
+
+function markdownRelativeFileLinkDecorations(view: EditorView) {
+  const ranges = [];
+  const frontmatterRange = markdownFrontmatterLineRange(view.state.doc);
+  for (const range of view.visibleRanges) {
+    let position = range.from;
+    while (position <= range.to) {
+      const line = view.state.doc.lineAt(position);
+      const inFrontmatter = Boolean(frontmatterRange && line.number >= frontmatterRange.fromLine && line.number <= frontmatterRange.toLine);
+      for (const link of markdownEditorLinkCandidatesInLine(line.text, inFrontmatter)) {
+        const action = resolveMarkdownEditorLinkAction(ideSelectedFilePath, link);
+        if (action) {
+          ranges.push(Decoration.mark({
+            attributes: markdownEditorLinkActionAttributes(action),
+            class: "cm-ide-relative-link",
+            tagName: "a",
+          }).range(line.from + link.from, line.from + link.to));
+        }
+      }
+      if (line.to >= range.to) {
+        break;
+      }
+      position = line.to + 1;
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function handleMarkdownRelativeFileLinkMouseDown(event: MouseEvent, view: EditorView) {
+  if (event.button !== 0) {
+    return false;
+  }
+  const handled = handleMarkdownRelativeFileLinkActivation(event, view, {
+    allowNearestLineLink: false,
+    x: event.clientX,
+    y: event.clientY,
+  });
+  if (handled) {
+    lastMarkdownLinkActivationAt = performance.now();
+  }
+  return handled;
+}
+
+function handleMarkdownRelativeFileLinkClick(event: MouseEvent, view: EditorView) {
+  if (performance.now() - lastMarkdownLinkActivationAt < 700) {
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+  return handleMarkdownRelativeFileLinkActivation(event, view, {
+    allowNearestLineLink: false,
+    x: event.clientX,
+    y: event.clientY,
+  });
+}
+
+function handleMarkdownRelativeFileLinkPointerUp(event: PointerEvent, view: EditorView) {
+  if (event.pointerType === "mouse" || performance.now() - lastMarkdownLinkActivationAt < 120) {
+    return false;
+  }
+  const handled = handleMarkdownRelativeFileLinkActivation(event, view, {
+    allowNearestLineLink: true,
+    x: event.clientX,
+    y: event.clientY,
+  });
+  if (handled) {
+    lastMarkdownLinkActivationAt = performance.now();
+  }
+  return handled;
+}
+
+function handleMarkdownRelativeFileLinkTouchEnd(event: TouchEvent, view: EditorView) {
+  if (performance.now() - lastMarkdownLinkActivationAt < 120) {
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+  const touch = event.changedTouches[0] || event.touches[0];
+  if (!touch) {
+    return false;
+  }
+  const handled = handleMarkdownRelativeFileLinkActivation(event, view, {
+    allowNearestLineLink: true,
+    x: touch.clientX,
+    y: touch.clientY,
+  });
+  if (handled) {
+    lastMarkdownLinkActivationAt = performance.now();
+  }
+  return handled;
+}
+
+function handleMarkdownRelativeFileLinkActivation(
+  event: Event,
+  view: EditorView,
+  point: { allowNearestLineLink: boolean; x: number; y: number },
+) {
+  if (!ideSelectedFilePath || fileLanguageKey(ideSelectedFilePath) !== "markdown") {
+    return false;
+  }
+  const targetAction = markdownEditorLinkActionFromEventTarget(event.target);
+  if (targetAction) {
+    event.preventDefault();
+    event.stopPropagation();
+    activateMarkdownEditorLink(targetAction);
+    return true;
+  }
+  const position = view.posAtCoords({ x: point.x, y: point.y });
+  if (position === null) {
+    return false;
+  }
+  const action = markdownEditorLinkActionAtPosition(view, position, point.allowNearestLineLink);
+  if (!action) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  activateMarkdownEditorLink(action);
+  return true;
+}
+
+function markdownEditorLinkActionAttributes(action: MarkdownEditorLinkAction): { [key: string]: string } {
+  if (action.kind === "file") {
+    return {
+      "data-ide-link-kind": "file",
+      "data-ide-link-target": action.filePath,
+      href: ideMarkdownFileLinkHref(action.filePath),
+    };
+  }
+  return {
+    "data-ide-link-kind": "url",
+    "data-ide-link-target": action.href,
+    href: action.href,
+    rel: "noopener noreferrer",
+    target: "_blank",
+  };
+}
+
+function ideMarkdownFileLinkHref(filePath: string) {
+  const url = new URL(location.href);
+  url.pathname = "/ide";
+  url.search = "";
+  url.searchParams.set("cwd", ideFileTreeCwd);
+  url.searchParams.set("file", filePath);
+  return `${url.pathname}${url.search}`;
+}
+
+function markdownEditorLinkActionFromEventTarget(target: EventTarget | null): MarkdownEditorLinkAction | null {
+  let element: Element | null = null;
+  if (target instanceof Element) {
+    element = target;
+  } else if (target instanceof Node) {
+    element = target.parentElement;
+  }
+  const linkElement = element?.closest("[data-ide-link-kind][data-ide-link-target]");
+  if (!linkElement) {
+    return null;
+  }
+  const targetValue = linkElement.getAttribute("data-ide-link-target") || "";
+  if (linkElement.getAttribute("data-ide-link-kind") === "file") {
+    const filePath = resolveExactIdeFilePathFromTree(targetValue);
+    return filePath ? { kind: "file", filePath } : null;
+  }
+  const href = httpLinkHref(targetValue);
+  return href ? { kind: "url", href } : null;
+}
+
+function markdownEditorLinkActionAtPosition(view: EditorView, position: number, allowNearestLineLink: boolean) {
+  const line = view.state.doc.lineAt(position);
+  const links = markdownEditorLinkCandidatesInLine(line.text, markdownLineIsInFrontmatter(view.state.doc, line.number))
+    .map((candidate) => ({
+      ...candidate,
+      action: resolveMarkdownEditorLinkAction(ideSelectedFilePath, candidate),
+    }))
+    .filter((candidate): candidate is MarkdownEditorLinkCandidate & { action: MarkdownEditorLinkAction } => Boolean(candidate.action));
+  if (!links.length) {
+    return null;
+  }
+  const exact = links.find((candidate) => position >= line.from + candidate.from && position <= line.from + candidate.to);
+  if (exact) {
+    return exact.action;
+  }
+  if (!allowNearestLineLink) {
+    return null;
+  }
+  const positionInLine = position - line.from;
+  return [...links]
+    .sort((left, right) => markdownLinkDistanceFromPosition(left, positionInLine) - markdownLinkDistanceFromPosition(right, positionInLine))[0]!
+    .action;
+}
+
+function markdownLinkDistanceFromPosition(link: { from: number; to: number }, positionInLine: number) {
+  if (positionInLine >= link.from && positionInLine <= link.to) {
+    return 0;
+  }
+  return Math.min(Math.abs(positionInLine - link.from), Math.abs(positionInLine - link.to));
+}
+
+function markdownEditorLinkCandidatesInLine(lineText: string, inFrontmatter: boolean): MarkdownEditorLinkCandidate[] {
+  const links: MarkdownEditorLinkCandidate[] = markdownFileLinksInLine(lineText).map((link) => ({
+    ...link,
+    source: "markdown",
+  }));
+  if (inFrontmatter) {
+    links.push(...frontmatterMetadataLinksInLine(lineText));
+  }
+  return links.sort((left, right) => left.from - right.from);
+}
+
+function markdownFrontmatterLineRange(doc: Text) {
+  if (doc.lines < 2 || doc.line(1).text.trim() !== "---") {
+    return null;
+  }
+  for (let lineNumber = 2; lineNumber <= doc.lines; lineNumber += 1) {
+    if (doc.line(lineNumber).text.trim() === "---") {
+      return { fromLine: 2, toLine: lineNumber - 1 };
+    }
+  }
+  return null;
+}
+
+function markdownLineIsInFrontmatter(doc: Text, lineNumber: number) {
+  const range = markdownFrontmatterLineRange(doc);
+  return Boolean(range && lineNumber >= range.fromLine && lineNumber <= range.toLine);
+}
+
+function frontmatterMetadataLinksInLine(lineText: string): MarkdownEditorLinkCandidate[] {
+  const range = frontmatterMetadataValueRange(lineText);
+  if (!range) {
+    return [];
+  }
+  return frontmatterStringTokensInRange(lineText, range).map((token) => ({
+    ...token,
+    source: "frontmatter",
+  }));
+}
+
+function frontmatterMetadataValueRange(lineText: string) {
+  const mappingMatch = lineText.match(/^(\s*(?:-\s*)?[A-Za-z0-9_.-]+\s*:(?:\s+|$))(.*)$/);
+  if (mappingMatch) {
+    return { from: mappingMatch[1]!.length, to: lineText.length };
+  }
+  const sequenceMatch = lineText.match(/^(\s*-\s+)(.*)$/);
+  if (sequenceMatch) {
+    return { from: sequenceMatch[1]!.length, to: lineText.length };
+  }
+  return null;
+}
+
+function frontmatterStringTokensInRange(lineText: string, range: { from: number; to: number }) {
+  const tokens: Array<{ from: number; to: number; target: string }> = [];
+  let index = range.from;
+  while (index < range.to) {
+    while (index < range.to && /[\s,[\]]/.test(lineText[index]!)) {
+      index += 1;
+    }
+    if (index >= range.to) {
+      break;
+    }
+    if (lineText[index] === "#") {
+      break;
+    }
+
+    const quote = lineText[index]!;
+    if (quote === "\"" || quote === "'") {
+      const tokenFrom = index + 1;
+      index += 1;
+      let target = "";
+      while (index < range.to) {
+        const current = lineText[index]!;
+        if (current === quote) {
+          if (quote === "'" && lineText[index + 1] === "'") {
+            target += "'";
+            index += 2;
+            continue;
+          }
+          break;
+        }
+        if (quote === "\"" && current === "\\" && index + 1 < range.to) {
+          target += lineText[index + 1]!;
+          index += 2;
+          continue;
+        }
+        target += current;
+        index += 1;
+      }
+      const tokenTo = index;
+      if (index < range.to && lineText[index] === quote) {
+        index += 1;
+      }
+      const normalizedTarget = frontmatterMetadataTarget(target);
+      if (normalizedTarget) {
+        tokens.push({ from: tokenFrom, to: tokenTo, target: normalizedTarget });
+      }
+      continue;
+    }
+
+    const tokenFrom = index;
+    while (index < range.to && !/[\s,[\]]/.test(lineText[index]!)) {
+      index += 1;
+    }
+    let tokenTo = index;
+    while (tokenTo > tokenFrom && /[),.;]/.test(lineText[tokenTo - 1]!)) {
+      tokenTo -= 1;
+    }
+    const normalizedTarget = frontmatterMetadataTarget(lineText.slice(tokenFrom, tokenTo));
+    if (normalizedTarget) {
+      tokens.push({ from: tokenFrom, to: tokenTo, target: normalizedTarget });
+    }
+  }
+  return tokens;
+}
+
+function markdownFileLinksInLine(lineText: string) {
+  const links: { from: number; to: number; target: string }[] = [];
+  const pattern = /!?\[[^\]\n]*\]\(([^)\n]+)\)/g;
+  for (const match of lineText.matchAll(pattern)) {
+    const rawTarget = markdownLinkTarget(match[1] || "");
+    if (!rawTarget) {
+      continue;
+    }
+    links.push({
+      from: match.index || 0,
+      to: (match.index || 0) + match[0].length,
+      target: rawTarget,
+    });
+  }
+  const wikiPattern = /\[\[([^\]\n]+)\]\]/g;
+  for (const match of lineText.matchAll(wikiPattern)) {
+    const rawTarget = wikiLinkTarget(match[1] || "");
+    if (!rawTarget) {
+      continue;
+    }
+    links.push({
+      from: match.index || 0,
+      to: (match.index || 0) + match[0].length,
+      target: rawTarget,
+    });
+  }
+  return links;
+}
+
+function markdownLinkTarget(rawTarget: string) {
+  const target = rawTarget.trim();
+  if (!target) {
+    return "";
+  }
+  if (target.startsWith("<")) {
+    const endIndex = target.indexOf(">");
+    return endIndex === -1 ? "" : target.slice(1, endIndex).trim();
+  }
+  return target.split(/\s+/)[0] || "";
+}
+
+function wikiLinkTarget(rawTarget: string) {
+  const target = rawTarget.trim();
+  if (!target) {
+    return "";
+  }
+  return target.split("|")[0]!.trim();
+}
+
+function frontmatterMetadataTarget(rawTarget: string) {
+  const target = rawTarget.trim();
+  if (!target) {
+    return "";
+  }
+  if (target.startsWith("<") && target.endsWith(">")) {
+    return target.slice(1, -1).trim();
+  }
+  return target;
+}
+
+function resolveMarkdownEditorLinkAction(sourceFilePath: string, candidate: MarkdownEditorLinkCandidate): MarkdownEditorLinkAction | null {
+  if (candidate.source === "frontmatter") {
+    return resolveFrontmatterMetadataLinkAction(sourceFilePath, candidate.target);
+  }
+  const filePath = resolveMarkdownRelativeFilePath(sourceFilePath, candidate.target);
+  return filePath ? { kind: "file", filePath } : null;
+}
+
+function resolveFrontmatterMetadataLinkAction(sourceFilePath: string, target: string): MarkdownEditorLinkAction | null {
+  const href = httpLinkHref(target);
+  if (href) {
+    return { kind: "url", href };
+  }
+  if (!frontmatterTargetLooksLikeFileReference(target)) {
+    return null;
+  }
+  const filePath = resolveFrontmatterMetadataFilePath(sourceFilePath, target);
+  return filePath ? { kind: "file", filePath } : null;
+}
+
+function httpLinkHref(target: string) {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return "";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return "";
+  }
+  return url.href;
+}
+
+function frontmatterTargetLooksLikeFileReference(target: string) {
+  if (!target || isExternalMarkdownLinkTarget(target) || target.startsWith("#")) {
+    return false;
+  }
+  const fileTarget = markdownLinkFileTarget(target);
+  if (!fileTarget) {
+    return false;
+  }
+  if (fileTarget.startsWith("/") || fileTarget.startsWith("./") || fileTarget.startsWith("../") || fileTarget.includes("/")) {
+    return true;
+  }
+  const fileName = fileTarget.split("/").pop() || "";
+  return fileName.startsWith(".") || /\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}$/.test(fileName);
+}
+
+function resolveFrontmatterMetadataFilePath(sourceFilePath: string, target: string) {
+  const fileTarget = markdownLinkFileTarget(target);
+  if (!fileTarget) {
+    return "";
+  }
+  const decodedTarget = decodeMarkdownLinkPath(fileTarget);
+  if (decodedTarget.startsWith("/")) {
+    return resolveFrontmatterAbsoluteFilePath(decodedTarget);
+  }
+  return resolveRelativeIdeFilePath(sourceFilePath, decodedTarget, resolveExactIdeFilePathFromTree);
+}
+
+function resolveFrontmatterAbsoluteFilePath(target: string) {
+  const cwd = normalizeIdeSlashPath(ideFileTreeCwd);
+  const absoluteTarget = normalizeIdeSlashPath(target);
+  if (!cwd || absoluteTarget === cwd || !absoluteTarget.startsWith(`${cwd}/`)) {
+    return "";
+  }
+  return resolveExactIdeFilePathFromTree(absoluteTarget.slice(cwd.length + 1));
+}
+
+function resolveMarkdownRelativeFilePath(sourceFilePath: string, target: string) {
+  return resolveRelativeIdeFilePath(sourceFilePath, target, resolveIdeFilePathFromTree);
+}
+
+function resolveRelativeIdeFilePath(sourceFilePath: string, target: string, resolveFilePath: (filePath: string) => string) {
+  if (!sourceFilePath || !target || isExternalMarkdownLinkTarget(target) || target.startsWith("/") || target.startsWith("#")) {
+    return "";
+  }
+  const targetWithoutFragment = markdownLinkFileTarget(target);
+  if (!targetWithoutFragment) {
+    return "";
+  }
+  const decodedTarget = decodeMarkdownLinkPath(targetWithoutFragment);
+  const sourceDirectory = sourceFilePath.includes("/") ? sourceFilePath.split("/").slice(0, -1) : [];
+  const outputSegments: string[] = [];
+  for (const segment of [...sourceDirectory, ...decodedTarget.split("/")]) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (!outputSegments.length) {
+        return "";
+      }
+      outputSegments.pop();
+      continue;
+    }
+    outputSegments.push(segment);
+  }
+  return resolveFilePath(outputSegments.join("/"));
+}
+
+function markdownLinkFileTarget(target: string) {
+  return target.split("#")[0]!.split("?")[0] || "";
+}
+
+function resolveExactIdeFilePathFromTree(filePath: string) {
+  if (!filePath) {
+    return "";
+  }
+  const normalizedFilePath = normalizeIdeSlashPath(filePath);
+  return ideFilePaths.has(normalizedFilePath) ? normalizedFilePath : "";
+}
+
+function resolveIdeFilePathFromTree(filePath: string) {
+  const exactFilePath = resolveExactIdeFilePathFromTree(filePath);
+  if (exactFilePath) {
+    return exactFilePath;
+  }
+  if (!filePath.endsWith(".md") && !filePath.endsWith(".markdown")) {
+    const markdownPath = `${filePath}.md`;
+    return resolveExactIdeFilePathFromTree(markdownPath);
+  }
+  return "";
+}
+
+function isExternalMarkdownLinkTarget(target: string) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(target);
+}
+
+function decodeMarkdownLinkPath(path: string) {
+  try {
+    return decodeURI(path);
+  } catch {
+    return path;
+  }
+}
+
+function normalizeIdeSlashPath(path: string) {
+  const compacted = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+  return compacted.length > 1 ? compacted.replace(/\/+$/g, "") : compacted;
+}
+
+function activateMarkdownEditorLink(action: MarkdownEditorLinkAction) {
+  if (action.kind === "file") {
+    openIdeFileFromMarkdownLink(action.filePath);
+    return;
+  }
+  openHttpLinkInNewTab(action.href);
+}
+
+function openIdeFileFromMarkdownLink(filePath: string) {
+  const cwd = ideFileTreeCwd;
+  if (!cwd) {
+    return;
+  }
+  const item = ideFileTree?.getItem(filePath);
+  if (item && !item.isDirectory() && !item.isSelected()) {
+    item.select();
+  }
+  void selectIdeFile(cwd, filePath).then(() => {
+    if (isCurrentIdeCwd(cwd) && ideSelectedFilePath === filePath) {
+      pushIdeFileRoute(cwd, filePath);
+    }
+  });
+}
+
 function firstPreviewFilePath(paths: string[]) {
-  return paths.find((candidate) => !candidate.endsWith("/")) || "";
+  return paths.find((candidate) => !candidate.endsWith("/") && !hasDotDirectorySegment(candidate))
+    || paths.find((candidate) => !candidate.endsWith("/"))
+    || "";
+}
+
+function initialExpandedIdeDirectoryPaths(paths: string[]) {
+  const expandedPaths = new Set<string>();
+  for (const filePath of paths) {
+    const pathWithoutTrailingSlash = filePath.endsWith("/") ? filePath.slice(0, -1) : filePath;
+    const segments = pathWithoutTrailingSlash.split("/").filter(Boolean);
+    const ancestorSegmentCount = filePath.endsWith("/") ? segments.length : Math.max(0, segments.length - 1);
+    let directoryPath = "";
+    for (let index = 0; index < ancestorSegmentCount; index += 1) {
+      const segment = segments[index]!;
+      directoryPath = directoryPath ? `${directoryPath}/${segment}` : segment;
+      if (segment.startsWith(".")) {
+        break;
+      }
+      expandedPaths.add(`${directoryPath}/`);
+    }
+  }
+  return [...expandedPaths];
+}
+
+function hasDotDirectorySegment(filePath: string) {
+  const segments = filePath.split("/").filter(Boolean);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (segments[index]!.startsWith(".")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function setIdeFileChrome(title: string, meta: string) {
@@ -3751,6 +4585,7 @@ function destroyIdeFileTree() {
   ideFileTreeCwd = "";
   ideFileTreeLoadingCwd = "";
   ideSelectedFilePath = "";
+  ideFilePaths = new Set();
 }
 
 function ideFileTreeCss() {
@@ -3794,17 +4629,23 @@ function updateTerminalRedrawOverlay(screen: HTMLElement, active: boolean) {
 }
 
 function openTerminalHttpLink(event: MouseEvent, uri: string) {
+  if (openHttpLinkInNewTab(uri)) {
+    event.preventDefault();
+  }
+}
+
+function openHttpLinkInNewTab(uri: string) {
   let url: URL;
   try {
     url = new URL(uri);
   } catch {
-    return;
+    return false;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return;
+    return false;
   }
-  event.preventDefault();
   window.open(url.href, "_blank", "noopener,noreferrer");
+  return true;
 }
 
 function bindTerminalImagePreview(screen: HTMLElement) {
@@ -3821,58 +4662,190 @@ function bindTerminalImagePreview(screen: HTMLElement) {
   });
 }
 
-function bindTerminalImageTapHandler(term: XtermTerminal) {
-  terminalImageTapCleanup?.();
-  terminalImageTapCleanup = null;
+function bindTerminalTapActivation(term: XtermTerminal) {
+  terminalTapActivationCleanup?.();
+  terminalTapActivationCleanup = null;
 
   const element = term.element;
   if (!element) {
     return;
   }
 
-  const activateAtPoint = (event: Event, point: { clientX: number; clientY: number }) => {
-    const result = terminalImageLinkAtPoint(term, point.clientX, point.clientY);
-    const link = result.link;
-    if (!link) {
+  const state = {
+    activePointerId: null as number | null,
+    touchActive: false,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    startedAt: 0,
+    moved: false,
+  };
+
+  const resetPointer = () => {
+    state.activePointerId = null;
+    state.touchActive = false;
+    state.startX = 0;
+    state.startY = 0;
+    state.lastX = 0;
+    state.lastY = 0;
+    state.startedAt = 0;
+    state.moved = false;
+  };
+
+  const startTap = (point: { clientX: number; clientY: number }) => {
+    state.startX = point.clientX;
+    state.startY = point.clientY;
+    state.lastX = point.clientX;
+    state.lastY = point.clientY;
+    state.startedAt = Date.now();
+    state.moved = false;
+  };
+
+  const moveTap = (point: { clientX: number; clientY: number }) => {
+    state.lastX = point.clientX;
+    state.lastY = point.clientY;
+    if (Math.hypot(point.clientX - state.startX, point.clientY - state.startY) > terminalTouchMoveTolerancePx) {
+      state.moved = true;
+    }
+  };
+
+  const finishTap = (event: Event, point: { clientX: number; clientY: number }) => {
+    moveTap(point);
+    const durationMs = Date.now() - state.startedAt;
+    const shouldActivate = !state.moved && durationMs < terminalTouchLongPressMs;
+    resetPointer();
+    if (!shouldActivate) {
       return false;
     }
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    openTerminalImagePreviewAtPoint(point.clientX, point.clientY, link.text);
-    return true;
+    return activateTerminalLinkAtPoint(event, term, point);
   };
 
   const handlePointerDown = (event: PointerEvent) => {
-    if (event.button !== 0) {
+    if (!terminalTapActivationShouldTrack(term, event)) {
       return;
     }
-    activateAtPoint(event, event);
+    state.activePointerId = event.pointerId;
+    startTap(event);
   };
 
-  const handleMouseDown = (event: MouseEvent) => {
-    if (event.button !== 0) {
+  const handlePointerMove = (event: PointerEvent) => {
+    if (state.activePointerId !== event.pointerId) {
       return;
     }
-    activateAtPoint(event, event);
+    moveTap(event);
+  };
+
+  const handlePointerUp = (event: PointerEvent) => {
+    if (state.activePointerId !== event.pointerId) {
+      return;
+    }
+    finishTap(event, event);
+  };
+
+  const handlePointerCancel = (event: PointerEvent) => {
+    if (state.activePointerId === event.pointerId) {
+      resetPointer();
+    }
   };
 
   const handleTouchStart = (event: TouchEvent) => {
+    if ("PointerEvent" in window || !terminalTapActivationShouldTrackTouch(term, event)) {
+      return;
+    }
     const touch = event.changedTouches[0] || event.touches[0];
     if (!touch) {
       return;
     }
-    activateAtPoint(event, touch);
+    state.touchActive = true;
+    startTap(touch);
+  };
+
+  const handleTouchMove = (event: TouchEvent) => {
+    if (!state.touchActive) {
+      return;
+    }
+    const touch = event.changedTouches[0] || event.touches[0];
+    if (touch) {
+      moveTap(touch);
+    }
+  };
+
+  const handleTouchEnd = (event: TouchEvent) => {
+    if (!state.touchActive) {
+      return;
+    }
+    const touch = event.changedTouches[0] || event.touches[0];
+    if (!touch) {
+      resetPointer();
+      return;
+    }
+    finishTap(event, touch);
+  };
+
+  const handleTouchCancel = () => {
+    resetPointer();
   };
 
   element.addEventListener("pointerdown", handlePointerDown, { capture: true });
-  element.addEventListener("mousedown", handleMouseDown, { capture: true });
-  element.addEventListener("touchstart", handleTouchStart, { capture: true, passive: false });
-  terminalImageTapCleanup = () => {
+  element.addEventListener("pointermove", handlePointerMove, { capture: true });
+  element.addEventListener("pointerup", handlePointerUp, { capture: true });
+  element.addEventListener("pointercancel", handlePointerCancel, { capture: true });
+  element.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
+  element.addEventListener("touchmove", handleTouchMove, { capture: true, passive: true });
+  element.addEventListener("touchend", handleTouchEnd, { capture: true });
+  element.addEventListener("touchcancel", handleTouchCancel, { capture: true });
+  terminalTapActivationCleanup = () => {
+    resetPointer();
     element.removeEventListener("pointerdown", handlePointerDown, { capture: true });
-    element.removeEventListener("mousedown", handleMouseDown, { capture: true });
+    element.removeEventListener("pointermove", handlePointerMove, { capture: true });
+    element.removeEventListener("pointerup", handlePointerUp, { capture: true });
+    element.removeEventListener("pointercancel", handlePointerCancel, { capture: true });
     element.removeEventListener("touchstart", handleTouchStart, { capture: true });
+    element.removeEventListener("touchmove", handleTouchMove, { capture: true });
+    element.removeEventListener("touchend", handleTouchEnd, { capture: true });
+    element.removeEventListener("touchcancel", handleTouchCancel, { capture: true });
   };
+}
+
+function terminalTapActivationShouldTrack(term: XtermTerminal, event: PointerEvent) {
+  if (!terminalTouchSelectionIsNarrow() || event.pointerType === "mouse" || event.button !== 0) {
+    return false;
+  }
+  const target = event.target;
+  if (!(target instanceof Node) || !term.element?.contains(target)) {
+    return false;
+  }
+  return !terminalTouchSelectionInteractiveTarget(target);
+}
+
+function terminalTapActivationShouldTrackTouch(term: XtermTerminal, event: TouchEvent) {
+  if (!terminalTouchSelectionIsNarrow() || terminalTouchSelectionInteractiveTarget(event.target)) {
+    return false;
+  }
+  const target = event.target;
+  return target instanceof Node && Boolean(term.element?.contains(target));
+}
+
+function activateTerminalLinkAtPoint(event: Event, term: XtermTerminal, point: { clientX: number; clientY: number }) {
+  const imageLink = terminalImageLinkAtPoint(term, point.clientX, point.clientY).link;
+  if (imageLink) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    openTerminalImagePreviewAtPoint(point.clientX, point.clientY, imageLink.text);
+    return true;
+  }
+
+  const httpLink = terminalHttpLinkAtPoint(term, point.clientX, point.clientY).link;
+  if (httpLink && openHttpLinkInNewTab(httpLink.text)) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    return true;
+  }
+
+  return false;
 }
 
 function bindTerminalImageHints(term: XtermTerminal) {
@@ -3884,7 +4857,7 @@ function bindTerminalImageHints(term: XtermTerminal) {
     return;
   }
 
-  const activateHint = (event: Event, point: { clientX: number; clientY: number }) => {
+  const activateHint = (event: MouseEvent) => {
     const target = event.target instanceof Element
       ? event.target.closest<HTMLButtonElement>("[data-terminal-image-hint-path]")
       : null;
@@ -3895,38 +4868,18 @@ function bindTerminalImageHints(term: XtermTerminal) {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    openTerminalImagePreviewAtPoint(point.clientX, point.clientY, filePath);
+    openTerminalImagePreviewAtPoint(event.clientX, event.clientY, filePath);
   };
 
-  const handlePointerDown = (event: PointerEvent) => {
-    if (event.button !== 0) {
-      return;
-    }
-    activateHint(event, event);
-  };
-  const handleMouseDown = (event: MouseEvent) => {
-    if (event.button !== 0) {
-      return;
-    }
-    activateHint(event, event);
-  };
-  const handleTouchStart = (event: TouchEvent) => {
-    const touch = event.changedTouches[0] || event.touches[0];
-    if (!touch) {
-      return;
-    }
-    activateHint(event, touch);
+  const handleClick = (event: MouseEvent) => {
+    activateHint(event);
   };
 
-  hintLayer.addEventListener("pointerdown", handlePointerDown, { capture: true });
-  hintLayer.addEventListener("mousedown", handleMouseDown, { capture: true });
-  hintLayer.addEventListener("touchstart", handleTouchStart, { capture: true, passive: false });
+  hintLayer.addEventListener("click", handleClick, { capture: true });
   const scrollDisposable = term.onScroll(() => scheduleTerminalImageHintUpdate(term));
   const renderDisposable = term.onRender(() => scheduleTerminalImageHintUpdate(term));
   terminalImageHintsCleanup = () => {
-    hintLayer.removeEventListener("pointerdown", handlePointerDown, { capture: true });
-    hintLayer.removeEventListener("mousedown", handleMouseDown, { capture: true });
-    hintLayer.removeEventListener("touchstart", handleTouchStart, { capture: true });
+    hintLayer.removeEventListener("click", handleClick, { capture: true });
     scrollDisposable.dispose();
     renderDisposable.dispose();
     hintLayer.innerHTML = "";
@@ -4468,27 +5421,19 @@ function terminalTouchSelectionRows(term: XtermTerminal): TerminalLineSelectionA
 }
 
 function terminalTouchRowsDraggedUp(term: XtermTerminal, startY: number, clientY: number) {
-  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
-  if (!rows || term.rows <= 0) {
+  const metrics = terminalRenderMetrics(term);
+  if (!metrics) {
     return 0;
   }
-  const cellHeight = rows.getBoundingClientRect().height / term.rows;
-  if (!cellHeight) {
-    return 0;
-  }
-  return Math.max(0, Math.round((startY - clientY) / cellHeight));
+  return Math.max(0, Math.round((startY - clientY) / metrics.cellHeight));
 }
 
 function terminalTouchRowsDraggedDown(term: XtermTerminal, startY: number, clientY: number) {
-  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
-  if (!rows || term.rows <= 0) {
+  const metrics = terminalRenderMetrics(term);
+  if (!metrics) {
     return 0;
   }
-  const cellHeight = rows.getBoundingClientRect().height / term.rows;
-  if (!cellHeight) {
-    return 0;
-  }
-  return Math.max(0, Math.round((clientY - startY) / cellHeight));
+  return Math.max(0, Math.round((clientY - startY) / metrics.cellHeight));
 }
 
 function terminalTouchLineDragHandle(term: XtermTerminal, anchor: TerminalLineSelectionAnchor, clientX: number, clientY: number): TerminalLineDragHandle {
@@ -4510,12 +5455,11 @@ function terminalTouchLineDragHandle(term: XtermTerminal, anchor: TerminalLineSe
 }
 
 function terminalTouchPointNearTop(term: XtermTerminal, clientY: number) {
-  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
-  if (!rows) {
+  const metrics = terminalRenderMetrics(term);
+  if (!metrics) {
     return false;
   }
-  const rect = rows.getBoundingClientRect();
-  return clientY - rect.top <= terminalTouchEdgeScrollPx;
+  return clientY - metrics.rect.top <= terminalTouchEdgeScrollPx;
 }
 
 function selectTerminalTouchParagraph(term: XtermTerminal) {
@@ -4606,16 +5550,21 @@ async function writeClipboardText(text: string) {
       return true;
     }
   } catch {
-    return false;
   }
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "true");
   textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
+  textarea.style.opacity = "0";
   document.body.append(textarea);
+  textarea.focus({ preventScroll: true });
   textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
   let copied = false;
   try {
     copied = document.execCommand("copy");
@@ -4639,19 +5588,15 @@ function scheduleTerminalImageHintUpdate(term: XtermTerminal) {
 function updateTerminalImageHints(term: XtermTerminal) {
   const hintLayer = document.querySelector<HTMLElement>("[data-terminal-image-hints]");
   const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
-  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
-  if (!hintLayer || !wrap || !rows || !term.element || xterm !== term) {
+  const metrics = terminalRenderMetrics(term);
+  if (!hintLayer || !wrap || !metrics || !term.element || xterm !== term) {
     return;
   }
 
-  const rowsRect = rows.getBoundingClientRect();
+  const rowsRect = metrics.rect;
   const wrapRect = wrap.getBoundingClientRect();
-  const cellWidth = rowsRect.width / term.cols;
-  const cellHeight = rowsRect.height / term.rows;
-  if (!cellWidth || !cellHeight) {
-    hintLayer.innerHTML = "";
-    return;
-  }
+  const cellWidth = metrics.cellWidth;
+  const cellHeight = metrics.cellHeight;
 
   const seen = new Set<string>();
   const visibleStart = term.buffer.active.viewportY + 1;
@@ -4832,23 +5777,104 @@ function terminalImageLinkAtPoint(term: XtermTerminal, clientX: number, clientY:
   };
 }
 
+function terminalHttpLinkAtPoint(term: XtermTerminal, clientX: number, clientY: number) {
+  const position = terminalBufferPositionFromPoint(term, clientX, clientY);
+  if (!position) {
+    return { position: null, link: null, links: [] };
+  }
+  const links = computeTerminalHttpLinks(term, position.y) || [];
+  return {
+    position,
+    link: links.find((link) => terminalLinkContainsPosition(term, link, position)) || null,
+    links,
+  };
+}
+
+function computeTerminalHttpLinks(term: XtermTerminal, bufferLineNumber: number): ILink[] | undefined {
+  const windowedLine = terminalPathWindow(term, bufferLineNumber - 1);
+  if (!windowedLine) {
+    return undefined;
+  }
+
+  const links: ILink[] = [];
+  terminalHttpLinkPattern.lastIndex = 0;
+  for (let match = terminalHttpLinkPattern.exec(windowedLine.text); match; match = terminalHttpLinkPattern.exec(windowedLine.text)) {
+    const url = terminalTrimLinkText(match[0] || "");
+    if (!url) {
+      continue;
+    }
+    const startIndex = match.index;
+    const start = windowedLine.positions[startIndex];
+    const end = windowedLine.positions[startIndex + url.length - 1];
+    if (!start || !end) {
+      continue;
+    }
+    links.push({
+      range: {
+        start: { x: start.x + 1, y: start.y + 1 },
+        end: { x: end.x + 1, y: end.y + 1 },
+      },
+      text: url,
+      decorations: {
+        pointerCursor: true,
+        underline: true,
+      },
+      activate(event, text) {
+        openTerminalHttpLink(event, text);
+      },
+    });
+  }
+
+  return links.length ? links : undefined;
+}
+
+function terminalTrimLinkText(text: string) {
+  return text.replace(/[),.;:!?}\]]+$/g, "");
+}
+
 function terminalBufferPositionFromPoint(term: XtermTerminal, clientX: number, clientY: number) {
-  const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
-  if (!rows) {
+  const metrics = terminalRenderMetrics(term);
+  if (!metrics) {
     return null;
   }
-  const rowsRect = rows.getBoundingClientRect();
-  const cellWidth = rowsRect.width / term.cols;
-  const cellHeight = rowsRect.height / term.rows;
-  if (!cellWidth || !cellHeight) {
-    return null;
-  }
-  const x = Math.min(Math.max(Math.ceil((clientX - rowsRect.left) / cellWidth), 1), term.cols);
-  const viewportRow = Math.min(Math.max(Math.ceil((clientY - rowsRect.top) / cellHeight), 1), term.rows);
+  const x = Math.min(Math.max(Math.ceil((clientX - metrics.rect.left) / metrics.cellWidth), 1), term.cols);
+  const viewportRow = Math.min(Math.max(Math.ceil((clientY - metrics.rect.top) / metrics.cellHeight), 1), term.rows);
   return {
     x,
     y: term.buffer.active.viewportY + viewportRow,
   };
+}
+
+function terminalRenderMetrics(term: XtermTerminal): { rect: DOMRect; cellWidth: number; cellHeight: number } | null {
+  const rect = terminalRenderRect(term);
+  if (!rect || term.cols <= 0 || term.rows <= 0) {
+    return null;
+  }
+  const cellWidth = rect.width / term.cols;
+  const cellHeight = rect.height / term.rows;
+  if (!cellWidth || !cellHeight) {
+    return null;
+  }
+  return { rect, cellWidth, cellHeight };
+}
+
+function terminalRenderRect(term: XtermTerminal): DOMRect | null {
+  const element = term.element;
+  if (!element) {
+    return null;
+  }
+  const candidates = [
+    element.querySelector<HTMLElement>(".xterm-rows"),
+    element.querySelector<HTMLElement>(".xterm-screen canvas"),
+    element.querySelector<HTMLElement>(".xterm-screen"),
+  ];
+  for (const candidate of candidates) {
+    const rect = candidate?.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      return rect;
+    }
+  }
+  return null;
 }
 
 function terminalLinkContainsPosition(term: XtermTerminal, link: ILink, position: { x: number; y: number }) {
@@ -4966,9 +5992,9 @@ async function ensureXterm(payload: SessionPayload) {
     terminalImageLinkProvider = term.registerLinkProvider(createTerminalImageLinkProvider(term));
     term.open(host);
     loadTerminalWebglAddon(term);
-    bindTerminalImageTapHandler(term);
     bindTerminalImageHints(term);
     bindTerminalTouchSelection(term);
+    bindTerminalTapActivation(term);
     xtermFit = fit;
     term.onData((text) => {
       if (!xtermSessionId) {
@@ -5062,8 +6088,8 @@ function trimTerminalHtmlToRows(html: string, rows: number) {
 
 function destroyXterm() {
   cancelTerminalScrollAnimation();
-  terminalImageTapCleanup?.();
-  terminalImageTapCleanup = null;
+  terminalTapActivationCleanup?.();
+  terminalTapActivationCleanup = null;
   terminalImageHintsCleanup?.();
   terminalImageHintsCleanup = null;
   terminalTouchSelectionCleanup?.();
@@ -5765,7 +6791,7 @@ function editorTheme() {
 
 function fileEditorTheme() {
   return createEditorTheme({
-    fontSize: "7px",
+    fontSize: `${fileEditorFontSize}px`,
     lineHeight: "1.32",
     contentPadding: "5px 0",
     linePadding: "0 6px",
@@ -5802,6 +6828,15 @@ function createEditorTheme(input: {
       fontSize: input.fontSize,
       lineHeight: input.lineHeight,
       padding: input.linePadding,
+    },
+    ".cm-ide-relative-link": {
+      color: "inherit",
+      cursor: "pointer",
+      textDecoration: "underline",
+      textDecorationColor: "#7edbd4",
+      textDecorationStyle: "dotted",
+      textUnderlineOffset: "2px",
+      touchAction: "manipulation",
     },
     ".cm-gutters": {
       backgroundColor: "#11161d",

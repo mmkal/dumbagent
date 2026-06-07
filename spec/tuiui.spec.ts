@@ -283,9 +283,12 @@ test("launches the coordinator as a normal TUI session with MCP tools", async ({
 
 test("opens an IDE view for the session cwd and previews text files", async ({ page, ctx }) => {
   fs.mkdirSync(path.join(ctx.workspaceDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(ctx.workspaceDir, ".hidden", "nested"), { recursive: true });
   fs.mkdirSync(path.join(ctx.workspaceDir, "node_modules", "ignored-package"), { recursive: true });
   fs.writeFileSync(path.join(ctx.workspaceDir, "README.md"), "# Workspace\n\nThis file comes from the session cwd.\n");
   fs.writeFileSync(path.join(ctx.workspaceDir, "src", "tool.ts"), "export const answer = 42;\n");
+  fs.writeFileSync(path.join(ctx.workspaceDir, ".hidden", "secret.ts"), "export const hidden = true;\n");
+  fs.writeFileSync(path.join(ctx.workspaceDir, ".hidden", "nested", "deep.ts"), "export const deep = true;\n");
   fs.writeFileSync(path.join(ctx.workspaceDir, "node_modules", "ignored-package", "index.js"), "throw new Error('hidden');\n");
 
   await page.goto(ctx.baseUrl);
@@ -303,17 +306,34 @@ test("opens an IDE view for the session cwd and previews text files", async ({ p
   await expect(page.getByRole("treeitem", { name: "src", exact: true }).first()).toBeVisible();
   await expect(page.getByRole("treeitem", { name: "tool.ts", exact: true }).first()).toBeVisible();
   await expect(page.getByRole("treeitem", { name: "README.md", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: ".hidden", exact: true }).first()).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("treeitem", { name: "secret.ts", exact: true })).toHaveCount(0);
   await expect(page.getByRole("treeitem", { name: "ignored-package", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("ide-file-editor")).toContainText("export const answer = 42");
   await expect.poll(async () => await page.locator(".ide-file-editor .cm-line").first().evaluate((element) => {
     return getComputedStyle(element).fontSize;
   })).toBe("7px");
 
+  await page.getByRole("button", { name: "IDE editor menu" }).click();
+  await expect(page.getByRole("dialog", { name: "IDE editor menu" })).toBeVisible();
+  await page.getByRole("button", { name: "Toggle word wrap" }).click();
+  await expect(page.locator(".ide-file-editor .cm-content.cm-lineWrapping")).toBeVisible();
+  await page.getByRole("button", { name: "Increase IDE editor font size" }).click();
+  await expect.poll(async () => await page.locator(".ide-file-editor .cm-line").first().evaluate((element) => {
+    return getComputedStyle(element).fontSize;
+  })).toBe("8px");
+  await expect(page.getByRole("button", { name: "Toggle word wrap" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-file-editor-zoom-value]")).toHaveText("8px");
+
   await page.reload();
 
   await expect(page).toHaveURL(/\/ide\?cwd=/);
   await expect(page.getByTestId("ide-view")).toBeVisible();
   await expect(page.getByTestId("rendered-terminal")).toHaveCount(0);
+  await expect(page.locator(".ide-file-editor .cm-content.cm-lineWrapping")).toBeVisible();
+  await expect.poll(async () => await page.locator(".ide-file-editor .cm-line").first().evaluate((element) => {
+    return getComputedStyle(element).fontSize;
+  })).toBe("8px");
 
   await page.getByRole("treeitem", { name: "README.md", exact: true }).first().click();
 
@@ -323,11 +343,87 @@ test("opens an IDE view for the session cwd and previews text files", async ({ p
 
   const mobileTreeBox = await page.getByTestId("ide-file-tree").boundingBox();
   expect(mobileTreeBox?.height).toBeGreaterThan(120);
+  await expect(page.locator(".ide-sidebar header [data-ide-cwd]")).toBeHidden();
+  await expect.poll(async () => await page.locator(".ide-sidebar header").evaluate((element) => {
+    return getComputedStyle(element).borderBottomWidth;
+  })).toBe("0px");
+  await expect.poll(async () => await page.locator(".ide-route-topbar").evaluate((element) => {
+    return getComputedStyle(element).borderBottomWidth;
+  })).toBe("0px");
+  await expect.poll(async () => await page.locator(".ide-screen").evaluate((element) => {
+    return getComputedStyle(element).borderTopWidth;
+  })).toBe("0px");
   await expect(page.getByRole("button", { name: "Collapse file tree" })).toBeVisible();
   await page.getByRole("button", { name: "Collapse file tree" }).click();
   await expect(page.getByTestId("ide-file-tree")).toBeHidden();
   await page.getByRole("button", { name: "Expand file tree" }).click();
   await expect(page.getByTestId("ide-file-tree")).toBeVisible();
+});
+
+test("opens frontmatter metadata links from markdown IDE previews", async ({ page, ctx }) => {
+  const workspace = fs.realpathSync(ctx.workspaceDir);
+  const absoluteTarget = path.join(workspace, "foo", "absolute.txt");
+  fs.mkdirSync(path.join(workspace, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "docs", "foo"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "foo"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "foo", "bar.txt"), "relative target\n");
+  fs.writeFileSync(path.join(workspace, "foo", "absolute.txt"), "absolute target\n");
+  fs.writeFileSync(path.join(workspace, "docs", "local.txt"), "dot-relative target\n");
+  fs.writeFileSync(path.join(workspace, "docs", "foo", "plain.txt"), "plain relative target\n");
+  fs.writeFileSync(path.join(workspace, "docs", "page.md"), [
+    "---",
+    "a: ../foo/bar.txt",
+    "b: ./local.txt",
+    `c: ${absoluteTarget}`,
+    "d: http://example.com",
+    "e: https://example.com",
+    "h: foo/plain.txt",
+    "f: ./missing.txt",
+    "g: ftp://example.com",
+    "---",
+    "",
+    "# Page",
+  ].join("\n"));
+
+  const pageUrl = `${ctx.baseUrl}/ide?cwd=${encodeURIComponent(workspace)}&file=${encodeURIComponent("docs/page.md")}`;
+  await page.goto(pageUrl);
+  await expect(page.getByTestId("ide-file-editor")).toContainText("https://example.com");
+
+  const links = page.locator(".cm-ide-relative-link");
+  await expect(links.filter({ hasText: "../foo/bar.txt" })).toBeVisible();
+  await expect(links.filter({ hasText: "./local.txt" })).toBeVisible();
+  await expect(links.filter({ hasText: absoluteTarget })).toBeVisible();
+  await expect(links.filter({ hasText: "http://example.com" })).toBeVisible();
+  await expect(links.filter({ hasText: "https://example.com" })).toBeVisible();
+  await expect(links.filter({ hasText: "foo/plain.txt" })).toBeVisible();
+  await expect(links.filter({ hasText: "./missing.txt" })).toHaveCount(0);
+  await expect(links.filter({ hasText: "ftp://example.com" })).toHaveCount(0);
+  await expect(links.filter({ hasText: "http://example.com" })).toHaveAttribute("href", "http://example.com/");
+  await expect(links.filter({ hasText: "http://example.com" })).toHaveAttribute("target", "_blank");
+  await expect(links.filter({ hasText: "https://example.com" })).toHaveAttribute("href", "https://example.com/");
+  await expect(links.filter({ hasText: "https://example.com" })).toHaveAttribute("target", "_blank");
+
+  await links.filter({ hasText: "../foo/bar.txt" }).click();
+  await expect(page.getByTestId("ide-file-editor")).toContainText("relative target");
+  expect(new URL(page.url()).searchParams.get("file")).toBe("foo/bar.txt");
+
+  await page.goto(pageUrl);
+  await expect(page.getByTestId("ide-file-editor")).toContainText(absoluteTarget);
+  await links.filter({ hasText: absoluteTarget }).click();
+  await expect(page.getByTestId("ide-file-editor")).toContainText("absolute target");
+  expect(new URL(page.url()).searchParams.get("file")).toBe("foo/absolute.txt");
+
+  await page.goto(pageUrl);
+  await expect(page.getByTestId("ide-file-editor")).toContainText("./local.txt");
+  await links.filter({ hasText: "./local.txt" }).click();
+  await expect(page.getByTestId("ide-file-editor")).toContainText("dot-relative target");
+  expect(new URL(page.url()).searchParams.get("file")).toBe("docs/local.txt");
+
+  await page.goto(pageUrl);
+  await expect(page.getByTestId("ide-file-editor")).toContainText("foo/plain.txt");
+  await links.filter({ hasText: "foo/plain.txt" }).click();
+  await expect(page.getByTestId("ide-file-editor")).toContainText("plain relative target");
+  expect(new URL(page.url()).searchParams.get("file")).toBe("docs/foo/plain.txt");
 });
 
 test("opens a coordinator session from the coordinator shortcut", async ({ page, ctx }) => {
