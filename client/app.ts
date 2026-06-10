@@ -418,7 +418,9 @@ const terminalHttpLinkHandler: ILinkHandler = {
   allowNonHttpProtocols: false,
 };
 const terminalHttpLinkPattern = /https?:\/\/[^\s"'`<>]+/gi;
-const terminalImagePathPattern = /(^|[\s"'`(<[{])((?:\/[^\s"'`<>]+|[A-Za-z]:\\[^\s"'`<>]+|\.{1,2}\/[^\s"'`<>]+|[A-Za-z0-9._-][^\s"'`<>]*)\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp))(?=$|[\s"'`<>),;:!?}\]])/gi;
+const terminalImageFileExtensions = new Set([".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"]);
+const terminalVideoFileExtensions = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".ogg", ".ogv", ".webm"]);
+const terminalMediaPathPattern = /(^|[\s"'`(<[{])((?:\/[^\s"'`<>]+|[A-Za-z]:\\[^\s"'`<>]+|\.{1,2}\/[^\s"'`<>]+|[A-Za-z0-9._-][^\s"'`<>]*)\.(?:avif|avi|bmp|gif|heic|heif|jpe?g|m4v|mkv|mov|mp4|og[gv]|png|svg|tiff?|webm|webp))(?=$|[\s"'`<>),;:!?}\]])/gi;
 const terminalTouchLongPressMs = 460;
 const terminalTouchMoveTolerancePx = 8;
 const terminalTouchDoubleTapMs = 340;
@@ -3487,9 +3489,14 @@ function renderTerminalScreen(screen: HTMLElement, payload: SessionPayload) {
           <button type="button" data-terminal-touch-all aria-label="Select all terminal text">All</button>
           <button type="button" data-terminal-touch-keyboard aria-label="Show terminal keyboard">Keys</button>
         </div>
-        <div id="terminal-image-popover" class="terminal-image-popover xterm-hover" data-testid="terminal-image-preview" hidden>
-          <button type="button" class="terminal-image-popover-close" data-terminal-image-preview-close aria-label="Close image preview">×</button>
+        <div id="terminal-image-popover" class="terminal-image-popover terminal-media-popover xterm-hover" data-terminal-media-preview data-testid="terminal-image-preview" hidden>
+          <button type="button" class="terminal-image-popover-close terminal-media-popover-close" data-terminal-image-preview-close aria-label="Close media preview">×</button>
           <img data-terminal-image-preview-image alt="" />
+          <video data-terminal-media-preview-video controls playsinline preload="metadata" hidden></video>
+          <div class="terminal-media-actions">
+            <button type="button" class="terminal-media-save" data-terminal-media-save hidden>Save video</button>
+            <a class="terminal-media-download" data-terminal-media-preview-download href="#" download>Download</a>
+          </div>
           <code data-terminal-image-preview-path></code>
         </div>
         <div class="terminal-redraw-overlay" data-testid="terminal-redraw-overlay" hidden>
@@ -4657,6 +4664,9 @@ function bindTerminalImagePreview(screen: HTMLElement) {
   popover.querySelector<HTMLButtonElement>("[data-terminal-image-preview-close]")?.addEventListener("click", () => {
     closeTerminalImagePreview(popover);
   });
+  popover.querySelector<HTMLButtonElement>("[data-terminal-media-save]")?.addEventListener("click", () => {
+    void shareTerminalVideo(popover);
+  });
   popover.addEventListener("click", (event) => {
     event.stopPropagation();
   });
@@ -5648,8 +5658,8 @@ function updateTerminalImageHints(term: XtermTerminal) {
         <button
           type="button"
           class="terminal-image-hint"
-          title="Preview image"
-          aria-label="Preview image"
+          title="Preview media"
+          aria-label="Preview media"
           data-terminal-image-hint-path="${escapeAttr(link.text)}"
           style="--terminal-image-hint-left: ${left}px; --terminal-image-hint-top: ${top}px;"
         >
@@ -5679,10 +5689,13 @@ function computeTerminalImagePathLinks(term: XtermTerminal, bufferLineNumber: nu
   }
 
   const links: ILink[] = [];
-  terminalImagePathPattern.lastIndex = 0;
-  for (let match = terminalImagePathPattern.exec(windowedLine.text); match; match = terminalImagePathPattern.exec(windowedLine.text)) {
+  terminalMediaPathPattern.lastIndex = 0;
+  for (let match = terminalMediaPathPattern.exec(windowedLine.text); match; match = terminalMediaPathPattern.exec(windowedLine.text)) {
     const leadingText = match[1] || "";
     const filePath = match[2] || "";
+    if (/^https?:\/\//i.test(filePath)) {
+      continue;
+    }
     const startIndex = match.index + leadingText.length;
     const start = windowedLine.positions[startIndex];
     const end = windowedLine.positions[startIndex + filePath.length - 1];
@@ -5761,7 +5774,7 @@ function terminalLineCanContinuePath(term: XtermTerminal, lineIndex: number) {
   if (/^(?:\.{1,2}\/|[A-Za-z0-9._-])/.test(text)) {
     return true;
   }
-  return /[\\/]/.test(text) || /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(text);
+  return /[\\/]/.test(text) || /\.(?:avif|avi|bmp|gif|heic|heif|jpe?g|m4v|mkv|mov|mp4|og[gv]|png|svg|tiff?|webm|webp)$/i.test(text);
 }
 
 function terminalImageLinkAtPoint(term: XtermTerminal, clientX: number, clientY: number) {
@@ -5892,9 +5905,13 @@ function openTerminalImagePreview(event: MouseEvent, filePath: string) {
 function openTerminalImagePreviewAtPoint(clientX: number, clientY: number, filePath: string) {
   const popover = document.querySelector<HTMLElement>("[data-testid='terminal-image-preview']");
   const image = popover?.querySelector<HTMLImageElement>("[data-terminal-image-preview-image]");
+  const video = popover?.querySelector<HTMLVideoElement>("[data-terminal-media-preview-video]");
+  const download = popover?.querySelector<HTMLAnchorElement>("[data-terminal-media-preview-download]");
+  const saveVideo = popover?.querySelector<HTMLButtonElement>("[data-terminal-media-save]");
   const pathLabel = popover?.querySelector<HTMLElement>("[data-terminal-image-preview-path]");
   const wrap = document.querySelector<HTMLElement>(".terminal-xterm-wrap");
-  if (!popover || !image || !pathLabel || !wrap) {
+  const mediaKind = terminalMediaKind(filePath);
+  if (!popover || !image || !video || !download || !saveVideo || !pathLabel || !wrap || !mediaKind) {
     return;
   }
 
@@ -5906,38 +5923,189 @@ function openTerminalImagePreviewAtPoint(clientX: number, clientY: number, fileP
   popover.style.setProperty("--terminal-image-popover-left", `${left}px`);
   popover.style.setProperty("--terminal-image-popover-top", `${top}px`);
   popover.dataset.state = "loading";
-  image.onload = () => {
-    popover.dataset.state = "loaded";
-  };
-  image.onerror = () => {
-    popover.dataset.state = "error";
-  };
-  image.src = terminalImagePreviewUrl(filePath);
-  image.alt = filePath;
+  popover.dataset.mediaKind = mediaKind;
+  popover.dataset.mediaPath = filePath;
+
+  image.onload = null;
+  image.onerror = null;
+  image.removeAttribute("src");
+  image.alt = "";
+  image.hidden = mediaKind !== "image";
+  video.onloadedmetadata = null;
+  video.onerror = null;
+  video.removeAttribute("src");
+  video.hidden = mediaKind !== "video";
+
+  const previewUrl = terminalMediaPreviewUrl(filePath);
+  if (mediaKind === "image") {
+    image.onload = () => {
+      popover.dataset.state = "loaded";
+    };
+    image.onerror = () => {
+      popover.dataset.state = "error";
+    };
+    image.src = previewUrl;
+    image.alt = filePath;
+  } else {
+    video.onloadedmetadata = () => {
+      popover.dataset.state = "loaded";
+    };
+    video.onerror = () => {
+      popover.dataset.state = "error";
+    };
+    video.src = previewUrl;
+    video.load();
+  }
+
+  download.href = terminalMediaPreviewUrl(filePath, true);
+  download.download = terminalMediaDownloadName(filePath);
+  download.setAttribute("aria-label", `Download ${terminalMediaDownloadName(filePath)}`);
+  saveVideo.hidden = mediaKind !== "video";
+  saveVideo.disabled = false;
+  saveVideo.textContent = "Save video";
   pathLabel.textContent = filePath;
   popover.hidden = false;
 }
 
 function closeTerminalImagePreview(popover: HTMLElement) {
   const image = popover.querySelector<HTMLImageElement>("[data-terminal-image-preview-image]");
+  const video = popover.querySelector<HTMLVideoElement>("[data-terminal-media-preview-video]");
+  const download = popover.querySelector<HTMLAnchorElement>("[data-terminal-media-preview-download]");
+  const saveVideo = popover.querySelector<HTMLButtonElement>("[data-terminal-media-save]");
   if (image) {
     image.removeAttribute("src");
     image.alt = "";
   }
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  if (download) {
+    download.href = "#";
+    download.removeAttribute("aria-label");
+  }
+  if (saveVideo) {
+    saveVideo.hidden = true;
+    saveVideo.disabled = false;
+    saveVideo.textContent = "Save video";
+  }
+  delete popover.dataset.mediaPath;
+  delete popover.dataset.mediaKind;
   popover.hidden = true;
 }
 
-function terminalImagePreviewUrl(filePath: string) {
-  const url = new URL("/api/image-preview", location.origin);
+async function shareTerminalVideo(popover: HTMLElement) {
+  const filePath = popover.dataset.mediaPath || "";
+  if (popover.dataset.mediaKind !== "video" || !filePath) {
+    return;
+  }
+
+  const saveVideo = popover.querySelector<HTMLButtonElement>("[data-terminal-media-save]");
+  const fileName = terminalMediaDownloadName(filePath);
+  if (!navigator.share || typeof navigator.share !== "function") {
+    showToast({
+      title: "Save Video is unavailable",
+      message: "This browser cannot send video files to the native share sheet.",
+      tone: "error",
+      testId: "terminal-media-save-unavailable-toast",
+    });
+    return;
+  }
+
+  if (saveVideo) {
+    saveVideo.disabled = true;
+    saveVideo.textContent = "Preparing...";
+  }
+
+  try {
+    const response = await fetch(terminalMediaPreviewUrl(filePath));
+    if (!response.ok) {
+      throw new Error(`media request failed: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const file = new File([blob], fileName, { type: blob.type || terminalMediaFileType(filePath) || "video/quicktime" });
+    const shareData: ShareData = {
+      files: [file],
+      title: fileName,
+    };
+    if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
+      showToast({
+        title: "Save Video is unavailable",
+        message: "This browser rejected the video file for native sharing.",
+        tone: "error",
+        testId: "terminal-media-save-unavailable-toast",
+      });
+      return;
+    }
+    await navigator.share(shareData);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return;
+    }
+    showToast({
+      title: "Save Video failed",
+      message: error instanceof Error ? error.message : "The video could not be prepared for sharing.",
+      tone: "error",
+      testId: "terminal-media-save-error-toast",
+    });
+  } finally {
+    if (saveVideo) {
+      saveVideo.disabled = false;
+      saveVideo.textContent = "Save video";
+    }
+  }
+}
+
+function terminalMediaPreviewUrl(filePath: string, download = false) {
+  const url = new URL("/api/media-preview", location.origin);
   url.searchParams.set("path", filePath);
-  if (!terminalImagePathIsAbsolute(filePath) && activeSession?.cwd) {
+  if (!terminalMediaPathIsAbsolute(filePath) && activeSession?.cwd) {
     url.searchParams.set("cwd", activeSession.cwd);
+  }
+  if (download) {
+    url.searchParams.set("download", "1");
   }
   return `${url.pathname}${url.search}`;
 }
 
-function terminalImagePathIsAbsolute(filePath: string) {
+function terminalMediaPathIsAbsolute(filePath: string) {
   return filePath.startsWith("/") || /^[A-Za-z]:\\/.test(filePath);
+}
+
+function terminalMediaKind(filePath: string): "image" | "video" | "" {
+  const extension = terminalMediaExtension(filePath);
+  if (terminalImageFileExtensions.has(extension)) {
+    return "image";
+  }
+  if (terminalVideoFileExtensions.has(extension)) {
+    return "video";
+  }
+  return "";
+}
+
+function terminalMediaExtension(filePath: string) {
+  const index = filePath.lastIndexOf(".");
+  return index === -1 ? "" : filePath.slice(index).toLowerCase();
+}
+
+function terminalMediaDownloadName(filePath: string) {
+  return filePath.split(/[\\/]/).filter(Boolean).pop() || "media";
+}
+
+function terminalMediaFileType(filePath: string) {
+  const extension = terminalMediaExtension(filePath);
+  const fileTypes: Record<string, string> = {
+    ".avi": "video/x-msvideo",
+    ".m4v": "video/x-m4v",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".ogg": "video/ogg",
+    ".ogv": "video/ogg",
+    ".webm": "video/webm",
+  };
+  return fileTypes[extension] || "";
 }
 
 function loadTerminalUnicodeGraphemesAddon(term: XtermTerminal) {

@@ -1891,13 +1891,67 @@ pre {
   display: none;
 }
 
-.terminal-image-popover img {
+.terminal-image-popover img,
+.terminal-image-popover video {
   display: block;
   width: 100%;
   max-height: 236px;
   border-radius: 6px;
   object-fit: contain;
   background: #050607;
+}
+
+.terminal-image-popover img[hidden],
+.terminal-image-popover video[hidden] {
+  display: none;
+}
+
+.terminal-image-popover video {
+  aspect-ratio: 16 / 9;
+}
+
+.terminal-media-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.terminal-media-download,
+.terminal-media-save {
+  display: inline-grid;
+  place-items: center;
+  min-height: 30px;
+  border: 1px solid #3d4652;
+  border-radius: 7px;
+  background: #d8f36a;
+  color: #111418;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.terminal-media-save {
+  background: #26313d;
+  color: #eef2f7;
+}
+
+.terminal-media-save[hidden] {
+  display: none;
+}
+
+.terminal-media-save:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.terminal-media-download:hover,
+.terminal-media-download:focus-visible,
+.terminal-media-save:hover,
+.terminal-media-save:focus-visible {
+  filter: brightness(1.05);
+  outline: none;
 }
 
 .terminal-image-popover code {
@@ -3407,7 +3461,9 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
   .terminal-touch-selection-toolbar button,
   .terminal-image-hint,
   .terminal-image-popover,
-  .terminal-image-popover button {
+  .terminal-image-popover button,
+  .terminal-media-download,
+  .terminal-media-save {
     touch-action: manipulation;
   }
 

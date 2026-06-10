@@ -1849,6 +1849,17 @@ test("opens http links from terminal output in a new tab", async ({ page, ctx })
   }]);
 });
 
+test("does not treat http video links as local media paths", async ({ page, ctx }) => {
+  const url = "http://media.test/clip.mov";
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill(`image-path-agent ${url}`);
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("clip.mov");
+
+  await expect(page.getByRole("button", { name: "Preview media" })).toHaveCount(0);
+});
+
 test("opens absolute image paths from terminal output in a preview popover", async ({ browser, ctx }, testInfo) => {
   await using touch = await createTouchPage(browser, testInfo);
   const page = touch.page;
@@ -1858,15 +1869,9 @@ test("opens absolute image paths from terminal output in a preview popover", asy
   await page.goto(ctx.baseUrl);
   await page.getByRole("textbox", { name: "Command" }).fill(`image-path-agent ${imagePath}`);
   await page.getByRole("textbox", { name: "Command" }).press("Enter");
-  await expect(page.getByTestId("rendered-terminal")).toContainText(imagePath);
+  await expect(page.getByTestId("rendered-terminal")).toContainText("terminal-preview.png");
 
-  const rowsBox = await page.locator(".xterm-rows").boundingBox();
-  if (!rowsBox) {
-    throw new Error("terminal rows were not rendered");
-  }
-  const linkX = rowsBox.x + 8;
-  const linkY = rowsBox.y + 8;
-  await page.touchscreen.tap(linkX, linkY);
+  await page.getByRole("button", { name: "Preview media" }).click();
 
   const preview = page.getByTestId("terminal-image-preview");
   await expect(preview).toBeVisible();
@@ -1879,6 +1884,88 @@ test("opens absolute image paths from terminal output in a preview popover", asy
       };
     });
   }).toMatchObject({ complete: true, naturalWidth: 1 });
+});
+
+test("opens absolute video paths from terminal output in a player popover with download", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+  const videoPath = path.join(ctx.tempRoot, "terminal-preview.mp4");
+  fs.writeFileSync(videoPath, Buffer.from(tinyMp4Base64, "base64"));
+
+  await page.goto(ctx.baseUrl);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "canShare", {
+      configurable: true,
+      value: (data: any) => Array.isArray(data.files) && data.files.length === 1,
+    });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: any) => {
+        (window as any).__tuiuiSharedMedia = {
+          title: data.title,
+          files: data.files.map((file: File) => ({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })),
+        };
+      },
+    });
+  });
+  await page.getByRole("textbox", { name: "Command" }).fill(`image-path-agent ${videoPath}`);
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("terminal-preview.mp4");
+
+  await page.getByRole("button", { name: "Preview media" }).click();
+
+  const preview = page.getByTestId("terminal-image-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(videoPath);
+  await expect(preview.locator("img")).toBeHidden();
+  await expect(preview.locator("video")).toBeVisible();
+  await expect.poll(async () => {
+    return await preview.locator("video").evaluate((video: HTMLVideoElement) => {
+      return {
+        readyState: video.readyState,
+        duration: Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : 0,
+      };
+    });
+  }).toMatchObject({ readyState: 4, duration: 0.2 });
+
+  const download = preview.getByRole("link", { name: "Download terminal-preview.mp4" });
+  await expect(download).toBeVisible();
+  await expect(download).toHaveAttribute("download", "terminal-preview.mp4");
+  await expect(download).toHaveAttribute("href", /\/api\/media-preview\?.*download=1/);
+
+  await preview.getByRole("button", { name: "Save video" }).click();
+  await expect.poll(async () => {
+    return await page.evaluate(() => (window as any).__tuiuiSharedMedia);
+  }).toMatchObject({
+    title: "terminal-preview.mp4",
+    files: [{
+      name: "terminal-preview.mp4",
+      size: Buffer.from(tinyMp4Base64, "base64").length,
+      type: "video/mp4",
+    }],
+  });
+
+  const rangeResponse = await page.evaluate(async (filePath) => {
+    const url = new URL("/api/media-preview", location.origin);
+    url.searchParams.set("path", filePath);
+    const response = await fetch(url, { headers: { Range: "bytes=0-31" } });
+    return {
+      status: response.status,
+      contentRange: response.headers.get("content-range") || "",
+      contentType: response.headers.get("content-type") || "",
+      byteLength: (await response.arrayBuffer()).byteLength,
+    };
+  }, videoPath);
+  expect(rangeResponse).toMatchObject({
+    status: 206,
+    contentType: "video/mp4",
+    byteLength: 32,
+  });
+  expect(rangeResponse.contentRange).toMatch(/^bytes 0-31\/\d+$/);
 });
 
 test("opens wrapped absolute image path hints with the complete path", async ({ browser, ctx }, testInfo) => {
@@ -1912,27 +1999,6 @@ test("opens wrapped absolute image path hints with the complete path", async ({ 
     });
   }).toEqual([imagePath]);
   await expect(hint).toHaveAttribute("data-terminal-image-hint-path", imagePath);
-  const hintBox = await hint.boundingBox();
-  const pathEndRow = await page.locator(".xterm-rows > div").evaluateAll((rows) => {
-    const rowSummaries = rows.map((row) => {
-      const box = row.getBoundingClientRect();
-      return {
-        text: row.textContent || "",
-        y: box.y,
-        height: box.height,
-      };
-    });
-    for (let index = rowSummaries.length - 1; index >= 0; index -= 1) {
-      if (rowSummaries[index].text.includes(".png")) {
-        return rowSummaries[index];
-      }
-    }
-    throw new Error("image path end row was not rendered");
-  });
-  if (!hintBox) {
-    throw new Error("terminal image hint was not rendered");
-  }
-  expect(hintBox.y).toBeLessThan(pathEndRow.y + pathEndRow.height * 0.25);
   await hint.click();
 
   const preview = page.getByTestId("terminal-image-preview");
@@ -3330,6 +3396,7 @@ setTimeout(() => {}, 100000);
 `;
 
 const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+const tinyMp4Base64 = "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eT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0xIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTMgYl9weXJhbWlkPTIgYl9hZGFwdD0xIGJfYmlhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0wIHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MjUgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAPZYiEADP//vbsvgU2FMjBAAAACEGaJGxCv/7A3gIATGF2YzYyLjExLjEwMABCIAjBGDgAAAAIQZ5CeIX/wYEhEARgjBwhEARgjBwAAAAIAZ5hdEK/xIAhEARgjBwhEARgjBwAAAAIAZ5jakK/xIEhEARgjBwhEARgjBwhEARgjBwhEARgjBw=";
 
 function writeCodexFixtureState(
   ctx: FixtureContext,

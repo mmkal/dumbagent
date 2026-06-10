@@ -487,7 +487,11 @@ async function handleApiRequest(state: ServerState, request: Request, url: URL):
   }
 
   if (request.method === "GET" && url.pathname === "/api/image-preview") {
-    return createImagePreviewResponse(url);
+    return createImagePreviewResponse(request, url);
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/media-preview") {
+    return createMediaPreviewResponse(request, url, new Set(["image", "video"]));
   }
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
@@ -1275,7 +1279,11 @@ function nextAvailableAttachmentPath(directory: string, fileName: string) {
   }
 }
 
-function createImagePreviewResponse(url: URL) {
+function createImagePreviewResponse(request: Request, url: URL) {
+  return createMediaPreviewResponse(request, url, new Set(["image"]));
+}
+
+function createMediaPreviewResponse(request: Request, url: URL, allowedKinds: Set<"image" | "video">) {
   const requestedPath = url.searchParams.get("path") || "";
   const cwd = url.searchParams.get("cwd") || "";
   if (!requestedPath || requestedPath.includes("\0") || cwd.includes("\0")) {
@@ -1283,37 +1291,32 @@ function createImagePreviewResponse(url: URL) {
   }
 
   if (!path.isAbsolute(requestedPath) && (!cwd || !path.isAbsolute(cwd))) {
-    return Response.json({ error: "Relative image paths require an absolute cwd" }, { status: 400 });
+    return Response.json({ error: "Relative media paths require an absolute cwd" }, { status: 400 });
   }
 
   const filePath = path.isAbsolute(requestedPath) ? requestedPath : path.resolve(cwd, requestedPath);
-  const contentType = imagePreviewContentType(filePath);
-  if (!contentType) {
-    return Response.json({ error: "Only image file paths can be previewed" }, { status: 415 });
+  const media = mediaPreviewInfo(filePath);
+  if (!media || !allowedKinds.has(media.kind)) {
+    const kindList = [...allowedKinds].join(" or ");
+    return Response.json({ error: `Only ${kindList} file paths can be previewed` }, { status: 415 });
   }
 
   let stat: fs.Stats;
   try {
     stat = fs.statSync(filePath);
   } catch {
-    return Response.json({ error: "Image not found" }, { status: 404 });
+    return Response.json({ error: "Media not found" }, { status: 404 });
   }
   if (!stat.isFile()) {
-    return Response.json({ error: "Image not found" }, { status: 404 });
+    return Response.json({ error: "Media not found" }, { status: 404 });
   }
 
-  return new Response(Bun.file(filePath), {
-    headers: {
-      "Cache-Control": "no-store",
-      "Content-Type": contentType,
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
+  return createFileResponse(request, filePath, stat, media.contentType, url.searchParams.get("download") === "1");
 }
 
-function imagePreviewContentType(filePath: string) {
+function mediaPreviewInfo(filePath: string): { kind: "image" | "video"; contentType: string } | null {
   const extension = path.extname(filePath).toLowerCase();
-  const contentTypes: Record<string, string> = {
+  const imageTypes: Record<string, string> = {
     ".avif": "image/avif",
     ".bmp": "image/bmp",
     ".gif": "image/gif",
@@ -1327,7 +1330,93 @@ function imagePreviewContentType(filePath: string) {
     ".tiff": "image/tiff",
     ".webp": "image/webp",
   };
-  return contentTypes[extension] || "";
+  const videoTypes: Record<string, string> = {
+    ".avi": "video/x-msvideo",
+    ".m4v": "video/x-m4v",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".ogg": "video/ogg",
+    ".ogv": "video/ogg",
+    ".webm": "video/webm",
+  };
+  if (imageTypes[extension]) {
+    return { kind: "image", contentType: imageTypes[extension] };
+  }
+  if (videoTypes[extension]) {
+    return { kind: "video", contentType: videoTypes[extension] };
+  }
+  return null;
+}
+
+function createFileResponse(request: Request, filePath: string, stat: fs.Stats, contentType: string, download: boolean) {
+  const baseHeaders: Record<string, string> = {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store",
+    "Content-Type": contentType,
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (download) {
+    baseHeaders["Content-Disposition"] = `attachment; filename="${contentDispositionFilename(path.basename(filePath))}"`;
+  }
+
+  const range = request.headers.get("range") || "";
+  if (!range) {
+    return new Response(Bun.file(filePath), { headers: baseHeaders });
+  }
+
+  const parsedRange = parseBytesRange(range, stat.size);
+  if (!parsedRange) {
+    return new Response("range not satisfiable", {
+      status: 416,
+      headers: {
+        ...baseHeaders,
+        "Content-Range": `bytes */${stat.size}`,
+      },
+    });
+  }
+
+  return new Response(Bun.file(filePath).slice(parsedRange.start, parsedRange.end + 1), {
+    status: 206,
+    headers: {
+      ...baseHeaders,
+      "Content-Length": String(parsedRange.end - parsedRange.start + 1),
+      "Content-Range": `bytes ${parsedRange.start}-${parsedRange.end}/${stat.size}`,
+    },
+  });
+}
+
+function parseBytesRange(range: string, size: number): { start: number; end: number } | null {
+  const match = range.match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || size <= 0) {
+    return null;
+  }
+
+  const startText = match[1] || "";
+  const endText = match[2] || "";
+  if (!startText && !endText) {
+    return null;
+  }
+
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return null;
+    }
+    const start = Math.max(0, size - suffixLength);
+    return { start, end: size - 1 };
+  }
+
+  const start = Number(startText);
+  const requestedEnd = endText ? Number(endText) : size - 1;
+  if (!Number.isFinite(start) || !Number.isFinite(requestedEnd) || start < 0 || requestedEnd < start || start >= size) {
+    return null;
+  }
+  return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
+function contentDispositionFilename(fileName: string) {
+  return fileName.replace(/[\0-\x1f"\\]/g, "_") || "media";
 }
 
 async function createSession(input: CreateSessionInput) {
