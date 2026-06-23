@@ -1,16 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import { createNodeSqliteClient, type SyncClient } from "sqlfu";
-import {
-  archiveSession,
-  getSession,
-  getSessionRecovery,
-  recordSession,
-  recordSessionProcessOwner,
-  removeSessionProcessOwner,
-  setSessionRecovery,
-} from "../db/sql/.generated/queries.sql.ts";
+import { createBunClient, type SyncClient } from "sqlfu";
+import { sessionDb } from "../sqlfu.config.ts";
 import { sessionStorePathForEnv } from "./state-db-path.ts";
 
 export type SessionStore = ReturnType<typeof createSessionStore>;
@@ -62,7 +54,6 @@ export type StoredSessionProcessOwner = {
   updatedAtMs: number;
 };
 
-const definitionsPath = path.resolve(import.meta.dirname, "../db/definitions.sql");
 export { sessionStorePathForEnv };
 
 export function createSessionStoreForEnv(env: NodeJS.ProcessEnv) {
@@ -74,19 +65,19 @@ export function createSessionStore(databasePath: string) {
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   }
   const database = new Database(databasePath);
-  const client = createNodeSqliteClient(database as unknown as Parameters<typeof createNodeSqliteClient>[0]);
-  initializeSessionStore(client);
+  const client = createBunClient(database);
+  const db = initializeSessionStore(client);
 
   return {
     path: databasePath,
     recordSession(input: RecordStoredSessionInput) {
-      recordSession(client, input);
+      db.recordSession(input);
     },
     setSessionRecovery(input: SetStoredSessionRecoveryInput) {
-      setSessionRecovery(client, input);
+      db.setSessionRecovery(input);
     },
     recordSessionProcessOwner(input: RecordSessionProcessOwnerInput) {
-      recordSessionProcessOwner(client, input);
+      db.recordSessionProcessOwner(input);
     },
     getSessionProcessOwners(): StoredSessionProcessOwner[] {
       return database.query(`
@@ -113,17 +104,17 @@ export function createSessionStore(databasePath: string) {
       `).all(recoveryCommand) as StoredSessionProcessOwner[];
     },
     removeSessionProcessOwner(input: RemoveSessionProcessOwnerInput) {
-      removeSessionProcessOwner(client, input);
+      db.removeSessionProcessOwner(input);
     },
     archiveSession(input: ArchiveStoredSessionInput) {
-      archiveSession(client, { archivedAtMs: input.archivedAtMs }, { sessionId: input.sessionId });
+      db.archiveSession(input);
     },
     getSession(id: string): StoredSession | null {
-      const session = getSession(client, { id });
+      const session = db.getSession({ id });
       if (!session) {
         return null;
       }
-      const recovery = getSessionRecovery(client, { sessionId: id });
+      const recovery = db.getSessionRecovery({ sessionId: id });
       return {
         id: session.id,
         cwd: session.cwd,
@@ -146,8 +137,10 @@ export function createSessionStore(databasePath: string) {
 function initializeSessionStore(client: SyncClient) {
   client.raw("pragma foreign_keys = on;");
   client.raw("pragma busy_timeout = 1000;");
-  client.raw(fs.readFileSync(definitionsPath, "utf8"));
+  const db = sessionDb(client);
+  db.migrate();
   addColumnIfMissing(client, "sessions", "archived_at_ms integer");
+  return db;
 }
 
 function addColumnIfMissing(client: SyncClient, tableName: string, definition: string) {

@@ -36,7 +36,7 @@
         "@xterm/xterm": "^6.0.0",
         "codemirror": "^6.0.2",
         "dumbagent": "file:../dumbagent",
-        "sqlfu": "0.0.3-14",
+        "sqlfu": "https://pkg.pr.new/iterate/sqlfu/sqlfu@145",
         "trpc-cli": "^0.14.1",
         "yaml": "^2.8.4",
         "zod": "^4.4.3",
@@ -877,7 +877,7 @@
 
     "source-map-js": ["source-map-js@1.2.1", "", {}, "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA=="],
 
-    "sqlfu": ["sqlfu@0.0.3-14", "", { "dependencies": { "@clack/prompts": "^1.2.0", "@orpc/server": "^1.13.13", "trpc-cli": "^0.14.0", "zod": "^4.3.6" }, "peerDependencies": { "@effect/sql": "^0.51.1", "@sqlfu/ui": "0.0.3-14", "better-auth": "^1.6.9", "effect": "^3.21.2 || ^4.0.0-beta.60" }, "optionalPeers": ["@effect/sql", "@sqlfu/ui", "better-auth", "effect"], "bin": { "sqlfu": "bin/sqlfu.js" } }, "sha512-0JHD+oksVx2OEbrgFjBmN+nB4Y1q7jkkbHhAVytG/ZzzOcHwmtbxB8Q8Iz7euJ2R28LSTNqS5VfuyBkdZQ8aYQ=="],
+    "sqlfu": ["sqlfu@https://pkg.pr.new/iterate/sqlfu/sqlfu@145", { "dependencies": { "@clack/prompts": "^1.2.0", "@orpc/server": "^1.13.13", "trpc-cli": "^0.14.0", "zod": "^4.3.6" }, "peerDependencies": { "@effect/sql": "^0.51.1", "@sqlfu/ui": "0.0.3-7", "better-auth": "^1.6.9", "effect": "^3.21.2 || ^4.0.0-beta.60" }, "optionalPeers": ["@effect/sql", "@sqlfu/ui", "better-auth", "effect"], "bin": { "sqlfu": "./bin/sqlfu.js" } }, "sha512-yIK+Bh6NEpHMhYpq9vozNHWHyL7oaU/dhgXoShzH16Pj2CPjNf0ODVJxhCWy9r7GPXmzmzvi9AriAtclhXA/Uw=="],
 
     "stackback": ["stackback@0.0.2", "", {}, "sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw=="],
 
