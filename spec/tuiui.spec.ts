@@ -1074,9 +1074,14 @@ test("distinguishes empty recent sessions from sessions hidden by a saved filter
   await page.goto(ctx.baseUrl);
 
   await expect(page.getByTestId("recent-agent-count")).toHaveText("None");
-  await expect(page.getByTestId("recent-agent-list")).toHaveText("No recent sessions match the current filter");
+  await expect(page.getByTestId("recent-agent-list")).toContainText("No recent sessions match the current filter");
+  await page.getByRole("button", { name: "Reset filter" }).click();
+  await expect(page.getByTestId("recent-agent-count")).toHaveText("1 active in 24h");
+  await expect(page.getByRole("button", { name: /Resume Codex session Filtered away Codex/ })).toBeVisible();
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem("tuiui-recent-session-filter"))).toBe(null);
+
   await page.locator("[data-testid='recent-session-group-config'] > summary").click();
-  await expect(page.getByTestId("recent-session-filter-input")).toHaveValue('status != "archived" and $contains(cwd, "sqlfu")');
+  await expect(page.getByTestId("recent-session-filter-input")).toHaveValue('status != "archived"');
 });
 
 test("asks before killing a Codex session that is active elsewhere", async ({ page, ctx }) => {

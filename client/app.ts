@@ -1439,6 +1439,17 @@ async function renderHome() {
     count.textContent = rendered.sessions.length ? `${rendered.sessions.length} active in 24h` : "None";
     list.innerHTML = rendered.html;
     renderRecentSessionGroupError(rendered.error);
+    bindRecentSessionFilterReset(recentAgentSessions);
+  }
+
+  function bindRecentSessionFilterReset(recentAgentSessions: RecentAgentSession[]) {
+    document.querySelector<HTMLButtonElement>("[data-action='reset-recent-session-filter']")?.addEventListener("click", () => {
+      recentSessionFilterState.setValue("");
+      recentSessionFilterInput.value = defaultRecentSessionFilterExpression;
+      renderRecentAgentSessions(recentAgentSessions);
+      bindRecentAgentSessionControls(recentAgentSessions);
+      bindRecentSessionGroupDetails();
+    });
   }
 
   function renderRecentAgentSessionFailure() {
@@ -1994,7 +2005,16 @@ function renderRecentAgentSessionContent(
   const error = filterParsed.error || groupParsed.error;
   if (!filteredSessions.length) {
     if (recentAgentSessions.length && !filterParsed.error) {
-      return { html: `<p class="empty">No recent sessions match the current filter</p>`, error, sessions: filteredSessions };
+      return {
+        html: `
+          <div class="empty empty-with-action">
+            <p>No recent sessions match the current filter</p>
+            <button type="button" class="secondary-button" data-action="reset-recent-session-filter">Reset filter</button>
+          </div>
+        `,
+        error,
+        sessions: filteredSessions,
+      };
     }
     return { html: `<p class="empty">No recent sessions</p>`, error, sessions: filteredSessions };
   }

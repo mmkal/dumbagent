@@ -725,6 +725,24 @@ textarea:focus {
   padding: 14px;
 }
 
+.empty-with-action {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.empty-with-action p {
+  margin: 0;
+}
+
+.empty-with-action .secondary-button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .factory-floor-layout {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
