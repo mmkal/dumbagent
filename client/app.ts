@@ -378,6 +378,7 @@ let terminalImageLinkProvider: { dispose(): void } | null = null;
 let terminalTapActivationCleanup: (() => void) | null = null;
 let terminalImageHintsCleanup: (() => void) | null = null;
 let terminalTouchSelectionCleanup: (() => void) | null = null;
+let terminalTouchWheelCleanup: (() => void) | null = null;
 let terminalImageHintAnimationFrame: number | null = null;
 let voiceLoop: VoiceLoop | null = null;
 let unsubscribeVoiceLoop: (() => void) | null = null;
@@ -3257,6 +3258,13 @@ function scrollTerminalByStep(direction: number) {
   if (!direction) {
     return;
   }
+  if (xterm && xterm.buffer.active.type === "alternate") {
+    // Alt-screen TUIs (Claude Code, vim, ...) have no scrollback for scrollLines to move. Wheel
+    // events reach them instead: xterm forwards them as mouse reports when the TUI enabled mouse
+    // tracking, or converts them to arrow keys otherwise.
+    dispatchTerminalWheelLines(xterm, direction * 8);
+    return;
+  }
   if (xterm) {
     smoothScrollXterm(direction * 8, () => undefined);
     return;
@@ -3270,6 +3278,29 @@ function scrollTerminalByStep(direction: number) {
     top: direction * fallback.clientHeight * 0.22,
     behavior: "smooth",
   });
+}
+
+function dispatchTerminalWheelLines(term: XtermTerminal, lines: number, at?: { clientX: number; clientY: number }) {
+  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!screen || !lines) {
+    return;
+  }
+  const rect = screen.getBoundingClientRect();
+  const clientX = at ? at.clientX : rect.left + rect.width / 2;
+  const clientY = at ? at.clientY : rect.top + rect.height / 2;
+  const step = lines > 0 ? 1 : -1;
+  // One single-line event per line: xterm emits at most one mouse report per wheel event, so a
+  // burst of small events scrolls mouse-tracking TUIs by the intended amount.
+  for (let index = 0; index < Math.abs(lines); index += 1) {
+    screen.dispatchEvent(new WheelEvent("wheel", {
+      deltaY: step,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      clientX,
+      clientY,
+      bubbles: true,
+      cancelable: true,
+    }));
+  }
 }
 
 function smoothScrollXterm(totalLines: number, onDelta: (delta: number) => void) {
@@ -4917,6 +4948,82 @@ function bindTerminalImageHints(term: XtermTerminal) {
   scheduleTerminalImageHintUpdate(term);
 }
 
+/**
+ * Inspired by xterm.js master's MouseService._handleTouchScrollAsWheel (added after v6.0.0, see
+ * https://github.com/xtermjs/xterm.js src/browser/services/MouseService.ts): upstream converts
+ * touch drags into one wheel mouse report per cell of finger travel when the running TUI has
+ * requested mouse wheel events. xterm 6.0.0 ships without any touch-to-mouse-report wiring, so
+ * TUIs like Claude Code (alt screen + mouse tracking) cannot be scrolled by touch at all.
+ * Modification: instead of calling xterm internals we dispatch synthetic line-mode WheelEvents at
+ * the screen element; xterm's mouse protocol path consumes raw deltaY, so each event becomes an
+ * up/down wheel report for the TUI. Remove this once we upgrade to an xterm release that includes
+ * the upstream touch handling.
+ */
+function bindTerminalTouchWheel(term: XtermTerminal) {
+  terminalTouchWheelCleanup?.();
+  terminalTouchWheelCleanup = null;
+
+  const element = term.element;
+  if (!element) {
+    return;
+  }
+
+  let lastY: number | null = null;
+  let accumulatedPx = 0;
+
+  const mouseProtocolActive = () => element.classList.contains("enable-mouse-events");
+  const cellHeightPx = () => {
+    const screen = element.querySelector<HTMLElement>(".xterm-screen");
+    return screen && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+  };
+
+  const handleTouchStart = (event: TouchEvent) => {
+    if (!mouseProtocolActive() || event.touches.length !== 1 || term.hasSelection()) {
+      lastY = null;
+      return;
+    }
+    lastY = event.touches[0].clientY;
+    accumulatedPx = 0;
+  };
+
+  const handleTouchMove = (event: TouchEvent) => {
+    if (lastY === null || !mouseProtocolActive() || event.touches.length !== 1 || term.hasSelection()) {
+      return;
+    }
+    const touch = event.touches[0];
+    event.preventDefault();
+    // Finger moving up drags the content up, i.e. scrolls down (positive wheel delta).
+    accumulatedPx += lastY - touch.clientY;
+    lastY = touch.clientY;
+    const cell = cellHeightPx();
+    if (!cell) {
+      return;
+    }
+    const lines = Math.trunc(accumulatedPx / cell);
+    if (lines === 0) {
+      return;
+    }
+    accumulatedPx -= lines * cell;
+    dispatchTerminalWheelLines(term, lines, { clientX: touch.clientX, clientY: touch.clientY });
+  };
+
+  const handleTouchEnd = () => {
+    lastY = null;
+  };
+
+  element.addEventListener("touchstart", handleTouchStart, { passive: true });
+  element.addEventListener("touchmove", handleTouchMove, { passive: false });
+  element.addEventListener("touchend", handleTouchEnd, { passive: true });
+  element.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+
+  terminalTouchWheelCleanup = () => {
+    element.removeEventListener("touchstart", handleTouchStart);
+    element.removeEventListener("touchmove", handleTouchMove);
+    element.removeEventListener("touchend", handleTouchEnd);
+    element.removeEventListener("touchcancel", handleTouchEnd);
+  };
+}
+
 function bindTerminalTouchSelection(term: XtermTerminal) {
   terminalTouchSelectionCleanup?.();
   terminalTouchSelectionCleanup = null;
@@ -6182,9 +6289,10 @@ async function ensureXterm(payload: SessionPayload) {
     loadTerminalWebglAddon(term);
     bindTerminalImageHints(term);
     bindTerminalTouchSelection(term);
+    bindTerminalTouchWheel(term);
     bindTerminalTapActivation(term);
     xtermFit = fit;
-    term.onData((text) => {
+    const sendTerminalInput = (text: string) => {
       if (!xtermSessionId) {
         return;
       }
@@ -6193,7 +6301,10 @@ async function ensureXterm(payload: SessionPayload) {
         .then(() => clientApi.sessions.send({ sessionId, text, submit: false }))
         .then(() => undefined)
         .catch(() => undefined);
-    });
+    };
+    term.onData(sendTerminalInput);
+    // Mouse reports in the default (non-SGR) encoding are emitted via onBinary, not onData.
+    term.onBinary(sendTerminalInput);
     xterm = term;
     return term;
   });
@@ -6282,6 +6393,8 @@ function destroyXterm() {
   terminalImageHintsCleanup = null;
   terminalTouchSelectionCleanup?.();
   terminalTouchSelectionCleanup = null;
+  terminalTouchWheelCleanup?.();
+  terminalTouchWheelCleanup = null;
   if (terminalImageHintAnimationFrame !== null) {
     window.cancelAnimationFrame(terminalImageHintAnimationFrame);
     terminalImageHintAnimationFrame = null;

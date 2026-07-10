@@ -1779,6 +1779,125 @@ test("long press selects terminal text on narrow touch screens", async ({ browse
   await expect(page.getByRole("toolbar", { name: "Terminal selection" })).toBeHidden();
 });
 
+test("scrolls terminal scrollback with the mouse wheel", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("scrollback-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("scrollback line 80");
+
+  const scrollbarThumbTop = async () => {
+    return await page.locator(".xterm-scrollable-element .scrollbar.vertical .slider").evaluate((slider) => {
+      return Number.parseFloat((slider as HTMLElement).style.top);
+    });
+  };
+  const before = await scrollbarThumbTop();
+  expect(before).toBeGreaterThan(0);
+
+  const screenBox = await page.locator(".xterm-screen").boundingBox();
+  if (!screenBox) {
+    throw new Error("terminal screen was not rendered");
+  }
+  await page.mouse.move(screenBox.x + screenBox.width / 2, screenBox.y + screenBox.height / 2);
+  await page.mouse.wheel(0, -240);
+
+  await expect.poll(scrollbarThumbTop).toBeLessThan(before);
+});
+
+test("forwards mouse wheel reports to TUIs that enable mouse tracking", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("mouse-wheel-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("mouse tracking on");
+
+  const screenBox = await page.locator(".xterm-screen").boundingBox();
+  if (!screenBox) {
+    throw new Error("terminal screen was not rendered");
+  }
+  await page.mouse.move(screenBox.x + screenBox.width / 2, screenBox.y + screenBox.height / 2);
+  await page.mouse.wheel(0, -240);
+
+  // SGR wheel-up report: ESC [<64;col;rowM (the fake agent echoes stdin via JSON.stringify)
+  await expect(page.getByTestId("rendered-terminal")).toContainText("[<64;");
+});
+
+test("forwards legacy-encoded mouse wheel reports emitted via onBinary", async ({ page, ctx }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("mouse-wheel-agent legacy");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("mouse tracking on");
+
+  const screenBox = await page.locator(".xterm-screen").boundingBox();
+  if (!screenBox) {
+    throw new Error("terminal screen was not rendered");
+  }
+  // Stay in the left third: X10 encoding cannot represent columns above 223.
+  await page.mouse.move(screenBox.x + screenBox.width / 4, screenBox.y + screenBox.height / 2);
+  await page.mouse.wheel(0, -240);
+
+  // X10 wheel-up report: ESC [M followed by button byte 96 (backtick) and coord bytes
+  await expect(page.getByTestId("rendered-terminal")).toContainText("[M`");
+});
+
+test("touch drag scrolls a TUI that enables mouse tracking", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("mouse-wheel-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("mouse tracking on");
+
+  const screenBox = await page.locator(".xterm-screen").boundingBox();
+  if (!screenBox) {
+    throw new Error("terminal screen was not rendered");
+  }
+  const x = screenBox.x + screenBox.width / 4;
+  const startY = screenBox.y + screenBox.height / 2;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: startY }] });
+  for (let step = 1; step <= 6; step += 1) {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: startY + step * 25 }] });
+    await page.waitForTimeout(30);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+  // SGR wheel report: ESC [<64;col;rowM (up) or ESC [<65;col;rowM (down)
+  await expect(page.getByTestId("rendered-terminal")).toContainText("[<6");
+});
+
+test("scroll buttons send wheel reports to an alt-screen TUI with mouse tracking", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("mouse-wheel-agent");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("mouse tracking on");
+
+  await page.getByRole("button", { name: "Scroll terminal up" }).click();
+
+  // SGR wheel-up report: ESC [<64;col;rowM
+  await expect(page.getByTestId("rendered-terminal")).toContainText("[<64;");
+});
+
+test("scroll buttons send arrow keys to an alt-screen TUI without mouse tracking", async ({ browser, ctx }, testInfo) => {
+  await using touch = await createTouchPage(browser, testInfo);
+  const page = touch.page;
+
+  await page.goto(ctx.baseUrl);
+  await page.getByRole("textbox", { name: "Command" }).fill("mouse-wheel-agent nomouse");
+  await page.getByRole("textbox", { name: "Command" }).press("Enter");
+  await expect(page.getByTestId("rendered-terminal")).toContainText("alt screen on");
+
+  await page.getByRole("button", { name: "Scroll terminal up" }).click();
+
+  // xterm converts wheel to cursor keys in the alt buffer; the tty echoes ESC [A as ^[[A
+  await expect(page.getByTestId("rendered-terminal")).toContainText("^[[A");
+});
+
 test("dragging a mobile terminal selection near the top scrolls upward", async ({ browser, ctx }, testInfo) => {
   await using touch = await createTouchPage(browser, testInfo);
   const page = touch.page;
@@ -3234,6 +3353,7 @@ async function createContextWithPathPrefix(pathPrefix: string, envOverrides: Rec
   fs.writeFileSync(path.join(fakeBinDir, "json-parser-ui"), jsonParserUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "title-noise-ui"), titleNoiseUiSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "scrollback-agent"), scrollbackAgentSource, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBinDir, "mouse-wheel-agent"), mouseWheelAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "link-agent"), linkAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "image-path-agent"), imagePathAgentSource, { mode: 0o755 });
   fs.writeFileSync(path.join(fakeBinDir, "split-image-path-agent"), splitImagePathAgentSource, { mode: 0o755 });
@@ -3377,6 +3497,19 @@ const scrollbackAgentSource = `#!/usr/bin/env node
 for (let index = 1; index <= 80; index += 1) {
   process.stdout.write("scrollback line " + String(index).padStart(2, "0") + "\\r\\n");
 }
+setTimeout(() => {}, 100000);
+`;
+
+const mouseWheelAgentSource = `#!/usr/bin/env node
+const variant = process.argv[2] || "";
+process.stdout.write("\\x1b[?1049h");
+if (variant !== "nomouse") {
+  process.stdout.write("\\x1b[?1000h\\x1b[?1002h\\x1b[?1003h" + (variant === "legacy" ? "" : "\\x1b[?1006h"));
+}
+process.stdout.write(variant === "nomouse" ? "alt screen on\\r\\n" : "mouse tracking on\\r\\n");
+process.stdin.on("data", (chunk) => {
+  process.stdout.write("STDIN:" + JSON.stringify(chunk.toString()) + "\\r\\n");
+});
 setTimeout(() => {}, 100000);
 `;
 

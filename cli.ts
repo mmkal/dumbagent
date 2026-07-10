@@ -169,6 +169,7 @@ type RuntimeSession = {
   rows: number;
   terminal: HeadlessTerminal;
   serializer: SerializeAddon;
+  mouseEncoding: MouseEncodingTracker;
   outputDecoder: StringDecoder;
   backend: SessionBackendHandle;
   writeQueue: Promise<void>;
@@ -1438,6 +1439,7 @@ async function createSession(input: CreateSessionInput) {
   const terminal = new HeadlessTerminal({ cols, rows, scrollback: 2_000, allowProposedApi: true });
   const serializer = new SerializeAddon();
   terminal.loadAddon(serializer);
+  const mouseEncoding = trackMouseEncoding(terminal);
 
   let command = input.command;
   let args = input.args;
@@ -1491,6 +1493,7 @@ async function createSession(input: CreateSessionInput) {
     rows,
     terminal,
     serializer,
+    mouseEncoding,
     outputDecoder: new StringDecoder("utf8"),
     backend: createPendingBackend(),
     writeQueue: Promise.resolve(),
@@ -1592,6 +1595,7 @@ async function reconnectSession(state: ServerState, id: string) {
   const terminal = new HeadlessTerminal({ cols, rows, scrollback: 2_000, allowProposedApi: true });
   const serializer = new SerializeAddon();
   terminal.loadAddon(serializer);
+  const mouseEncoding = trackMouseEncoding(terminal);
   const sdk = await prepareSessionSdk(metadata.command, metadata.args, minimalEnv(process.env));
   const now = new Date().toISOString();
   session = {
@@ -1611,6 +1615,7 @@ async function reconnectSession(state: ServerState, id: string) {
     rows,
     terminal,
     serializer,
+    mouseEncoding,
     outputDecoder: new StringDecoder("utf8"),
     backend: reconnected.handle,
     writeQueue: Promise.resolve(),
@@ -1844,7 +1849,34 @@ function renderTerminalHtml(session: RuntimeSession) {
 function renderTerminalAnsi(session: RuntimeSession) {
   return session.serializer.serialize({
     scrollback: Math.min(terminalScrollbackSnapshotRows, session.terminal.buffer.active.baseY),
-  });
+  }) + session.mouseEncoding.sequence();
+}
+
+type MouseEncodingTracker = { sequence(): string };
+
+/**
+ * The serialize addon restores mouse *tracking* modes (1000/1002/1003) but xterm does not expose
+ * the mouse report *encoding* (SGR etc.) through its public modes API, so it is lost from
+ * snapshots. Without it, a browser xterm restored from a snapshot falls back to the legacy X10
+ * encoding, which cannot represent columns above 223 and which TUIs requesting SGR won't expect.
+ * Track DECSET/DECRST of the encoding modes ourselves so snapshots can re-apply it.
+ */
+function trackMouseEncoding(terminal: HeadlessTerminal): MouseEncodingTracker {
+  const encodingModes = new Set([1005, 1006, 1015, 1016]);
+  let active = 0;
+  const handle = (params: (number | number[])[], enabled: boolean) => {
+    for (const param of params.flat()) {
+      if (encodingModes.has(param)) {
+        active = enabled ? param : 0;
+      }
+    }
+    return false;
+  };
+  terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => handle(params, true));
+  terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => handle(params, false));
+  return {
+    sequence: () => (active ? `\x1b[?${active}h` : ""),
+  };
 }
 
 async function sendToSession(state: ServerState, session: RuntimeSession, text: string, submit: boolean) {

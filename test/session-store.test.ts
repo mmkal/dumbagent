@@ -112,6 +112,25 @@ test("records and removes active session process owners", () => {
   expect(fixture.ownerRows()).toEqual([]);
 });
 
+test("opens pre-archive session databases after inline migration", () => {
+  using fixture = createLegacyStoreWithoutArchivedColumn();
+
+  fixture.store.recordSession({
+    id: "legacy_session",
+    cwd: "/tmp/tuiui-legacy-store",
+    launchCommand: "codex",
+    createdAtMs: 1_000,
+  });
+  fixture.store.archiveSession({
+    sessionId: "legacy_session",
+    archivedAtMs: 2_000,
+  });
+
+  expect(fixture.store.getSession("legacy_session")).toMatchObject({
+    archivedAtMs: 2_000,
+  });
+});
+
 function createFileBackedStore() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-session-store-"));
   const databasePath = path.join(root, "state.sqlite");
@@ -127,6 +146,33 @@ function createFileBackedStore() {
         database.close();
       }
     },
+    [Symbol.dispose]() {
+      store.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function createLegacyStoreWithoutArchivedColumn() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuiui-legacy-session-store-"));
+  const databasePath = path.join(root, "state.sqlite");
+  const database = new Database(databasePath);
+  try {
+    database.run(`
+      create table sessions (
+        id text primary key,
+        cwd text not null,
+        launch_command text not null,
+        created_at_ms integer not null
+      );
+    `);
+  } finally {
+    database.close();
+  }
+  const store = createSessionStore(databasePath);
+
+  return {
+    store,
     [Symbol.dispose]() {
       store.close();
       fs.rmSync(root, { recursive: true, force: true });
