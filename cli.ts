@@ -421,6 +421,9 @@ function createAppRouter(state: ServerState) {
     config: orpc.handler(() => configPayload()),
     cwd: orpc.handler(() => cwdPayload()),
     commands: orpc.handler(() => commandPresetsPayload()),
+    codexbar: {
+      usage: orpc.handler(() => codexbarUsagePayload()),
+    },
     agentSessions: {
       recent: orpc.handler(() => readRecentAgentSessions()),
       archive: orpc.input(agentSessionArchiveInputSchema).handler(({ input }) => archiveRecentAgentSession(input)),
@@ -612,6 +615,59 @@ function commandPresetsPayload(): CommandPresetPayload[] {
     { id: "fake-claude", label: "Fake Claude", command: "claude", args: [], fakeAgent: "claude" },
     { id: "ghui", label: "ghui", command: "ghui", args: [], fakeAgent: "" },
   ];
+}
+
+function codexbarUsagePayload() {
+  const command = ["codexbar", "--format", "json", "--json-only"];
+  try {
+    const stdout = execFileSync(command[0], command.slice(1), {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    try {
+      return { ok: true, data: JSON.parse(stdout), error: "" };
+    } catch (error) {
+      return {
+        ok: false,
+        data: null,
+        error: `codexbar returned invalid JSON: ${String(error instanceof Error ? error.message : error)}`,
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      data: null,
+      error: formatCodexbarCliError(error),
+    };
+  }
+}
+
+function formatCodexbarCliError(error: unknown) {
+  if (error && typeof error === "object") {
+    const failure = error as { code?: unknown; signal?: unknown; status?: unknown; stderr?: unknown; stdout?: unknown; message?: unknown };
+    const stderr = Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8").trim() : String(failure.stderr || "").trim();
+    const stdout = Buffer.isBuffer(failure.stdout) ? failure.stdout.toString("utf8").trim() : String(failure.stdout || "").trim();
+    if (stderr) {
+      return stderr;
+    }
+    if (stdout) {
+      return stdout;
+    }
+    if (failure.code === "ENOENT") {
+      return "codexbar is not installed or is not on PATH.";
+    }
+    if (failure.signal) {
+      return `codexbar failed with signal ${String(failure.signal)}.`;
+    }
+    if (typeof failure.status === "number") {
+      return `codexbar exited with status ${failure.status}.`;
+    }
+    if (failure.message) {
+      return String(failure.message);
+    }
+  }
+  return String(error);
 }
 
 function createCoordinatorState(): CoordinatorState {

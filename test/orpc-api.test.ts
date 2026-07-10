@@ -16,6 +16,7 @@ test("serves JSON procedures through ORPC while keeping api compatibility routes
   const binDir = path.join(workspace, "bin");
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(path.join(binDir, "orpc-agent"), longRunningAgentSource(), { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, "codexbar"), codexbarSource(), { mode: 0o755 });
 
   const port = await getFreePort();
   const server = await startTuiuiServer(rootDir, workspace, {
@@ -29,6 +30,16 @@ test("serves JSON procedures through ORPC while keeping api compatibility routes
     const client: RouterClient<AppRouter> = createORPCClient(new RPCLink({ url: `http://127.0.0.1:${port}/rpc` }));
     expect(await client.cwd()).toMatchObject({ cwd: fs.realpathSync(workspace) });
     await expect(await fetchJson<any[]>(`http://127.0.0.1:${port}/api/commands`)).toEqual(await client.commands());
+    expect(await client.codexbar.usage()).toMatchObject({
+      ok: true,
+      data: {
+        provider: "codex",
+        usage: {
+          primary: { usedPercent: 28 },
+        },
+      },
+      error: "",
+    });
 
     const created = await client.sessions.create({
       command: "orpc-agent",
@@ -141,5 +152,18 @@ function longRunningAgentSource() {
 process.stdout.write("orpc ready\\r\\n");
 process.stdin.on("data", (chunk) => process.stdout.write("echo:" + chunk.toString("utf8")));
 setInterval(() => {}, 1_000);
+`;
+}
+
+function codexbarSource() {
+  return `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  provider: "codex",
+  source: "test",
+  usage: {
+    primary: { usedPercent: 28, resetsAt: "2026-07-10T12:00:00Z" },
+    secondary: { usedPercent: 41, resetsAt: "2026-07-17T12:00:00Z" }
+  }
+}));
 `;
 }

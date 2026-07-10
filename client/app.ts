@@ -355,6 +355,8 @@ let dataEditorDoc = "";
 let fileEditorLanguageKey = "";
 let briefEditorView: EditorView | null = null;
 let briefEditorDoc = "";
+let homeCodexbarEditorView: EditorView | null = null;
+let homeCodexbarEditorDoc = "";
 let ideFileTree: FileTree | null = null;
 let ideFileTreeCwd = "";
 let ideFileTreeLoadingCwd = "";
@@ -1017,6 +1019,7 @@ async function renderRoute() {
   destroyIdeFileTree();
   activeSession = null;
   destroyDataEditor();
+  destroyHomeCodexbarEditor();
   unsubscribeVoiceLoop?.();
   unsubscribeVoiceLoop = null;
   voiceLoop = null;
@@ -1100,6 +1103,65 @@ function renderHomeMenu(activeSessionCount: number) {
   `;
 }
 
+function renderCodexbarPopover() {
+  return `
+    <details class="codexbar-popover" data-testid="codexbar-popover">
+      <summary class="view-switch-link" role="button" aria-label="CodexBar usage">CodexBar</summary>
+      <div class="floating-overlay codexbar-overlay">
+        <button type="button" class="floating-overlay-backdrop" data-action="close-codexbar-popover" aria-label="Close CodexBar usage"></button>
+        <section class="floating-overlay-card codexbar-panel" role="dialog" aria-label="CodexBar usage">
+          <header>
+            <strong>CodexBar</strong>
+            <button type="button" class="secondary-button" data-action="refresh-codexbar">Refresh</button>
+          </header>
+          <div id="codexbar-yaml-editor" data-testid="codexbar-yaml"></div>
+        </section>
+      </div>
+    </details>
+  `;
+}
+
+function bindCodexbarPopover() {
+  const details = document.querySelector<HTMLDetailsElement>("[data-testid='codexbar-popover']");
+  if (!details) {
+    return;
+  }
+  let loaded = false;
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      return;
+    }
+    requestAnimationFrame(() => homeCodexbarEditorView?.requestMeasure());
+    if (!loaded) {
+      loaded = true;
+      void refreshCodexbarUsage();
+    }
+  });
+  details.querySelector<HTMLButtonElement>("[data-action='close-codexbar-popover']")?.addEventListener("click", () => {
+    details.open = false;
+  });
+  details.querySelector<HTMLButtonElement>("[data-action='refresh-codexbar']")?.addEventListener("click", () => {
+    loaded = true;
+    void refreshCodexbarUsage();
+  });
+  mountHomeCodexbarEditor(stringifyYaml({ status: "Open to load CodexBar usage." }, null, { lineWidth: 0 }));
+}
+
+async function refreshCodexbarUsage() {
+  updateHomeCodexbarEditorDoc(stringifyYaml({ status: "Loading CodexBar usage..." }, null, { lineWidth: 0 }));
+  try {
+    const result = await clientApi.codexbar.usage();
+    const yamlDoc = result.ok
+      ? stringifyYaml({ codexbar: result.data }, null, { lineWidth: 0 })
+      : stringifyYaml({ error: result.error || "codexbar failed." }, null, { lineWidth: 0 });
+    updateHomeCodexbarEditorDoc(yamlDoc);
+  } catch (error) {
+    updateHomeCodexbarEditorDoc(stringifyYaml({
+      error: String(error instanceof Error ? error.message : error),
+    }, null, { lineWidth: 0 }));
+  }
+}
+
 async function renderIdeRoute() {
   const url = new URL(location.href);
   const requestedCwd = url.searchParams.get("cwd") || "";
@@ -1153,6 +1215,7 @@ async function renderHome() {
       <header class="topbar">
         <a class="brand" href="/">tuiui</a>
         <a class="view-switch-link" href="/" data-action="open-coordinator">Coordinator</a>
+        ${renderCodexbarPopover()}
         <a class="view-switch-link" href="/factory-floor" data-action="open-factory-floor" aria-label="Factory floor">🏭</a>
         ${renderIdleNotificationControl()}
         ${renderHomeMenu(sessions.length)}
@@ -1230,6 +1293,7 @@ async function renderHome() {
   if (factoryFloorLink) {
     bindClientRouteLink(factoryFloorLink, "/factory-floor");
   }
+  bindCodexbarPopover();
 
   const form = document.getElementById("launch-form") as HTMLFormElement;
   const recentSessionGroupConfig = document.querySelector<HTMLDetailsElement>("[data-testid='recent-session-group-config']")!;
@@ -6986,6 +7050,52 @@ function mountYamlEditor(hostId: string, doc: string) {
   dataEditorDoc = doc;
 }
 
+function mountHomeCodexbarEditor(doc: string) {
+  const host = document.getElementById("codexbar-yaml-editor");
+  if (!host) {
+    return;
+  }
+  destroyHomeCodexbarEditor();
+  homeCodexbarEditorView = new EditorView({
+    parent: host,
+    state: EditorState.create({
+      doc,
+      extensions: [
+        basicSetup,
+        vsCodeDark,
+        yaml(),
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+        EditorView.contentAttributes.of({ "aria-label": "CodexBar usage YAML" }),
+        editorTheme(),
+      ],
+    }),
+  });
+  homeCodexbarEditorDoc = doc;
+}
+
+function updateHomeCodexbarEditorDoc(doc: string) {
+  if (!homeCodexbarEditorView) {
+    mountHomeCodexbarEditor(doc);
+    return;
+  }
+  if (homeCodexbarEditorDoc === doc) {
+    return;
+  }
+  const scrollTop = homeCodexbarEditorView.scrollDOM.scrollTop;
+  const scrollLeft = homeCodexbarEditorView.scrollDOM.scrollLeft;
+  homeCodexbarEditorView.dispatch({
+    changes: {
+      from: 0,
+      to: homeCodexbarEditorView.state.doc.length,
+      insert: doc,
+    },
+  });
+  homeCodexbarEditorView.scrollDOM.scrollTop = scrollTop;
+  homeCodexbarEditorView.scrollDOM.scrollLeft = scrollLeft;
+  homeCodexbarEditorDoc = doc;
+}
+
 function updateDataEditorDoc(doc: string) {
   if (!dataEditorView || dataEditorDoc === doc) {
     return;
@@ -7190,6 +7300,12 @@ function destroyDataEditor() {
   briefEditorView?.destroy();
   briefEditorView = null;
   briefEditorDoc = "";
+}
+
+function destroyHomeCodexbarEditor() {
+  homeCodexbarEditorView?.destroy();
+  homeCodexbarEditorView = null;
+  homeCodexbarEditorDoc = "";
 }
 
 function renderSemanticScreen(screen: SemanticScreen) {

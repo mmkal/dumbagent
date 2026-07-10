@@ -106,7 +106,7 @@ button:disabled {
 
 .topbar {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   min-height: 42px;
@@ -1236,6 +1236,20 @@ textarea:focus {
   display: none;
 }
 
+.codexbar-popover {
+  position: relative;
+  justify-self: start;
+}
+
+.codexbar-popover > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.codexbar-popover > summary::-webkit-details-marker {
+  display: none;
+}
+
 .menu-button {
   position: relative;
   z-index: 51;
@@ -1261,6 +1275,7 @@ textarea:focus {
 }
 
 .floating-overlay[hidden],
+.codexbar-popover:not([open]) .codexbar-overlay,
 .session-menu:not([open]) .session-menu-overlay {
   display: none;
 }
@@ -1302,6 +1317,44 @@ textarea:focus {
   gap: 10px;
   width: min(420px, calc(100vw - 20px));
   padding: 10px;
+}
+
+.codexbar-overlay {
+  justify-items: center;
+  align-items: start;
+  padding-top: 58px;
+}
+
+.codexbar-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  width: min(920px, calc(100vw - 28px));
+  height: min(620px, calc(100dvh - 84px));
+  padding: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.codexbar-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+#codexbar-yaml-editor {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+#codexbar-yaml-editor .cm-editor {
+  height: 100%;
+  font-size: 10px !important;
+  line-height: 1.35 !important;
 }
 
 .menu-fact {
@@ -3348,6 +3401,15 @@ textarea[data-label="promptbox"][data-overflowing="true"] {
 
   .session-menu-overlay {
     padding: 42px 6px 6px;
+  }
+
+  .codexbar-overlay {
+    padding: 42px 6px 6px;
+  }
+
+  .codexbar-panel {
+    width: 100%;
+    height: calc(100dvh - 54px);
   }
 
   .menu-panel {
