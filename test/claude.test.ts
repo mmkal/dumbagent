@@ -23,7 +23,7 @@ test('claude TUI text response', async () => {
   await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
-      return parsed.respond.text('three')
+      return parsed.respond.text('the answer is three')
     },
   })
 

@@ -45,20 +45,33 @@ export async function spawnTui(
   // The tui-server prints its control port on the first line of stdout
   const controlPort = await new Promise<number>((resolve, reject) => {
     let buf = ''
+    let settled = false
+    let timer: ReturnType<typeof setTimeout>
     const onData = (d: Buffer) => {
       buf += d.toString()
       const nl = buf.indexOf('\n')
       if (nl !== -1) {
+        settled = true
+        clearTimeout(timer)
         child.stdout!.off('data', onData)
         resolve(parseInt(buf.slice(0, nl).trim()))
       }
     }
     child.stdout!.on('data', onData)
-    child.on('exit', (code) => reject(new Error(`TUI server exited early (code ${code})`)))
-    setTimeout(() => reject(new Error(`Timed out waiting for TUI server port.\nbuf: ${buf}`)), 10_000)
+    child.on('exit', (code) => {
+      if (!settled) reject(new Error(`TUI server exited early (code ${code})`))
+    })
+    timer = setTimeout(() => {
+      child.stdout!.off('data', onData)
+      child.kill()
+      reject(new Error(`Timed out waiting for TUI server port.\nbuf: ${buf}`))
+    }, 10_000)
   })
 
   const base = `http://localhost:${controlPort}`
+  if (agent === 'claude') {
+    await acceptClaudeTrustPrompt(base)
+  }
 
   return {
     async send(text) {
@@ -93,5 +106,21 @@ export async function spawnTui(
       await fetch(`${base}/kill`, {method: 'POST'}).catch(() => {})
       child.kill()
     },
+  }
+}
+
+async function acceptClaudeTrustPrompt(base: string): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const res = await fetch(`${base}/output`)
+    const {clean} = await res.json() as {clean: string}
+    if (clean.includes('Yes, I trust this folder')) {
+      await fetch(`${base}/dismiss`, {method: 'POST'})
+      return
+    }
+    if (clean.includes('Haiku')) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
 }

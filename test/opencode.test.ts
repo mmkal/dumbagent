@@ -1,9 +1,13 @@
+import {mkdtemp, rm} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import {test, expect} from 'vitest'
 import {createDumbAgent, parseRequest} from '../src/index.ts'
 import {waitForExit, spawnTui} from './helpers/index.ts'
 
 test('opencode run gets fake response', async () => {
   let capturedLastMessage = ''
+  await using cwd = await temporaryDirectory()
   await using api = await createDumbAgent({
     async fetch(request) {
       const parsed = await parseRequest(request)
@@ -13,7 +17,7 @@ test('opencode run gets fake response', async () => {
   })
 
   const child = api.spawn('opencode', ['run', 'what is one plus two', '--format', 'default', '--pure'], {
-    cwd: '/tmp/dumbagent-test',
+    cwd: cwd.path,
   })
 
   const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
@@ -58,3 +62,13 @@ test('opencode TUI tool use', async () => {
   await tui.send('read hello.txt')
   await tui.waitFor('the file says hi')
 }, 25_000)
+
+async function temporaryDirectory(): Promise<AsyncDisposable & {path: string}> {
+  const path = await mkdtemp(join(tmpdir(), 'dumbagent-opencode-'))
+  return {
+    path,
+    async [Symbol.asyncDispose]() {
+      await rm(path, {recursive: true, force: true})
+    },
+  }
+}
