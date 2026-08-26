@@ -142,6 +142,79 @@ export const agents = {
       }
     },
   },
+  grok: {
+    command: 'grok',
+    args: [
+      '--always-approve',
+      '--no-auto-update',
+      '--no-subagents',
+      '--no-plan',
+      '--disable-web-search',
+      '-m', 'fake-model',
+    ],
+    spawnOptions: {stdio: ['ignore', 'pipe', 'pipe']},
+    getEnv(port) {
+      const dir = `/tmp/dumbagent-grok-home-${port}`
+      mkdirSync(dir, {recursive: true})
+      mkdirSync('/tmp/dumbagent-test', {recursive: true})
+      const cwd = realpathSync(process.cwd())
+      const tmpTest = realpathSync('/tmp/dumbagent-test')
+      const trustedPaths = [...new Set([cwd, tmpTest])]
+      writeFileSync(`${dir}/config.toml`, [
+        `[cli]`,
+        `auto_update = false`,
+        ``,
+        `[models]`,
+        `default = "fake-model"`,
+        ``,
+        `[model.fake-model]`,
+        `model = "fake-model"`,
+        `base_url = "http://127.0.0.1:${port}/v1"`,
+        `name = "Fake Model"`,
+        `api_key = "fake-key"`,
+        `api_backend = "chat_completions"`,
+        `context_window = 128000`,
+        ``,
+        `[features]`,
+        `telemetry = false`,
+        `remote_fetch = false`,
+        `codebase_indexing = false`,
+        ``,
+        `[ui]`,
+        `permission_mode = "always-approve"`,
+        ``,
+        `[privacy]`,
+        `privacy_banner_acked = "2020-01-01T00:00:00Z"`,
+        ``,
+        `[compat.claude]`,
+        `mcps = false`,
+        `skills = false`,
+        `rules = false`,
+        `agents = false`,
+        `hooks = false`,
+        ``,
+        `[compat.cursor]`,
+        `mcps = false`,
+        `skills = false`,
+        `rules = false`,
+        `agents = false`,
+        `hooks = false`,
+      ].join('\n') + '\n')
+      writeFileSync(`${dir}/trusted_folders.toml`, trustedPaths
+        .map((p) => `[folders.${JSON.stringify(p)}]\ntrusted = true\n`)
+        .join('\n'))
+      writeFileSync(`${dir}/tip_cursor.json`, JSON.stringify({cursor: 9999}))
+      return {
+        GROK_HOME: dir,
+        XAI_API_KEY: 'fake-key',
+        GROK_DISABLE_AUTOUPDATER: '1',
+        GROK_TELEMETRY_ENABLED: '0',
+        GROK_MEMORY: '0',
+        GROK_SUBAGENTS: '0',
+        GROK_WORKFLOWS: '0',
+      }
+    },
+  },
 } satisfies Record<string, AgentConfig>
 
 export type AgentName = keyof typeof agents

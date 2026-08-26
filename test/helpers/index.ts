@@ -72,6 +72,9 @@ export async function spawnTui(
   if (agent === 'claude') {
     await acceptClaudeTrustPrompt(base)
   }
+  if (agent === 'grok') {
+    await startGrokSession(base)
+  }
 
   return {
     async send(text) {
@@ -107,6 +110,21 @@ export async function spawnTui(
       child.kill()
     },
   }
+}
+
+async function startGrokSession(base: string): Promise<void> {
+  const res = await fetch(`${base}/wait`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pattern: 'always-approve', timeout: 10_000}),
+  })
+  const {found} = await res.json() as {found: boolean}
+  if (!found) {
+    const outRes = await fetch(`${base}/output`)
+    const {clean} = await outRes.json() as {clean: string}
+    throw new Error(`Timed out waiting for grok welcome screen. Output: ${JSON.stringify(clean.slice(-500))}`)
+  }
+  await fetch(`${base}/dismiss`, {method: 'POST'})
 }
 
 async function acceptClaudeTrustPrompt(base: string): Promise<void> {

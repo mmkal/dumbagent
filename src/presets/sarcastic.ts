@@ -16,6 +16,11 @@ export function formatSarcasticResponse(text: string) {
 }
 
 function stripXmlBlocks(text: string) {
+  const query = [...text.matchAll(/<user_query(?:\s[^>]*)?>([\s\S]*?)<\/user_query>/gi)].at(-1)
+  if (query) {
+    text = query[1]
+  }
+
   let result = text
   let previous = ''
   while (result !== previous) {

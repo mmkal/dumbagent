@@ -15,6 +15,16 @@ test('limits the sarcastic callout quote to the first 50 characters', () => {
   expect(response.replace(/^"|" do you hear yourself$/g, '')).toHaveLength(50)
 })
 
+test('unwraps grok user_query tags instead of treating the prompt as empty', () => {
+  const response = formatSarcasticResponse(`<user_query>
+hello from grok
+</user_query>`)
+
+  expect(response).not.toBe('dumbagent ready')
+  expect(response.toLowerCase()).toContain('hello from grok')
+  expect(response.toLowerCase()).not.toContain('user_query')
+})
+
 test('ignores XML-style reminder blocks before mocking the prompt', () => {
   const response = formatSarcasticResponse(`
 <system-reminder>

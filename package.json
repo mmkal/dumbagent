@@ -31,7 +31,7 @@
     "prepare": "pnpm build",
     "test": "vitest run --no-file-parallelism"
   },
-  "keywords": ["testing", "agent", "cli", "claude", "codex", "opencode", "fake", "mock"],
+  "keywords": ["testing", "agent", "cli", "claude", "codex", "opencode", "pi", "grok", "fake", "mock"],
   "author": "mmkal",
   "license": "ISC",
   "packageManager": "pnpm@10.30.1",

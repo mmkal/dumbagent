@@ -71,6 +71,22 @@ test('node src/cli.ts pi serves the sarcastic preset', async () => {
   expect(stdout).toContain('do you hear yourself')
 })
 
+test('node src/cli.ts grok serves the sarcastic preset', async () => {
+  await using shims = await dumbAgentCommandShims()
+
+  const child = spawn(process.execPath, ['src/cli.ts', 'grok', '-p', 'hello from grok'], {
+    cwd: repoRoot,
+    env: {...process.env, PATH: `${shims.dir}:${process.env.PATH}`},
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  const {exitCode, stdout, stderr} = await waitForExit(child, 5_000)
+
+  expect({exitCode, stderr}).toMatchObject({exitCode: 0})
+  expect(stdout.toLowerCase()).toContain('hello from grok')
+  expect(stdout).toContain('do you hear yourself')
+})
+
 test('DUMBAGENT_PRESET=eliza selects the ELIZA preset', async () => {
   await using shims = await dumbAgentCommandShims()
 
@@ -92,7 +108,7 @@ async function dumbAgentCommandShims() {
   const shimPath = join(dir, 'agent-shim.mjs')
   await writeFile(shimPath, agentShimSource())
   await chmod(shimPath, 0o755)
-  for (const command of ['codex', 'opencode', 'claude', 'pi']) {
+  for (const command of ['codex', 'opencode', 'claude', 'pi', 'grok']) {
     const commandPath = join(dir, command)
     await writeFile(commandPath, `#!/usr/bin/env sh\nDUMBAGENT_SHIM_COMMAND="${command}" exec "${process.execPath}" "${shimPath}" "$@"\n`)
     await chmod(commandPath, 0o755)
@@ -154,6 +170,19 @@ if (command === 'claude') {
 if (command === 'pi') {
   const config = JSON.parse(await readFile(process.env.PI_CODING_AGENT_DIR + '/models.json', 'utf8'))
   const baseUrl = config.providers.dumbagent.baseUrl
+  const response = await fetch(baseUrl + '/chat/completions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: 'fake-model', messages: [{role: 'user', content: prompt}]}),
+  })
+  const json = await response.json()
+  console.log(json.choices[0].message.content)
+  process.exit(0)
+}
+
+if (command === 'grok') {
+  const config = await readFile(process.env.GROK_HOME + '/config.toml', 'utf8')
+  const baseUrl = config.match(/base_url = "([^"]+)"/)[1]
   const response = await fetch(baseUrl + '/chat/completions', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},

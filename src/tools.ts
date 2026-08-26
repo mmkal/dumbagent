@@ -62,6 +62,11 @@ export function readFileToolCall(parsed: ParsedRequest, path: string): Simulated
     return {name: 'shell', args: {command: ['cat', path]}}
   }
 
+  const toolNames = (parsed.body.tools ?? []).map((t: any) => t.function?.name || t.name)
+  if (toolNames.includes('read_file')) {
+    return {name: 'read_file', args: {target_file: path}}
+  }
+
   return {name: 'read', args: {filePath: path}}
 }
 

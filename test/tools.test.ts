@@ -82,6 +82,30 @@ test('simulates a Claude read file tool call', async () => {
   })
 })
 
+test('simulates a Grok read file tool call', async () => {
+  const response = await simulatedToolResponse(new Request('http://localhost/v1/chat/completions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: 'fake-model',
+      tools: [{type: 'function', function: {name: 'read_file'}}],
+      messages: [{role: 'user', content: 'tool:["readFile","src/cli.ts"]'}],
+    }),
+  }))
+
+  expect(await response.json()).toMatchObject({
+    choices: [{
+      message: {
+        tool_calls: [{
+          type: 'function',
+          function: {name: 'read_file', arguments: '{"target_file":"src/cli.ts"}'},
+        }],
+      },
+      finish_reason: 'tool_calls',
+    }],
+  })
+})
+
 test('simulates a Codex read file tool call through shell', async () => {
   const response = await simulatedToolResponse(new Request('http://localhost/v1/responses', {
     method: 'POST',

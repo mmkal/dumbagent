@@ -279,6 +279,11 @@ test('getSpawnArgs returns command and env for agent', async () => {
   const claude = api.getSpawnArgs('claude')
   expect(claude.command).toBe('claude')
   expect(claude.env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${api.port}`)
+
+  const grok = api.getSpawnArgs('grok')
+  expect(grok.command).toBe('grok')
+  expect(grok.env.GROK_HOME).toBeDefined()
+  expect(grok.env.XAI_API_KEY).toBe('fake-key')
 })
 
 test('respond.toolCall returns correct format per protocol', async () => {

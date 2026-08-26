@@ -1,6 +1,6 @@
 # dumbagent
 
-Fake API server for testing tools that use coding agent CLIs (Claude Code, OpenAI Codex, opencode, Pi). Intercepts LLM requests, gives you deterministic instant responses.
+Fake API server for testing tools that use coding agent CLIs (Claude Code, OpenAI Codex, opencode, Pi, Grok). Intercepts LLM requests, gives you deterministic instant responses.
 
 ## Why
 
@@ -21,6 +21,7 @@ npx dumbagent codex
 npx dumbagent opencode
 npx dumbagent claude
 npx dumbagent pi
+npx dumbagent grok
 ```
 
 By default the wrapped agent talks to a local fake API that returns the bundled sarcastic responder preset.
@@ -82,6 +83,7 @@ node fake-claude.ts claude      # opens claude TUI pointed at your fake server
 node fake-claude.ts opencode    # same for opencode
 node fake-claude.ts codex       # same for codex
 node fake-claude.ts pi          # same for pi
+node fake-claude.ts grok        # same for grok
 ```
 
 ## Supported agents
@@ -92,6 +94,7 @@ node fake-claude.ts pi          # same for pi
 | `opencode` | OpenAI Chat Completions | Custom provider via `OPENCODE_CONFIG_CONTENT` |
 | `claude` | Anthropic Messages API | `ANTHROPIC_BASE_URL` + `--bare` |
 | `pi` | OpenAI Chat Completions | Isolated `models.json` via `PI_CODING_AGENT_DIR` |
+| `grok` | OpenAI Chat Completions | Isolated `GROK_HOME` with custom model `base_url` |
 
 ## API
 
