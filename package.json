@@ -10,6 +10,18 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./protocol": {
+      "types": "./src/protocol.ts",
+      "default": "./src/protocol.ts"
+    },
+    "./presets/eliza": {
+      "types": "./src/presets/eliza.ts",
+      "default": "./src/presets/eliza.ts"
+    },
+    "./presets/sarcastic": {
+      "types": "./src/presets/sarcastic.ts",
+      "default": "./src/presets/sarcastic.ts"
     }
   },
   "publishConfig": {
@@ -20,18 +32,44 @@
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./protocol": {
+        "types": "./dist/protocol.d.ts",
+        "default": "./dist/protocol.js"
+      },
+      "./presets/eliza": {
+        "types": "./dist/presets/eliza.d.ts",
+        "default": "./dist/presets/eliza.js"
+      },
+      "./presets/sarcastic": {
+        "types": "./dist/presets/sarcastic.d.ts",
+        "default": "./dist/presets/sarcastic.js"
       }
     },
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "dev": "bun src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "prepare": "pnpm build",
     "test": "vitest run --no-file-parallelism"
   },
-  "keywords": ["testing", "agent", "cli", "claude", "codex", "opencode", "pi", "grok", "fake", "mock"],
+  "keywords": [
+    "testing",
+    "agent",
+    "cli",
+    "claude",
+    "codex",
+    "opencode",
+    "pi",
+    "grok",
+    "fake",
+    "mock"
+  ],
   "author": "mmkal",
   "license": "ISC",
   "packageManager": "pnpm@10.30.1",

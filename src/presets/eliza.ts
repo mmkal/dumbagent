@@ -1,4 +1,4 @@
-import {parseRequest} from '../api.ts'
+import {parseRequest} from '../protocol.ts'
 
 /*
  * Adapted from Keith Weaver's pure JavaScript ELIZA implementation:

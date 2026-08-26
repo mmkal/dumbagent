@@ -1,4 +1,4 @@
-import {parseRequest} from '../api.ts'
+import {parseRequest} from '../protocol.ts'
 
 // Adapted from tuiui's agent response preset.
 // Kept local so the default CLI can run without depending on the TUI app.

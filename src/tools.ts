@@ -1,4 +1,4 @@
-import {parseRequest, type ParsedRequest} from './api.ts'
+import {parseRequest, type ParsedRequest} from './protocol.ts'
 
 export type DumbAgentFetch = (request: Request) => Response | Promise<Response>
 
