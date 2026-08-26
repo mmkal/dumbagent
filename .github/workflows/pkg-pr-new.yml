@@ -1,0 +1,20 @@
+name: pkg.pr.new
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      # `prepare` runs the build; tests are skipped here because they spawn real
+      # agent CLIs (claude/codex/opencode/pi) that don't exist on CI runners.
+      - run: pnpm install
+      - run: pnpm dlx pkg-pr-new publish
